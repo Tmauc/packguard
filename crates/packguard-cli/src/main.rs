@@ -23,6 +23,15 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
+    /// Generate a `.packguard.yml` with conservative defaults.
+    Init {
+        /// Path to the project root. Defaults to the current directory.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Overwrite an existing `.packguard.yml`.
+        #[arg(long)]
+        force: bool,
+    },
     /// Scan a project, query registries, and persist the result to SQLite.
     Scan {
         /// Path to the project root. Defaults to the current directory.
@@ -50,8 +59,50 @@ async fn main() -> Result<()> {
     let store_path = resolve_store_path(cli.store)?;
 
     match cli.command {
+        Cmd::Init { path, force } => init(path, force),
         Cmd::Scan { path, offline, force } => scan(path, offline, force, &store_path).await,
     }
+}
+
+fn init(path: PathBuf, force: bool) -> Result<()> {
+    let ecosystems = default_ecosystems()?;
+    let detected: Vec<&'static str> = ecosystems
+        .iter()
+        .filter_map(|e| match e.detect(&path) {
+            Ok(projects) if !projects.is_empty() => Some(e.id()),
+            _ => None,
+        })
+        .collect();
+
+    let target = path.join(".packguard.yml");
+    if target.exists() && !force {
+        anyhow::bail!(
+            "{} already exists; rerun with --force to overwrite",
+            target.display()
+        );
+    }
+    std::fs::write(&target, packguard_policy::CONSERVATIVE_DEFAULTS_YAML)
+        .with_context(|| format!("writing {}", target.display()))?;
+
+    println!(
+        "{} wrote {}",
+        "✓".green(),
+        target.display().to_string().bold()
+    );
+    if detected.is_empty() {
+        println!(
+            "{} no supported ecosystems detected under {}",
+            "!".yellow(),
+            path.display()
+        );
+    } else {
+        println!(
+            "{} detected ecosystems: {}",
+            "•".dimmed(),
+            detected.join(", ").bold()
+        );
+    }
+    Ok(())
 }
 
 fn resolve_store_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
