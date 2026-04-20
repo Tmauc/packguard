@@ -5,6 +5,7 @@ use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table};
 use owo_colors::OwoColorize;
 use packguard_core::model::{Delta, DepKind, Project, RemotePackage};
+use packguard_core::Severity;
 use packguard_core::{default_ecosystems, Ecosystem};
 use packguard_intel::{match_vulnerabilities, MatchedVuln};
 use packguard_policy::{
@@ -54,6 +55,22 @@ enum Cmd {
         #[arg(long)]
         fail_on_violation: bool,
     },
+    /// List every matched vulnerability for the cached scan at `path`.
+    Audit {
+        /// Path to the repo root whose cached scan should be audited.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Only show vulns at or above one of these severities (repeatable).
+        /// Comma-separated; accepts `critical|high|medium|low`.
+        #[arg(long, value_delimiter = ',')]
+        severity: Vec<String>,
+        /// Exit 1 if at least one match reaches this severity.
+        #[arg(long)]
+        fail_on: Option<String>,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = ReportFormat::Table)]
+        format: ReportFormat,
+    },
     /// Refresh vulnerability intel (OSV dumps + GHSA git repo) into the store.
     Sync {
         /// Skip the OSV HTTP dumps (useful when only GHSA is wanted).
@@ -100,6 +117,12 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Cmd::Init { path, force } => init(path, force),
+        Cmd::Audit {
+            path,
+            severity,
+            fail_on,
+            format,
+        } => audit(path, severity, fail_on, format, &store_path),
         Cmd::Report {
             path,
             format,
@@ -478,6 +501,9 @@ struct ReportRow {
     latest: Option<String>,
     latest_published_at: Option<String>,
     compliance: Compliance,
+    /// CVE counts on the installed version — surfaces in the report table
+    /// and footer even when the policy doesn't block them.
+    cve_counts: SeverityCounts,
 }
 
 struct ReportSummary {
@@ -485,6 +511,7 @@ struct ReportSummary {
     warnings: usize,
     violations: usize,
     insufficient: usize,
+    cve_counts: SeverityCounts,
 }
 
 fn report(
@@ -534,8 +561,13 @@ fn report(
                 };
             let dialect = Dialect::for_ecosystem(&dep.ecosystem);
             let resolved = policy.resolve(&dep.name);
-            let vulns_by_version =
-                build_vulns_by_version(&store, &dep.ecosystem, &dep.name, &releases);
+            let vulns_by_version = build_vulns_by_version(
+                &store,
+                &dep.ecosystem,
+                &dep.name,
+                dep.installed.as_deref(),
+                &releases,
+            );
             let compliance = evaluate_dependency_with_vulns(
                 &dep.name,
                 dep.installed.as_deref(),
@@ -545,6 +577,15 @@ fn report(
                 dialect,
                 now,
             );
+            let cve_counts = match &dep.installed {
+                Some(v) => severity_counts(
+                    vulns_by_version
+                        .get(v)
+                        .map(|list| list.iter().map(|mv| mv.severity).collect::<Vec<_>>())
+                        .unwrap_or_default(),
+                ),
+                None => SeverityCounts::default(),
+            };
             ReportRow {
                 ecosystem: dep.ecosystem,
                 workspace: dep.workspace_name,
@@ -554,6 +595,7 @@ fn report(
                 latest: dep.latest,
                 latest_published_at: dep.latest_published_at,
                 compliance,
+                cve_counts,
             }
         })
         .collect();
@@ -583,6 +625,7 @@ fn build_vulns_by_version(
     store: &Store,
     ecosystem: &str,
     name: &str,
+    installed: Option<&str>,
     releases: &[ReleaseInfo],
 ) -> VulnsByVersion {
     let stored = match store.load_vulnerabilities(ecosystem, name) {
@@ -616,15 +659,342 @@ fn build_vulns_by_version(
         })
         .collect();
 
+    let mut versions: Vec<String> = releases.iter().map(|r| r.version.clone()).collect();
+    // The installed version may predate the history the store currently
+    // holds — make sure we still look up its vulns so the CVE block check
+    // in evaluate_dependency fires.
+    if let Some(v) = installed {
+        if !versions.iter().any(|x| x == v) {
+            versions.push(v.to_string());
+        }
+    }
+
     let mut by_version: VulnsByVersion = VulnsByVersion::new();
-    for rel in releases {
+    for version in versions {
         let matches: Vec<MatchedVuln> =
-            match_vulnerabilities(ecosystem, name, &rel.version, &advisories);
+            match_vulnerabilities(ecosystem, name, &version, &advisories);
         if !matches.is_empty() {
-            by_version.insert(rel.version.clone(), matches);
+            by_version.insert(version, matches);
         }
     }
     by_version
+}
+
+#[derive(Debug, Clone)]
+struct AuditRow {
+    ecosystem: String,
+    workspace: Option<String>,
+    package: String,
+    installed: String,
+    vuln: MatchedVuln,
+}
+
+fn audit(
+    path: PathBuf,
+    severity_filter: Vec<String>,
+    fail_on: Option<String>,
+    format: ReportFormat,
+    store_path: &Path,
+) -> Result<()> {
+    let store = Store::open(store_path)
+        .with_context(|| format!("opening store at {}", store_path.display()))?;
+    let dependencies = store.load_repo_dependencies(&path)?;
+    if dependencies.is_empty() {
+        anyhow::bail!(
+            "no cached scan for {}; run `packguard scan` first",
+            path.display()
+        );
+    }
+
+    // Normalize the filter to a Severity set. Unknown strings are ignored.
+    let filter_set: Vec<Severity> = severity_filter
+        .iter()
+        .map(|s| Severity::parse(s))
+        .filter(|s| !matches!(s, Severity::Unknown))
+        .collect();
+
+    let mut rows: Vec<AuditRow> = Vec::new();
+    for dep in dependencies {
+        let Some(installed) = dep.installed.as_deref() else {
+            continue;
+        };
+        let stored = store.load_vulnerabilities(&dep.ecosystem, &dep.name)?;
+        if stored.is_empty() {
+            continue;
+        }
+        let advisories: Vec<packguard_core::Vulnerability> = stored
+            .into_iter()
+            .map(|s| packguard_core::Vulnerability {
+                source: s.source,
+                advisory_id: s.advisory_id,
+                ecosystem: s.ecosystem,
+                package_name: s.package_name,
+                severity: s.severity,
+                cve_id: s.cve_id,
+                aliases: s.aliases,
+                summary: s.summary,
+                url: s.url,
+                affected: s.affected,
+                fixed_versions: s.fixed_versions,
+                published_at: s.published_at,
+                modified_at: s.modified_at,
+            })
+            .collect();
+        let matches = match_vulnerabilities(&dep.ecosystem, &dep.name, installed, &advisories);
+        for v in matches {
+            if !filter_set.is_empty() && !filter_set.contains(&v.severity) {
+                continue;
+            }
+            rows.push(AuditRow {
+                ecosystem: dep.ecosystem.clone(),
+                workspace: dep.workspace_name.clone(),
+                package: dep.name.clone(),
+                installed: installed.to_string(),
+                vuln: v,
+            });
+        }
+    }
+
+    rows.sort_by(|a, b| {
+        a.ecosystem
+            .cmp(&b.ecosystem)
+            .then(a.workspace.cmp(&b.workspace))
+            .then(a.package.cmp(&b.package))
+            .then_with(|| b.vuln.severity.cmp(&a.vuln.severity))
+    });
+
+    let counts = severity_counts(rows.iter().map(|r| r.vuln.severity));
+
+    match format {
+        ReportFormat::Table => render_audit_table(&rows, &counts, &path),
+        ReportFormat::Json => render_audit_json(&rows, &counts)?,
+        ReportFormat::Sarif => render_audit_sarif(&rows)?,
+    }
+
+    if let Some(threshold_raw) = fail_on {
+        let threshold = Severity::parse(&threshold_raw);
+        if matches!(threshold, Severity::Unknown) {
+            anyhow::bail!(
+                "unknown --fail-on severity `{}` (expected critical|high|medium|low)",
+                threshold_raw
+            );
+        }
+        let triggered = rows.iter().any(|r| r.vuln.severity >= threshold);
+        if triggered {
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default, Clone)]
+struct SeverityCounts {
+    critical: usize,
+    high: usize,
+    medium: usize,
+    low: usize,
+    unknown: usize,
+}
+
+fn severity_counts(iter: impl IntoIterator<Item = Severity>) -> SeverityCounts {
+    let mut c = SeverityCounts::default();
+    for s in iter {
+        match s {
+            Severity::Critical => c.critical += 1,
+            Severity::High => c.high += 1,
+            Severity::Medium => c.medium += 1,
+            Severity::Low => c.low += 1,
+            Severity::Unknown => c.unknown += 1,
+        }
+    }
+    c
+}
+
+fn severity_color(s: Severity) -> Color {
+    match s {
+        Severity::Critical => Color::Red,
+        Severity::High => Color::DarkRed,
+        Severity::Medium => Color::Yellow,
+        Severity::Low => Color::Green,
+        Severity::Unknown => Color::DarkGrey,
+    }
+}
+
+fn format_affected_window(vuln: &MatchedVuln) -> String {
+    // We intentionally don't reload affected_json here — MatchedVuln already
+    // carries fixed_versions, and `affected_json` would require plumbing
+    // StoredVulnerability all the way through. The human-readable window is
+    // "everything up to the first fix".
+    match vuln.fixed_versions.first() {
+        Some(v) => format!("< {v}"),
+        None => "unbounded".into(),
+    }
+}
+
+fn advisory_label(v: &MatchedVuln) -> String {
+    v.cve_id.clone().unwrap_or_else(|| v.advisory_id.clone())
+}
+
+fn render_audit_table(rows: &[AuditRow], counts: &SeverityCounts, path: &Path) {
+    println!(
+        "{} {}",
+        "🛡️".dimmed(),
+        format!("PackGuard audit — {}", path.display()).bold()
+    );
+    if rows.is_empty() {
+        println!("\n{} no matched vulnerabilities.", "✓".green());
+        return;
+    }
+
+    let mut current_eco: Option<&str> = None;
+    let mut current_ws: Option<&Option<String>> = None;
+    let mut table = new_audit_table();
+    for row in rows {
+        if current_eco != Some(row.ecosystem.as_str()) {
+            if !table.is_empty() {
+                println!("{table}");
+                table = new_audit_table();
+            }
+            current_eco = Some(row.ecosystem.as_str());
+            println!(
+                "\n{} {}",
+                "▸".dimmed(),
+                format!("[{}]", row.ecosystem).bold()
+            );
+            current_ws = None;
+        }
+        if current_ws.is_none() || current_ws.unwrap() != &row.workspace {
+            let ws = row.workspace.as_deref().unwrap_or("<root>");
+            println!("  {} {}", "◦".dimmed(), ws);
+            current_ws = Some(&row.workspace);
+        }
+        table.add_row(vec![
+            Cell::new(&row.package),
+            Cell::new(&row.installed),
+            Cell::new(advisory_label(&row.vuln)),
+            Cell::new(row.vuln.severity.as_str()).fg(severity_color(row.vuln.severity)),
+            Cell::new(format_affected_window(&row.vuln)),
+            Cell::new(
+                row.vuln
+                    .fixed_versions
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "—".into()),
+            ),
+        ]);
+    }
+    if !table.is_empty() {
+        println!("{table}");
+    }
+
+    println!(
+        "\n{} {}  {}  {}  {}",
+        "Summary:".bold(),
+        format!("🔴 {} critical", counts.critical).red(),
+        format!("🟠 {} high", counts.high).red(),
+        format!("🟡 {} medium", counts.medium).yellow(),
+        format!("🟢 {} low", counts.low).green(),
+    );
+}
+
+fn new_audit_table() -> Table {
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL_CONDENSED)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec![
+            header("Package"),
+            header("Installed"),
+            header("Advisory"),
+            header("Severity"),
+            header("Range"),
+            header("Fix"),
+        ]);
+    table
+}
+
+fn render_audit_json(rows: &[AuditRow], counts: &SeverityCounts) -> Result<()> {
+    use serde_json::json;
+    let out = json!({
+        "summary": {
+            "critical": counts.critical,
+            "high": counts.high,
+            "medium": counts.medium,
+            "low": counts.low,
+            "unknown": counts.unknown,
+        },
+        "matches": rows.iter().map(|r| json!({
+            "ecosystem": r.ecosystem,
+            "workspace": r.workspace,
+            "package": r.package,
+            "installed": r.installed,
+            "advisory_id": r.vuln.advisory_id,
+            "cve_id": r.vuln.cve_id,
+            "source": r.vuln.source,
+            "severity": r.vuln.severity.as_str(),
+            "summary": r.vuln.summary,
+            "url": r.vuln.url,
+            "fixed_versions": r.vuln.fixed_versions,
+            "aliases": r.vuln.aliases,
+            "published_at": r.vuln.published_at,
+        })).collect::<Vec<_>>(),
+    });
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
+/// Emit SARIF 2.1.0 shaped for GitHub code-scanning. Each match is one
+/// result under the `packguard.cve` rule.
+fn render_audit_sarif(rows: &[AuditRow]) -> Result<()> {
+    use serde_json::json;
+    let results: Vec<_> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "ruleId": "packguard.cve",
+                "level": match r.vuln.severity {
+                    Severity::Critical | Severity::High => "error",
+                    Severity::Medium => "warning",
+                    _ => "note",
+                },
+                "message": {
+                    "text": r.vuln.summary.clone().unwrap_or_else(|| advisory_label(&r.vuln))
+                },
+                "properties": {
+                    "ecosystem": r.ecosystem,
+                    "package": r.package,
+                    "installed": r.installed,
+                    "advisory_id": r.vuln.advisory_id,
+                    "cve_id": r.vuln.cve_id,
+                    "severity": r.vuln.severity.as_str(),
+                    "fixed_versions": r.vuln.fixed_versions,
+                    "url": r.vuln.url,
+                },
+            })
+        })
+        .collect();
+    let sarif = json!({
+        "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "packguard",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "informationUri": "https://github.com/nalo/packguard",
+                    "rules": [{
+                        "id": "packguard.cve",
+                        "shortDescription": {
+                            "text": "Installed dependency has a known CVE"
+                        },
+                    }],
+                }
+            },
+            "results": results,
+        }],
+    });
+    println!("{}", serde_json::to_string_pretty(&sarif)?);
+    Ok(())
 }
 
 fn load_project_policy(path: &Path) -> Result<Policy> {
@@ -647,6 +1017,7 @@ fn summarize(rows: &[ReportRow]) -> ReportSummary {
         warnings: 0,
         violations: 0,
         insufficient: 0,
+        cve_counts: SeverityCounts::default(),
     };
     for r in rows {
         match &r.compliance {
@@ -659,6 +1030,11 @@ fn summarize(rows: &[ReportRow]) -> ReportSummary {
             Compliance::VulnerabilityViolation(_) => s.violations += 1,
             Compliance::InsufficientCandidates(_) => s.insufficient += 1,
         }
+        s.cve_counts.critical += r.cve_counts.critical;
+        s.cve_counts.high += r.cve_counts.high;
+        s.cve_counts.medium += r.cve_counts.medium;
+        s.cve_counts.low += r.cve_counts.low;
+        s.cve_counts.unknown += r.cve_counts.unknown;
     }
     s
 }
@@ -683,6 +1059,7 @@ fn render_table(rows: &[ReportRow], summary: &ReportSummary, path: &Path) {
             header("Installed"),
             header("Latest"),
             header("Policy"),
+            header("CVE"),
         ]);
 
     for row in rows {
@@ -722,6 +1099,7 @@ fn render_table(rows: &[ReportRow], summary: &ReportSummary, path: &Path) {
             Cell::new(row.installed.as_deref().unwrap_or("-")),
             Cell::new(row.latest.as_deref().unwrap_or("-")),
             Cell::new(badge).fg(badge_color),
+            Cell::new(cve_badge(&row.cve_counts)),
         ]);
     }
     if !table.is_empty() {
@@ -736,6 +1114,17 @@ fn render_table(rows: &[ReportRow], summary: &ReportSummary, path: &Path) {
         format!("❌ {} violations", summary.violations).red(),
         format!("❓ {} insufficient", summary.insufficient).magenta(),
     );
+    let c = &summary.cve_counts;
+    if c.critical + c.high + c.medium + c.low > 0 {
+        println!(
+            "{} {}  {}  {}  {}",
+            "Vulnerabilities:".bold(),
+            format!("🔴 {} critical", c.critical).red(),
+            format!("🟠 {} high", c.high).red(),
+            format!("🟡 {} medium", c.medium).yellow(),
+            format!("🟢 {} low", c.low).green(),
+        );
+    }
     let _ = path;
 }
 
@@ -781,6 +1170,27 @@ fn json_row_for(r: &ReportRow) -> serde_json::Value {
     })
 }
 
+fn cve_badge(counts: &SeverityCounts) -> String {
+    let mut parts = Vec::new();
+    if counts.critical > 0 {
+        parts.push(format!("{}🔴", counts.critical));
+    }
+    if counts.high > 0 {
+        parts.push(format!("{}🟠", counts.high));
+    }
+    if counts.medium > 0 {
+        parts.push(format!("{}🟡", counts.medium));
+    }
+    if counts.low > 0 {
+        parts.push(format!("{}🟢", counts.low));
+    }
+    if parts.is_empty() {
+        "—".into()
+    } else {
+        parts.join(" · ")
+    }
+}
+
 fn compliance_badge(c: &Compliance) -> (&'static str, Color) {
     match c {
         Compliance::Compliant => ("compliant", Color::Green),
@@ -799,6 +1209,13 @@ fn render_json(rows: &[ReportRow], summary: &ReportSummary) -> Result<()> {
             "warnings": summary.warnings,
             "violations": summary.violations,
             "insufficient": summary.insufficient,
+            "vulnerabilities": {
+                "critical": summary.cve_counts.critical,
+                "high": summary.cve_counts.high,
+                "medium": summary.cve_counts.medium,
+                "low": summary.cve_counts.low,
+                "unknown": summary.cve_counts.unknown,
+            },
         },
         "rows": rows.iter().map(json_row_for).collect::<Vec<_>>(),
     });
