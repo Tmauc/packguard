@@ -1,9 +1,7 @@
 //! npm registry client — reads `dist-tags.latest` and the `time` map from
 //! `https://registry.npmjs.org/<name>`.
-//!
-//! Phase 0: single GET per package, bounded concurrency, no caching, no auth.
-//! ETag / on-disk cache lands with Phase 1 SQLite work.
 
+use crate::model::RemotePackage;
 use anyhow::{Context, Result};
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
@@ -12,13 +10,6 @@ use std::time::Duration;
 
 const DEFAULT_BASE_URL: &str = "https://registry.npmjs.org";
 const USER_AGENT: &str = concat!("packguard/", env!("CARGO_PKG_VERSION"));
-
-#[derive(Debug, Clone)]
-pub struct PackageInfo {
-    pub name: String,
-    pub latest: Option<String>,
-    pub latest_published_at: Option<String>,
-}
 
 #[derive(Debug, Deserialize)]
 struct RegistryResponse {
@@ -55,7 +46,7 @@ impl NpmClient {
         self
     }
 
-    pub async fn fetch_one(&self, name: &str) -> Result<PackageInfo> {
+    pub async fn fetch_one(&self, name: &str) -> Result<RemotePackage> {
         let url = format!("{}/{}", self.base_url, encode_name(name));
         let resp = self
             .http
@@ -72,14 +63,14 @@ impl NpmClient {
             .with_context(|| format!("decoding {}", url))?;
         let latest = body.dist_tags.get("latest").cloned();
         let latest_published_at = latest.as_ref().and_then(|v| body.time.get(v).cloned());
-        Ok(PackageInfo {
+        Ok(RemotePackage {
             name: name.to_string(),
             latest,
             latest_published_at,
         })
     }
 
-    pub async fn fetch_many<I, S>(&self, names: I) -> Vec<(String, Result<PackageInfo>)>
+    pub async fn fetch_many<I, S>(&self, names: I) -> Vec<(String, Result<RemotePackage>)>
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,

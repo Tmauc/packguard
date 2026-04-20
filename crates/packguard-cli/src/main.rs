@@ -3,9 +3,10 @@ use clap::{Parser, Subcommand};
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table};
 use owo_colors::OwoColorize;
-use packguard_core::classify::{Delta, classify};
-use packguard_core::registry::NpmClient;
+use packguard_core::model::{Delta, DepKind, Project};
+use packguard_core::{Ecosystem, Npm};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(name = "packguard", version, about = "Local package version governance")]
@@ -24,9 +25,6 @@ enum Cmd {
         /// Skip network calls; only show parsed manifest data.
         #[arg(long)]
         offline: bool,
-        /// Maximum number of concurrent registry requests.
-        #[arg(long, default_value_t = 16)]
-        concurrency: usize,
     },
 }
 
@@ -41,16 +39,43 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Cmd::Scan { path, offline, concurrency } => scan(path, offline, concurrency).await,
+        Cmd::Scan { path, offline } => scan(path, offline).await,
     }
 }
 
-async fn scan(path: PathBuf, offline: bool, concurrency: usize) -> Result<()> {
-    let project = packguard_core::npm::scan(&path)?;
+fn default_ecosystems() -> Result<Vec<Arc<dyn Ecosystem>>> {
+    Ok(vec![Arc::new(Npm::new()?)])
+}
 
+async fn scan(path: PathBuf, offline: bool) -> Result<()> {
+    let ecosystems = default_ecosystems()?;
+    let mut any_detected = false;
+
+    for eco in &ecosystems {
+        let projects = eco.detect(&path)?;
+        if projects.is_empty() {
+            continue;
+        }
+        any_detected = true;
+        for project in projects {
+            render_project(&**eco, &project, offline).await?;
+        }
+    }
+
+    if !any_detected {
+        anyhow::bail!(
+            "no supported manifest found at {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+async fn render_project(eco: &dyn Ecosystem, project: &Project, offline: bool) -> Result<()> {
     println!(
-        "{} {} — {} direct deps",
+        "{} {} {} — {} direct deps",
         "📦".dimmed(),
+        format!("[{}]", eco.id()).dimmed(),
         project.name.as_deref().unwrap_or("<unnamed>").bold(),
         project.dependencies.len(),
     );
@@ -58,9 +83,8 @@ async fn scan(path: PathBuf, offline: bool, concurrency: usize) -> Result<()> {
     let latest_map = if offline {
         Default::default()
     } else {
-        let client = NpmClient::new()?.with_concurrency(concurrency);
         let names: Vec<String> = project.dependencies.iter().map(|d| d.name.clone()).collect();
-        let results = client.fetch_many(names).await;
+        let results = eco.fetch_latest(names).await;
         let mut map = std::collections::BTreeMap::new();
         for (name, result) in results {
             match result {
@@ -94,7 +118,7 @@ async fn scan(path: PathBuf, offline: bool, concurrency: usize) -> Result<()> {
             .cloned()
             .unwrap_or((None, None));
 
-        let delta = classify(dep.installed.as_deref(), latest.as_deref());
+        let delta = eco.classify(dep.installed.as_deref(), latest.as_deref());
 
         table.add_row(vec![
             Cell::new(&dep.name),
@@ -114,13 +138,12 @@ fn header(s: &str) -> Cell {
     Cell::new(s).add_attribute(Attribute::Bold)
 }
 
-fn kind_str(k: packguard_core::model::DepKind) -> &'static str {
-    use packguard_core::model::DepKind::*;
+fn kind_str(k: DepKind) -> &'static str {
     match k {
-        Runtime => "dep",
-        Dev => "dev",
-        Peer => "peer",
-        Optional => "opt",
+        DepKind::Runtime => "dep",
+        DepKind::Dev => "dev",
+        DepKind::Peer => "peer",
+        DepKind::Optional => "opt",
     }
 }
 

@@ -1,5 +1,7 @@
-//! Registry clients. Phase 0: npm only.
+//! Registry clients. Each ecosystem owns its own HTTP client; this module
+//! just groups them and is where shared HTTP plumbing will land later (ETag
+//! cache, retries, etc. — see §7).
 
 pub mod npm;
 
-pub use npm::{NpmClient, PackageInfo};
+pub use npm::NpmClient;
