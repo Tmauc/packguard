@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/packguard-core", "crates/packguard-cli"]
+members = ["crates/packguard-core", "crates/packguard-store", "crates/packguard-cli"]
 
 [workspace.package]
 version = "0.0.1"
@@ -29,11 +29,12 @@ owo-colors = "4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
-refinery = { version = "0.8", features = ["rusqlite"] }
+refinery = { version = "0.9", features = ["rusqlite"] }
 insta = { version = "1", features = ["yaml"] }
 tempfile = "3"
 dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+sha2 = "0.10"
 
 [profile.release]
 lto = "thin"
