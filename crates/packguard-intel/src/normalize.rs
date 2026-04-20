@@ -253,6 +253,13 @@ pub fn parse_advisory_json(bytes: &[u8], source: &'static str) -> Result<Vec<Vul
     Ok(normalize(raw, source))
 }
 
+/// Like `parse_advisory_json` but stops at the raw representation — used by
+/// the malware harvester so it can re-route MAL entries before they hit the
+/// vulnerability pipeline.
+pub fn parse_advisory_json_raw(bytes: &[u8]) -> Result<RawAdvisory> {
+    serde_json::from_slice(bytes).context("parsing OSV/GHSA advisory (raw)")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

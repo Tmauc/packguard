@@ -197,7 +197,11 @@ async fn sync(
                             dump.id
                         );
                     } else {
-                        let persisted = store.persist_vulnerabilities(&fetched.vulnerabilities)?;
+                        let persisted_v =
+                            store.persist_vulnerabilities(&fetched.vulnerabilities)?;
+                        let persisted_m =
+                            store.persist_malware_reports(&fetched.malware_reports)?;
+                        let persisted = persisted_v + persisted_m;
                         if let Some(updated) = fetched.updated_state {
                             let mut state = prior_state.unwrap_or_default();
                             state.etag = updated.etag;
@@ -207,11 +211,12 @@ async fn sync(
                             store.put_sync_state(dump.id, &state)?;
                         }
                         println!(
-                            "{} {} — scanned {}, persisted {} {}",
+                            "{} {} — scanned {}, persisted {} vuln + {} malware {}",
                             "✓".green(),
                             dump.id,
                             fetched.summary.advisories_scanned,
-                            persisted,
+                            persisted_v,
+                            persisted_m,
                             if watched.is_none() {
                                 "(all)"
                             } else {
@@ -232,18 +237,21 @@ async fn sync(
             .map(Ok)
             .unwrap_or_else(packguard_intel::ghsa::default_cache_dir)?;
         match packguard_intel::ghsa::sync(&cache, &watched) {
-            Ok((vulns, summary, head)) => {
-                let persisted = store.persist_vulnerabilities(&vulns)?;
+            Ok((vulns, malware, summary, head)) => {
+                let persisted_v = store.persist_vulnerabilities(&vulns)?;
+                let persisted_m = store.persist_malware_reports(&malware)?;
+                let persisted = persisted_v + persisted_m;
                 let mut state = store.get_sync_state("ghsa")?.unwrap_or_default();
                 state.last_commit = Some(head);
                 state.synced_at = Some(chrono::Utc::now().to_rfc3339());
                 state.record_count = persisted as i64;
                 store.put_sync_state("ghsa", &state)?;
                 println!(
-                    "{} ghsa — scanned {}, persisted {}",
+                    "{} ghsa — scanned {}, persisted {} vuln + {} malware",
                     "✓".green(),
                     summary.advisories_scanned,
-                    persisted,
+                    persisted_v,
+                    persisted_m,
                 );
             }
             Err(err) => {
@@ -253,7 +261,13 @@ async fn sync(
     }
 
     let total = store.count_vulnerabilities()?;
-    println!("{} store holds {} advisories", "📚".dimmed(), total);
+    let mal_total = store.count_malware_reports()?;
+    println!(
+        "{} store holds {} advisories + {} malware reports",
+        "📚".dimmed(),
+        total,
+        mal_total,
+    );
     Ok(())
 }
 

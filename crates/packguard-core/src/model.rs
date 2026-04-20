@@ -130,6 +130,53 @@ pub struct AffectedSpec {
     pub versions: Vec<String>,
 }
 
+/// What a `MalwareReport` represents — drives the policy semantics:
+/// `Malware` is blocking when `block.malware` is on; `Typosquat` is a
+/// warning unless `block.typosquat: strict`; `ScannerSignal` is whatever
+/// Socket/Phylum reports beyond malware (obfuscation, install scripts, …)
+/// — we surface it but treat it as informational by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MalwareKind {
+    Malware,
+    Typosquat,
+    ScannerSignal,
+}
+
+impl MalwareKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MalwareKind::Malware => "malware",
+            MalwareKind::Typosquat => "typosquat",
+            MalwareKind::ScannerSignal => "scanner_signal",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "malware" => MalwareKind::Malware,
+            "typosquat" => MalwareKind::Typosquat,
+            _ => MalwareKind::ScannerSignal,
+        }
+    }
+}
+
+/// A malware/typosquat/scanner finding — Phase 2.5 stores this alongside
+/// (but separate from) the OSV-style `Vulnerability` records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MalwareReport {
+    pub source: String,
+    pub ref_id: String,
+    pub ecosystem: String,
+    pub package_name: String,
+    /// Empty string ⇒ the whole package is suspicious (typosquat case).
+    pub version: String,
+    pub kind: MalwareKind,
+    pub summary: Option<String>,
+    pub url: Option<String>,
+    pub evidence: serde_json::Value,
+    pub reported_at: Option<String>,
+}
+
 /// A normalized advisory record — what the fetchers produce and what the
 /// store persists.
 #[derive(Debug, Clone, PartialEq, Eq)]

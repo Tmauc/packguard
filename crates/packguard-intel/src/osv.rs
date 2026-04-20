@@ -5,10 +5,11 @@
 //! `If-Modified-Since` against the stored sync state, so untouched dumps
 //! cost one HTTP HEAD-equivalent and nothing else.
 
-use crate::normalize::parse_advisory_json;
-use crate::{filter_watched, SourceSummary, WatchedPackages};
+use crate::malware::{is_malware_advisory, to_malware_reports};
+use crate::normalize::{normalize, parse_advisory_json_raw};
+use crate::{filter_watched, filter_watched_malware, SourceSummary, WatchedPackages};
 use anyhow::{Context, Result};
-use packguard_core::Vulnerability;
+use packguard_core::{MalwareReport, Vulnerability};
 use std::io::{Cursor, Read};
 use std::time::Duration;
 
@@ -49,6 +50,7 @@ pub struct UpdatedSyncState {
 
 pub struct FetchedDump {
     pub vulnerabilities: Vec<Vulnerability>,
+    pub malware_reports: Vec<MalwareReport>,
     pub summary: SourceSummary,
     pub updated_state: Option<UpdatedSyncState>,
 }
@@ -87,6 +89,7 @@ pub async fn fetch_dump(
     if response.status() == reqwest::StatusCode::NOT_MODIFIED {
         return Ok(FetchedDump {
             vulnerabilities: Vec::new(),
+            malware_reports: Vec::new(),
             summary: SourceSummary {
                 advisories_scanned: 0,
                 advisories_persisted: 0,
@@ -117,10 +120,11 @@ pub async fn fetch_dump(
         .with_context(|| format!("downloading {}", url))?;
     tracing::info!(dump = dump.id, bytes = bytes.len(), "OSV dump downloaded");
 
-    let (vulns, scanned) = parse_zip(bytes.as_ref(), watched)?;
-    let persisted = vulns.len();
+    let (vulns, malware, scanned) = parse_zip(bytes.as_ref(), watched)?;
+    let persisted = vulns.len() + malware.len();
     Ok(FetchedDump {
         vulnerabilities: vulns,
+        malware_reports: malware,
         summary: SourceSummary {
             advisories_scanned: scanned,
             advisories_persisted: persisted,
@@ -134,15 +138,17 @@ pub async fn fetch_dump(
     })
 }
 
-/// Decompress `zip_bytes` and parse each entry as an OSV advisory JSON.
-/// Returns `(filtered_vulns, total_scanned)`.
+/// Decompress `zip_bytes` and split each entry into either a vuln or a
+/// malware report depending on the OSV id / `database_specific` shape.
+/// Returns `(filtered_vulns, filtered_malware, total_scanned)`.
 pub fn parse_zip(
     zip_bytes: &[u8],
     watched: &WatchedPackages,
-) -> Result<(Vec<Vulnerability>, usize)> {
+) -> Result<(Vec<Vulnerability>, Vec<MalwareReport>, usize)> {
     let mut archive =
         zip::ZipArchive::new(Cursor::new(zip_bytes)).context("opening OSV zip dump")?;
     let mut all_vulns: Vec<Vulnerability> = Vec::new();
+    let mut all_malware: Vec<MalwareReport> = Vec::new();
     let mut scanned = 0usize;
     for i in 0..archive.len() {
         let mut entry = archive
@@ -156,17 +162,22 @@ pub fn parse_zip(
         entry
             .read_to_end(&mut buf)
             .with_context(|| format!("reading zip entry {}", entry.name()))?;
-        let parsed = match parse_advisory_json(&buf, "osv") {
-            Ok(v) => v,
+        let raw = match parse_advisory_json_raw(&buf) {
+            Ok(r) => r,
             Err(err) => {
                 tracing::warn!(entry = entry.name(), ?err, "skipping malformed advisory");
                 continue;
             }
         };
-        all_vulns.extend(parsed);
+        if is_malware_advisory(&raw) {
+            all_malware.extend(to_malware_reports(&raw));
+        } else {
+            all_vulns.extend(normalize(raw, "osv"));
+        }
     }
-    let filtered = filter_watched(all_vulns, watched);
-    Ok((filtered, scanned))
+    let vulns = filter_watched(all_vulns, watched);
+    let malware = filter_watched_malware(all_malware, watched);
+    Ok((vulns, malware, scanned))
 }
 
 #[cfg(test)]
@@ -210,9 +221,10 @@ mod tests {
                 .into_iter()
                 .collect(),
         );
-        let (vulns, scanned) = parse_zip(&zip, &watched).unwrap();
+        let (vulns, malware, scanned) = parse_zip(&zip, &watched).unwrap();
         assert_eq!(scanned, 2);
         assert_eq!(vulns.len(), 1);
+        assert!(malware.is_empty());
         assert_eq!(vulns[0].package_name, "lodash");
     }
 
@@ -225,9 +237,31 @@ mod tests {
                           "ranges": [{"type": "SEMVER", "events": [{"fixed": "1.0.0"}]}]}]
         }"#;
         let zip = build_fixture_zip(&[("x.json", adv)]);
-        let (vulns, scanned) = parse_zip(&zip, &None).unwrap();
+        let (vulns, _malware, scanned) = parse_zip(&zip, &None).unwrap();
         assert_eq!(scanned, 1);
         assert_eq!(vulns.len(), 1);
+    }
+
+    #[test]
+    fn parse_zip_routes_mal_advisories_to_malware_bucket() {
+        let regular = r#"{
+            "id": "GHSA-x", "database_specific": {"severity": "HIGH"},
+            "affected": [{"package": {"ecosystem": "npm", "name": "lodash"},
+                          "ranges": [{"type": "SEMVER", "events": [{"fixed": "4.17.21"}]}]}]
+        }"#;
+        let mal = r#"{
+            "id": "MAL-2024-7777", "summary": "malicious package",
+            "affected": [{"package": {"ecosystem": "npm", "name": "evil-pkg"},
+                          "versions": ["1.0.0"]}]
+        }"#;
+        let zip = build_fixture_zip(&[("a.json", regular), ("b.json", mal)]);
+        let (vulns, malware, scanned) = parse_zip(&zip, &None).unwrap();
+        assert_eq!(scanned, 2);
+        assert_eq!(vulns.len(), 1);
+        assert_eq!(vulns[0].package_name, "lodash");
+        assert_eq!(malware.len(), 1);
+        assert_eq!(malware[0].package_name, "evil-pkg");
+        assert_eq!(malware[0].source, "osv-mal");
     }
 
     #[test]
@@ -239,7 +273,7 @@ mod tests {
                           "ranges": [{"type": "SEMVER", "events": [{"fixed": "1.0.0"}]}]}]
         }"#;
         let zip = build_fixture_zip(&[("good.json", good), ("bad.json", "{ this isn't JSON")]);
-        let (vulns, _) = parse_zip(&zip, &None).unwrap();
+        let (vulns, _malware, _) = parse_zip(&zip, &None).unwrap();
         assert_eq!(vulns.len(), 1);
         assert_eq!(vulns[0].advisory_id, "G");
     }

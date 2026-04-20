@@ -7,7 +7,8 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use packguard_core::model::{
-    AffectedSpec, DepKind, Project, RemotePackage, Severity, Vulnerability,
+    AffectedSpec, DepKind, MalwareKind, MalwareReport, Project, RemotePackage, Severity,
+    Vulnerability,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::BTreeMap;
@@ -57,6 +58,22 @@ pub struct StoredVulnerability {
     pub fixed_versions: Vec<String>,
     pub published_at: Option<String>,
     pub modified_at: Option<String>,
+    pub fetched_at: String,
+}
+
+/// One `malware_reports` row as read back by the matcher / CLI audit.
+#[derive(Debug, Clone)]
+pub struct StoredMalware {
+    pub source: String,
+    pub ref_id: String,
+    pub ecosystem: String,
+    pub package_name: String,
+    pub version: Option<String>,
+    pub kind: MalwareKind,
+    pub summary: Option<String>,
+    pub url: Option<String>,
+    pub evidence: serde_json::Value,
+    pub reported_at: Option<String>,
     pub fetched_at: String,
 }
 
@@ -448,6 +465,105 @@ impl Store {
             .context("count vulnerabilities")
     }
 
+    /// Bulk-upsert malware/typosquat findings. Idempotent on
+    /// `(source, ref_id, pkg_id, version)`; the package row is auto-created
+    /// when absent. Returns the number of rows touched.
+    pub fn persist_malware_reports(&mut self, reports: &[MalwareReport]) -> Result<usize> {
+        if reports.is_empty() {
+            return Ok(0);
+        }
+        let now = Utc::now().to_rfc3339();
+        let tx = self.conn.transaction().context("begin malware tx")?;
+        let mut count = 0usize;
+        for r in reports {
+            let pkg_id = upsert_package(&tx, &r.ecosystem, &r.package_name)?;
+            let evidence_str =
+                serde_json::to_string(&r.evidence).context("serializing malware evidence")?;
+            tx.execute(
+                "INSERT INTO malware_reports \
+                   (source, ref_id, pkg_id, version, kind, summary, url, evidence_json, \
+                    reported_at, fetched_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+                 ON CONFLICT(source, ref_id, pkg_id, version) DO UPDATE SET \
+                    kind = excluded.kind, \
+                    summary = excluded.summary, \
+                    url = excluded.url, \
+                    evidence_json = excluded.evidence_json, \
+                    reported_at = excluded.reported_at, \
+                    fetched_at = excluded.fetched_at",
+                params![
+                    r.source,
+                    r.ref_id,
+                    pkg_id,
+                    r.version,
+                    r.kind.as_str(),
+                    r.summary,
+                    r.url,
+                    evidence_str,
+                    r.reported_at,
+                    now,
+                ],
+            )
+            .context("upsert malware_report")?;
+            count += 1;
+        }
+        tx.commit().context("commit malware tx")?;
+        Ok(count)
+    }
+
+    /// Load malware/typosquat reports for `(ecosystem, package_name)`.
+    /// Returns rows in insertion order so callers can prefer the earliest
+    /// source in case of ties.
+    pub fn load_malware_reports(&self, ecosystem: &str, name: &str) -> Result<Vec<StoredMalware>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT m.source, m.ref_id, p.ecosystem, p.name, m.version, m.kind, \
+                        m.summary, m.url, m.evidence_json, m.reported_at, m.fetched_at \
+                 FROM malware_reports m \
+                 JOIN packages p ON p.id = m.pkg_id \
+                 WHERE p.ecosystem = ?1 AND p.name = ?2 \
+                 ORDER BY m.id",
+            )
+            .context("prepare load_malware_reports")?;
+        let rows = stmt
+            .query_map(params![ecosystem, name], read_stored_malware)
+            .context("query malware_reports")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Dump every malware report — used by `audit --focus malware|typosquat`.
+    pub fn load_all_malware_reports(&self) -> Result<Vec<StoredMalware>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT m.source, m.ref_id, p.ecosystem, p.name, m.version, m.kind, \
+                        m.summary, m.url, m.evidence_json, m.reported_at, m.fetched_at \
+                 FROM malware_reports m \
+                 JOIN packages p ON p.id = m.pkg_id \
+                 ORDER BY p.ecosystem, p.name, m.id",
+            )
+            .context("prepare load_all_malware_reports")?;
+        let rows = stmt
+            .query_map([], read_stored_malware)
+            .context("query malware_reports")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn count_malware_reports(&self) -> Result<i64> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM malware_reports", [], |row| row.get(0))
+            .context("count malware_reports")
+    }
+
     pub fn get_sync_state(&self, kind: &str) -> Result<Option<SyncState>> {
         self.conn
             .query_row(
@@ -522,6 +638,31 @@ fn read_stored_vulnerability(row: &rusqlite::Row<'_>) -> rusqlite::Result<Stored
         published_at: row.get(11)?,
         modified_at: row.get(12)?,
         fetched_at: row.get(13)?,
+    })
+}
+
+fn read_stored_malware(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMalware> {
+    let evidence_json: String = row.get(8)?;
+    let kind_raw: String = row.get(5)?;
+    let version_raw: String = row.get(4)?;
+    let evidence: serde_json::Value =
+        serde_json::from_str(&evidence_json).unwrap_or(serde_json::Value::Null);
+    Ok(StoredMalware {
+        source: row.get(0)?,
+        ref_id: row.get(1)?,
+        ecosystem: row.get(2)?,
+        package_name: row.get(3)?,
+        version: if version_raw.is_empty() {
+            None
+        } else {
+            Some(version_raw)
+        },
+        kind: MalwareKind::parse(&kind_raw),
+        summary: row.get(6)?,
+        url: row.get(7)?,
+        evidence,
+        reported_at: row.get(9)?,
+        fetched_at: row.get(10)?,
     })
 }
 
@@ -894,6 +1035,67 @@ mod tests {
             .unwrap();
         let rows = store.load_vulnerabilities("npm", "lodash").unwrap();
         assert_eq!(rows[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn persist_and_load_malware_reports_roundtrip() {
+        let mut store = Store::open_in_memory().unwrap();
+        let report = packguard_core::MalwareReport {
+            source: "osv-mal".into(),
+            ref_id: "MAL-2024-1234".into(),
+            ecosystem: "npm".into(),
+            package_name: "evil-pkg".into(),
+            version: "1.0.0".into(),
+            kind: MalwareKind::Malware,
+            summary: Some("Cryptominer in postinstall".into()),
+            url: Some("https://osv.dev/MAL-2024-1234".into()),
+            evidence: serde_json::json!({"id":"MAL-2024-1234"}),
+            reported_at: Some("2024-09-01T00:00:00Z".into()),
+        };
+        let n = store
+            .persist_malware_reports(std::slice::from_ref(&report))
+            .unwrap();
+        assert_eq!(n, 1);
+
+        let rows = store.load_malware_reports("npm", "evil-pkg").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source, "osv-mal");
+        assert_eq!(rows[0].kind, MalwareKind::Malware);
+        assert_eq!(rows[0].version.as_deref(), Some("1.0.0"));
+        assert_eq!(
+            rows[0].summary.as_deref(),
+            Some("Cryptominer in postinstall")
+        );
+
+        // Re-running with the same key updates rather than duplicates.
+        store
+            .persist_malware_reports(std::slice::from_ref(&report))
+            .unwrap();
+        assert_eq!(store.count_malware_reports().unwrap(), 1);
+    }
+
+    #[test]
+    fn whole_package_typosquat_uses_empty_version_marker() {
+        let mut store = Store::open_in_memory().unwrap();
+        let report = packguard_core::MalwareReport {
+            source: "typosquat-heuristic".into(),
+            ref_id: "typo:lodahs".into(),
+            ecosystem: "npm".into(),
+            package_name: "lodahs".into(),
+            version: String::new(), // whole-package suspicion
+            kind: MalwareKind::Typosquat,
+            summary: None,
+            url: None,
+            evidence: serde_json::json!({"resembles":"lodash","distance":2,"score":0.7}),
+            reported_at: None,
+        };
+        store
+            .persist_malware_reports(std::slice::from_ref(&report))
+            .unwrap();
+        let rows = store.load_malware_reports("npm", "lodahs").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].version.is_none(), "empty marker → None on read");
+        assert_eq!(rows[0].kind, MalwareKind::Typosquat);
     }
 
     #[test]

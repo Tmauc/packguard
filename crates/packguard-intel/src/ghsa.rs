@@ -8,10 +8,11 @@
 //! clear error and let the user install it or rerun with
 //! `--skip-ghsa` (wired in the CLI).
 
-use crate::normalize::parse_advisory_json;
-use crate::{filter_watched, SourceSummary, WatchedPackages};
+use crate::malware::{is_malware_advisory, to_malware_reports};
+use crate::normalize::{normalize, parse_advisory_json_raw};
+use crate::{filter_watched, filter_watched_malware, SourceSummary, WatchedPackages};
 use anyhow::{bail, Context, Result};
-use packguard_core::Vulnerability;
+use packguard_core::{MalwareReport, Vulnerability};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use walkdir::WalkDir;
@@ -84,12 +85,13 @@ pub fn default_cache_dir() -> Result<PathBuf> {
         .join("advisory-database"))
 }
 
-/// Walk `github-reviewed/` in the cache and return normalized advisories
-/// matching `watched`.
+/// Walk `github-reviewed/` in the cache and split each advisory into a
+/// `Vulnerability` or a `MalwareReport` depending on its OSV id /
+/// `database_specific` shape.
 pub fn parse_cache(
     cache_dir: &Path,
     watched: &WatchedPackages,
-) -> Result<(Vec<Vulnerability>, usize)> {
+) -> Result<(Vec<Vulnerability>, Vec<MalwareReport>, usize)> {
     let reviewed = cache_dir.join("advisories").join("github-reviewed");
     if !reviewed.exists() {
         bail!(
@@ -98,7 +100,8 @@ pub fn parse_cache(
         );
     }
     let mut scanned = 0usize;
-    let mut all: Vec<Vulnerability> = Vec::new();
+    let mut all_vulns: Vec<Vulnerability> = Vec::new();
+    let mut all_malware: Vec<MalwareReport> = Vec::new();
     for entry in WalkDir::new(&reviewed).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
         if !path.is_file() {
@@ -119,27 +122,43 @@ pub fn parse_cache(
                 continue;
             }
         };
-        match parse_advisory_json(&bytes, "ghsa") {
-            Ok(v) => all.extend(v),
+        let raw = match parse_advisory_json_raw(&bytes) {
+            Ok(r) => r,
             Err(err) => {
                 tracing::warn!(?path, ?err, "skipping malformed GHSA advisory");
+                continue;
             }
+        };
+        if is_malware_advisory(&raw) {
+            all_malware.extend(to_malware_reports(&raw));
+        } else {
+            all_vulns.extend(normalize(raw, "ghsa"));
         }
     }
-    Ok((filter_watched(all, watched), scanned))
+    Ok((
+        filter_watched(all_vulns, watched),
+        filter_watched_malware(all_malware, watched),
+        scanned,
+    ))
 }
 
-/// End-to-end: clone/pull then parse. Returns advisory list + the HEAD SHA
-/// to persist in `sync_log`.
+/// End-to-end: clone/pull then parse. Returns vuln + malware lists + the
+/// HEAD SHA to persist in `sync_log`.
 pub fn sync(
     cache_dir: &Path,
     watched: &WatchedPackages,
-) -> Result<(Vec<Vulnerability>, SourceSummary, String)> {
+) -> Result<(
+    Vec<Vulnerability>,
+    Vec<MalwareReport>,
+    SourceSummary,
+    String,
+)> {
     let head = clone_or_update(cache_dir).context("clone/update GHSA cache")?;
-    let (vulns, scanned) = parse_cache(cache_dir, watched)?;
-    let persisted = vulns.len();
+    let (vulns, malware, scanned) = parse_cache(cache_dir, watched)?;
+    let persisted = vulns.len() + malware.len();
     Ok((
         vulns,
+        malware,
         SourceSummary {
             advisories_scanned: scanned,
             advisories_persisted: persisted,
@@ -195,9 +214,10 @@ mod tests {
         fs::write(reviewed.join("README.md"), "stray").unwrap();
 
         let watched: WatchedPackages = None;
-        let (vulns, scanned) = parse_cache(cache, &watched).unwrap();
+        let (vulns, malware, scanned) = parse_cache(cache, &watched).unwrap();
         assert_eq!(scanned, 1);
         assert_eq!(vulns.len(), 1);
+        assert!(malware.is_empty());
         assert_eq!(vulns[0].advisory_id, "GHSA-reviewed");
         assert_eq!(vulns[0].source, "ghsa");
     }

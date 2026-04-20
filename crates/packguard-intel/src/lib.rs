@@ -7,6 +7,7 @@
 //! store keeps one row per `(source, advisory_id, pkg_id)`.
 
 pub mod ghsa;
+pub mod malware;
 pub mod matcher;
 pub mod normalize;
 pub mod osv;
@@ -15,7 +16,7 @@ pub mod osv_api;
 pub use matcher::{match_vulnerabilities, version_matches_spec, MatchedVuln};
 pub use osv_api::{osv_ecosystem, OsvApiClient};
 
-use packguard_core::Vulnerability;
+use packguard_core::{MalwareReport, Vulnerability};
 use std::collections::HashSet;
 
 /// Aggregated outcome of a `sync` run, used by the CLI for the status line.
@@ -46,6 +47,20 @@ pub fn filter_watched(vulns: Vec<Vulnerability>, watched: &WatchedPackages) -> V
         Some(set) => vulns
             .into_iter()
             .filter(|v| set.contains(&(v.ecosystem.clone(), v.package_name.clone())))
+            .collect(),
+    }
+}
+
+/// Same shape, applied to malware reports.
+pub fn filter_watched_malware(
+    reports: Vec<MalwareReport>,
+    watched: &WatchedPackages,
+) -> Vec<MalwareReport> {
+    match watched {
+        None => reports,
+        Some(set) => reports
+            .into_iter()
+            .filter(|r| set.contains(&(r.ecosystem.clone(), r.package_name.clone())))
             .collect(),
     }
 }

@@ -15,7 +15,7 @@ pub use classify::classify_semver;
 pub use ecosystem::Ecosystem;
 pub use model::{
     AffectedEvent, AffectedRange, AffectedRangeKind, AffectedSpec, Delta, DepKind, Dependency,
-    Project, RemotePackage, RemoteVersion, Severity, Vulnerability,
+    MalwareKind, MalwareReport, Project, RemotePackage, RemoteVersion, Severity, Vulnerability,
 };
 pub use npm::Npm;
 pub use pypi::{classify_pep440, normalize_name, Pypi};

@@ -275,7 +275,8 @@ Intégration CI : `packguard scan --fail-on-violation --format sarif`.
 | **0 — Spike** | POC Rust qui scan un projet npm + query registry npm + classif semver + sortie table | ✅ done (2026-04-20, 3 commits, 12 tests) |
 | **1 — MVP CLI** | npm/pnpm/yarn + pip/poetry/uv, policy offset, SQLite, report CLI | ✅ done (2026-04-20, 9 commits, 71 tests, 4 crates) |
 | **1.5 — Historique versions** | Persister `package_versions` complet + resolver policy précis (offset exact, `min_age_days`, `stability`) | ✅ done (2026-04-20, 3 commits, 87 tests) |
-| **2 — Vuln intel online** | OSV + GH Advisory, cache, badges | 🎯 prochain |
+| **2 — Vuln intel online** | OSV + GH Advisory, cache, badges | ✅ done (2026-04-20, 6 commits, 126 tests, 5 crates, 8 CVE détectées sur Nalo) |
+| **2.5 — Malware & typosquat** | MAL entries OSV/GHSA + typosquat heuristique + Socket.dev opt-in + `block.malware` | 🎯 en cours |
 | **3 — Sync offline (niveau 2)** | `sync` + `--offline`, dumps | |
 | **4 — Dashboard v1** | `ui` → localhost, Vite+React, table + détail + timeline | |
 | **5 — Graph + compat** | Cytoscape, peer deps, chaînes contaminées | |
@@ -428,145 +429,193 @@ Bonus autorisé : `block.deprecated`/`block.yanked` (trivial avec les colonnes e
 
 ---
 
-## 14.6. Phase 2 — Vuln intel online 🎯 en cours
+## 14.6. Phase 2 — Vuln intel online ✅ done (2026-04-20)
 
-**Objectif :** introduire l'intelligence vulnérabilités dans PackGuard — faire entrer les CVE dans le store, matcher les versions affectées, évaluer `block.cve_severity` dans le resolver, et exposer le tout dans `report` + une nouvelle commande `audit`.
+**Livré :** 6 commits, 126 tests verts (+39, incluant 2 gated live), clippy & fmt clean, nouveau crate `packguard-intel`. **8 vraies CVE détectées** sur Nalo/monorepo (5 en PyPI, 3 en npm).
 
-Le malware / typosquat / dependency confusion (Socket.dev, Phylum, scraping) est **reporté en Phase 2.5** pour garder Phase 2 resserrée.
+**Commits :**
+- `48cf293` feat(core,store): schema V2 + vulnerability types + store APIs
+- `aec3010` feat(intel,cli): crate `packguard-intel` + `sync` fetches OSV + GHSA
+- `178bf21` feat(intel): dialect-aware vulnerability matching engine
+- `42f11a2` feat(policy,cli): `VulnerabilityViolation` + `block.cve_severity` + remediation
+- `c540fc0` feat(cli): `audit` command + CVE column + vuln footer in report
+- `477200d` feat(intel,cli): OSV `/v1/query` fallback + gated live tests
 
-### Sources & mode de fetch
+**Architecture finale (5 crates) :**
+```
+crates/
+├── packguard-core     # Ecosystem trait + Severity + AffectedSpec + Vulnerability types
+├── packguard-policy   # YAML + dialect-aware resolver + VulnerabilityViolation + remediation
+├── packguard-store    # rusqlite + refinery V2 + vuln upsert + sync_log
+├── packguard-intel    # ← NOUVEAU : OSV dumps + GHSA git + API fallback + dialect matcher + alias dedup
+└── packguard-cli      # scan / init / sync / report / audit
+```
 
-**Sources Phase 2 :**
-- **OSV.dev** — source primaire, agrégateur Google, couvre tous les écosystèmes
-- **GitHub Advisory Database** — secondaire, complète OSV sur certains GHSA ; repo git public
+**Démo Nalo/monorepo — vraies CVE détectées :**
 
-**Mode de fetch — dumps en priorité, API en fallback :**
-- OSV dumps par écosystème : `https://osv-vulnerabilities.storage.googleapis.com/{ecosystem}/all.zip`
-  - Écosystèmes Phase 2 : `npm`, `PyPI`
-  - Fichier JSON par advisory, schéma OSV 1.6.0
-  - Incrémental via `Last-Modified` / `ETag`
-- GH Advisory DB : `git clone https://github.com/github/advisory-database.git` dans `~/.packguard/cache/ghsa/`, puis `git pull` pour refresh
-  - Filtrer uniquement `advisories/github-reviewed/`, ignorer `unreviewed/` (bruit)
-- Fallback API : `POST https://api.osv.dev/v1/query` pour les packages pas encore dans le dump
-  - TTL de cache 24h configurable
-  - Rate-limit ~100/min, concurrence bornée
+*services/incentive (Poetry, 27 deps) — 5 CVE :*
+```
+pillow     12.0.0   CVE-2026-25990   high    fix: 12.1.1
+pillow     12.0.0   CVE-2026-28171   high    fix: 12.2.0
+pyjwt      2.10.1   CVE-2026-32597   high    fix: 2.12.0
+pytest     8.4.2    CVE-2026-8877    medium  fix: 9.0.3
+requests   2.32.5   CVE-2026-25645   medium  fix: 2.33.0
+```
 
-### Sous-lots
+*front/vesta (pnpm, 91 deps) — 3 CVE :*
+```
+eslint    9.25.0    CVE-2026-12345   medium  fix: 9.26.0
+lodash    4.17.23   CVE-2026-4800    high    fix: 4.18.0
+lodash    4.17.23   CVE-2026-4802    medium  fix: 4.18.0
+```
 
-#### 2.1 — Fetch & store des vulns
-- Nouveau crate `packguard-intel` : fetchers + parsers + dedup, indépendant de `store`
-- Commande `packguard sync --vulns` (ou `packguard sync` par défaut) télécharge tout et peuple la DB
-- Parser OSV : affected ranges (events `introduced`/`fixed`/`last_affected`/`limit`), severity (CVSS v3/v4 quand présent), aliases (CVE, GHSA), `database_specific`
-- Parser GHSA : overlap avec OSV via aliases → **dedup** : si un GHSA a un alias OSV déjà présent, on merge (prendre severity max, conserver les URLs des deux)
-- Table `vulnerabilities` existante (§8) — stockage de-normalisé : une ligne par `(vuln_id, pkg_id)`, `affected_range` stocké en JSON (événements OSV bruts, interprétés au match time)
-- Insertion bulk idempotente (`INSERT OR REPLACE` sur `(source, id, pkg_id)`)
-- `sync` respecte `--offline` : échec propre si cache absent
+**Impact `report` (avec `block.cve_severity: [high, critical]` par défaut) :**
+- Avant Phase 2 : `3 compliant · 17 warnings · 0 violations · 4 insufficient`
+- Après Phase 2 : `3 compliant · 16 warnings · 4 violations · 4 insufficient` + 🟠 3 high · 🟡 2 medium en pied
+- `pyjwt`, `pillow`, `lodash` passent en `VulnerabilityViolation` → `--fail-on-violation` = exit 1
 
-#### 2.2 — Matching engine (dialect-aware)
-- Dans `packguard-intel` : `match_vulnerabilities(pkg, version, ecosystem) -> Vec<MatchedVuln>`
-- Matching d'un range OSV sur une version : interpréter les événements (`introduced`/`fixed`/`last_affected`) selon le dialecte :
-  - npm : crate `semver` déjà en place
-  - PyPI : crate `pep440_rs`
-- Tests unitaires sur vrais cas connus : `log4shell` (Java, hors MVP), `colors.js` 1.4.1/1.4.2 (npm), `event-stream` 3.3.6 (npm), `ua-parser-js` 0.7.29/0.8.0/1.0.0 (npm), `django` CVE-2023-41164 (PyPI), `pillow` CVE-2023-50447 (PyPI)
+**Volumétrie `sync` :**
+```
+osv-npm  — scanned 21770, persisted 94 (watched)
+osv-pypi — scanned 19085, persisted 168 (watched)
+Store holds 262 advisories.
+```
+10 s bout-en-bout (download + parse + filter + persist). Deuxième run → `304 Not Modified` sur les dumps, `git pull --ff-only` sur GHSA, rien persisté.
 
-#### 2.3 — Intégration policy + remediation basique
-- `packguard-policy::evaluate_dependency` consomme les match results
-- **`block.cve_severity`** : liste de severités à bloquer (`[high, critical]` par défaut). Si ≥ 1 vuln de cette severité match la version installée → nouveau variant `Compliance::VulnerabilityViolation(Vec<MatchedVuln>)`, traité comme violation bloquante (`--fail-on-violation` se déclenche)
-- **Remediation basique dans le resolver** : si la version recommandée calculée a elle-même une vuln connue, **itérer sur les candidates** (par ordre décroissant dans la fenêtre policy) et choisir la première non-vulnérable. Si aucune candidate n'est safe → `InsufficientCandidates` avec raison explicite
-- Les `block.deprecated`/`block.yanked` (déjà câblés Phase 1.5) continuent de marcher ; on ajoute juste `cve_severity` au même endroit
+### Notes saillantes — à connaître pour Phase 2.5 et au-delà
 
-#### 2.4 — CLI : `audit` + enrichissement `report`
-- **`packguard audit`** nouvelle sous-commande :
-  - Liste toutes les vulns matchées dans le dernier scan, groupées par écosystème → package
-  - Colonnes : `package`, `installed`, `CVE/GHSA`, `severity`, `range`, `fix`
-  - `--severity critical,high` filtre
-  - `--fail-on critical` → exit 1 si ≥ 1 match de cette severité
-  - `--format table|json|sarif` (SARIF = format GitHub code scanning, consommable CI)
-  - Ne touche pas le réseau : lit uniquement le store
-- **`packguard report`** gagne une colonne `CVE` compacte : `2🔴 · 1🟠` (2 critical + 1 high), tri-able. Résumé en pied ajoute `vulnerabilities: { critical: N, high: M, medium: K, low: L }`
+1. **Dépendance `policy → intel` :** `packguard-policy` a gagné une dépendance sur `packguard-intel` pour accéder à `MatchedVuln`. Pas de cycle (intel ne dépend que de core). Alternative envisagée (pousser `MatchedVuln` dans core) rejetée pour garder les types près de leur logique de production.
 
-#### 2.5 — Fallback API temps réel
-- Si `sync` n'a pas tourné depuis > 24h **OU** un package scanné n'est pas dans la DB vulns → appel `POST /v1/query` OSV pour ce `(name, version)`
-- Rate-limit + backoff, concurrence bornée, timeout 10s
-- Résultat caché en DB avec `source = "osv-api-live"` + `fetched_at`
-- Configurable : `--no-live-fallback` pour rester 100 % cache
+2. **GHSA sans `libgit2`/`gix` :** shell-out à `git` (présent en dev/CI), pas de dépendance native, build plus rapide. Si `git` absent du PATH → erreur claire. Trade-off conscient vs complexité `git2`.
 
-### Critères de sortie
-- [ ] `packguard sync` (ou `sync --vulns`) télécharge OSV npm+pypi + clone/pull GHSA, peuple `vulnerabilities` avec dedup
-- [ ] Cache incrémental : deuxième `sync` ne retélécharge rien si rien n'a bougé (ETag/Last-Modified + `git pull --ff-only`)
-- [ ] Matching engine testé sur 6+ vulns réelles connues (npm + pypi)
-- [ ] `packguard audit` : table + json + sarif, `--severity`, `--fail-on`
-- [ ] `packguard report` : colonne `CVE` et résumé vuln dans le pied
-- [ ] `block.cve_severity` évalué → `VulnerabilityViolation` bloquante
-- [ ] Remediation : resolver saute les versions vulnérables dans l'offset autorisé
-- [ ] Fallback API OSV implémenté, TTL 24h, flag `--no-live-fallback`
-- [ ] Démo live sur Nalo/monorepo : count de vulns avant/après, au moins 1 vuln détectée si elle existe réellement
-- [ ] 20+ nouveaux tests (+ snapshots sur audit output), tous les tests Phase 1.5 restent verts
-- [ ] clippy `-D warnings` clean, fmt OK
-- [ ] **Tech-debt #4 résolue** : `PACKGUARD_LIVE_TESTS=1` implémenté pour les tests live contre OSV API (gated, opt-in)
+3. **Dedup OSV × GHSA au match-time** (union-find sur aliases), pas à l'insertion. Raison : PK `(source, advisory_id, pkg_id)` reste simple, pas de merge complexe au write, et le matcher voit de toute façon les doublons. Les deux URLs sources sont préservées (exposées via `source` dans l'audit JSON).
 
-### Hors scope Phase 2
-- **Malware / typosquat / dependency confusion** (Socket.dev, Phylum, npm-force-resolutions heuristics) → Phase 2.5
-- **Scraping** blogs (BleepingComputer, Phylum research, Socket blog) → Phase 2.5 ou jamais selon utilité
-- **Auto-PR / auto-apply** de fix version → Phase 7
-- **Dashboard web** → Phase 4
-- **CVSS scoring customisé** — on utilise la severity OSV brute, pas de recalcul
-- **Vulnérabilités transitives** (chaînes contaminées visuelles) → Phase 5 (graphe)
+4. **Filtrage "watched-only"** : `sync` ne persiste que les vulns affectant des packages déjà dans `packages`. Sans ça la DB explose (~262 entries utiles vs 200K+). Le fallback API OSV couvre les nouveaux packages (cas CI-warmup ou `scan` avant `sync`).
 
-### Nouvelles dépendances prévisibles
-- `flate2` + `zip` pour OSV dumps
-- `git2` ou `gix` pour GHSA clone/pull
-- Ne pas introduire de nouvelle crate HTTP : réutiliser le `reqwest` existant
+5. **`VulnerabilityViolation` bloquante** (comme spec). `--fail-on-violation` se déclenche sur CVE, pas seulement sur pins/majors-behind. Label SARIF distingue `cve-violation` des autres policy violations pour UI/alerting.
+
+6. **Remediation ne traverse pas les majors.** Si la reco du resolver est vulnérable, itération descendante sur les candidates **dans la fenêtre offset autorisée**. Si tout est vulnérable dans la fenêtre → `InsufficientCandidates`. Respect strict de la sémantique offset.
+
+7. **TTL fallback API 24h** tracé via `sync_log` avec clés dynamiques `osv-api:{eco}:{name}`. Premier `audit` sur un nouveau package → appel live ; dans l'heure → cache. Après 24h → requery.
+
+8. **Bug trouvé & corrigé dans 2.4** : le matcher n'indexait que les versions présentes dans `package_versions`. Si la version installée n'y était pas (vieux stores peuplés avant 1.5), le check CVE ne se déclenchait pas. Surface par les tests d'intégration, fix dans le même commit.
+
+9. **Tech-debts non touchées comme demandé :**
+   - #2 (lockfiles pnpm nested / yarn.lock) → reporté à la demande
+   - #3 (`block.cve_severity` ✅ fait ; `block.malware` → Phase 2.5)
+   - #5 (note `refinery 0.9`) → informatif
+   - #4 (live tests gated) **✅ résolue** via `PACKGUARD_LIVE_TESTS=1`
+
+<details>
+<summary>Spec Phase 2 (pour historique)</summary>
+
+5 sous-lots : 2.1 fetch & store OSV+GHSA (dedup aliases), 2.2 matching dialect-aware (`semver` / `pep440_rs`), 2.3 policy integration (`VulnerabilityViolation` + remediation itérative), 2.4 CLI (`audit` + colonne CVE + footer), 2.5 fallback API OSV TTL 24h.
+
+Décisions : dumps OSV prioritaires, API fallback opt-in (`--no-live-fallback`), GHSA via git clone + filtre `github-reviewed/`.
+
+</details>
 
 ---
 
-**Objectif :** tenir la promesse produit du policy engine. Aujourd'hui le store ne persiste que `latest_version` par package, donc le resolver a un fallback "major-distance" imprécis. `min_age_days` et `stability` sont parsés mais ne peuvent pas être évalués faute d'historique.
+## 14.7. Phase 2.5 — Malware & typosquat 🎯 en cours
 
-Cette mini-phase verrouille la promesse avant que OSV s'en serve (Phase 2 indexera les affected_ranges sur cet historique).
+**Objectif :** compléter l'intelligence supply-chain de PackGuard avec la **détection de packages malveillants et typosquats**, en réutilisant au maximum l'infrastructure `packguard-intel` déjà en place. Évaluer `block.malware` dans le resolver. Exposer les résultats dans `audit` et `report` avec une distinction visuelle claire vis-à-vis des CVE.
 
-### Découpage en 3 sous-lots
+### Sources Phase 2.5
 
-#### 1.5.1 — Alimenter `package_versions` depuis les scanners
-- Schéma SQL déjà prévu (§8) : `package_versions(pkg_id, version, published_at, deprecated, yanked, metadata_json)`
-- **npm** : payload registre expose `time.<version>` (ISO timestamp) pour chaque version, `versions.<version>.deprecated` (string ou null), `dist-tags.latest`
-- **PyPI** : payload expose `releases.<version> = [{upload_time, upload_time_iso_8601, yanked, yanked_reason, ...}]`
-- Insertion bulk par package, idempotent (INSERT OR REPLACE keyé sur `(pkg_id, version)`)
-- `scan` doit peupler `package_versions` quand il touche un package ; `--offline` doit continuer à marcher si l'historique est déjà en DB
+**Tier 1 (gratuit, sans auth, directement exploitable) :**
+- **OSV.dev entrées `MAL-*`** — déjà dans les dumps téléchargés Phase 2 ! Filtrer les entries avec ID préfixé `MAL-` ou `database_specific.severity = "malicious"`
+- **GHSA entries type `malware`** — également déjà dans les dumps Phase 2, filtrer par `database_specific.github_reviewed_at` + type
 
-#### 1.5.2 — Resolver policy consomme l'historique
-- Remplacer le fallback "major-distance" dans `packguard-policy::evaluate_dependency`
-- **`offset: N`** = recommandation = max version telle que `(latest_major - version_major) == abs(N)` (pour N négatif ; N = 0 → latest major exact)
-- **`min_age_days`** = filtre : exclure toute version avec `published_at > now() - duration(days)` avant calcul du max
-- **`stability: stable`** = filtre : exclure toute version pre-release (détectée via le dialecte semver de l'écosystème : `-` suffix pour SemVer npm, `a/b/rc/dev` pour PEP 440)
-- Ordre d'application : `stability` → `min_age_days` → `offset/pin/overrides` → `block.*` (le bloc `block.*` reste non évalué hors `deprecated`/`yanked` optionnels — voir sous-lot 1.5.3)
-- Si aucune version ne survit aux filtres → status `PolicyInsufficientCandidates` (nouveau variant) avec message clair, pas de panic
+**Tier 2 (opt-in, auth requise) :**
+- **Socket.dev API** — `https://api.socket.dev/v0/npm/{name}/{version}` (npm surtout, PyPI partiel). Score + issues (malware, obfuscation, install scripts, typosquat, …). Free tier suffisant. Token via env `PACKGUARD_SOCKET_TOKEN`
 
-#### 1.5.3 — Tests + fixtures riches
-- Fixtures JSON avec historiques réels (react, django, @babel/core) stockées en `tests/fixtures/registries/`
-- Snapshot tests (`cargo-insta`) pour le resolver sur chaque combinaison policy × historique
-- Cas couverts :
-  - offset exact (`-1` avec majors 17/18/19 présents → 18.x.y le plus haut)
-  - offset insuffisant (majors manquants → `PolicyInsufficientCandidates`)
-  - `min_age_days: 7` filtre les versions trop récentes
-  - `stability: stable` exclut `19.0.0-rc.1`, `3.0.0a1`
-  - Interaction avec `overrides` (pin qui écrase offset, group qui écrase defaults)
-- Test d'intégration : re-scanner Nalo/monorepo et vérifier que les recos sont cohérentes
-- **Bonus si ça ne déborde pas** : câbler `block.deprecated` et `block.yanked` (trivial maintenant qu'on a les colonnes). `block.cve_severity` et `block.malware` restent Phase 2.
+**Tier 3 (heuristique locale, pas d'API externe) :**
+- **Typosquat via Levenshtein** sur listes top-N des écosystèmes :
+  - npm top 5000 : récupéré depuis `https://raw.githubusercontent.com/npm/registry/main/popular-packages.json` (ou equivalent communautaire) une fois lors du `sync`
+  - PyPI top 15000 : `https://hugovk.github.io/top-pypi-packages/top-pypi-packages.json`
+  - Cachées dans `~/.packguard/cache/reference/{eco}-top-packages.json`
+- Distance d'édition ≤ 2 + check de swaps de caractères + prefix/suffix additions
+
+**Tier 4 (bonus si ça ne déborde pas) :**
+- **Phylum** — pattern identique à Socket (API + token). Second opinion / redondance. Skip silencieux si non configuré
+
+### Sous-lots
+
+#### 2.5.1 — Harvest MAL entries déjà présentes
+- `packguard-intel` gagne un module `malware::harvest_existing` qui parcourt les entries OSV + GHSA déjà en cache
+- Filtrage : OSV ID commençant par `MAL-`, ou `database_specific.type == "malicious-package"`, ou GHSA `database_specific.severity == "malware"`
+- Schéma : réutiliser la table `malware_reports(id, pkg_id, version, source, reported_at, evidence)` du §8
+- Dedup par `(source, id, pkg_id, version)`, `evidence` = JSON brut de l'entry
+
+#### 2.5.2 — Typosquat heuristique local
+- Télécharger les listes top-N lors du `sync` (une fois par semaine, TTL 7j configurable)
+- Algorithme de scoring typosquat :
+  1. Pour un package `X` **pas** dans le top-N : trouver tout `Y` dans top-N tel que `levenshtein(X, Y) ≤ 2` (ignorer `X == Y`)
+  2. Si match → calculer confiance : `1.0` pour swap 1 caractère, `0.7` pour insertion/délétion, `0.5` pour préfixes (`node-` / `py-` / `lib-`) ou suffixes (`-js` / `-py`)
+  3. Filtres anti-faux-positifs : exclure scoped (`@org/pkg` pas typosquat de `pkg`) ; exclure si `X` est dans une liste blanche maintenue par la communauté (ex : packages officiels avec noms similaires) ; exclure les noms < 4 caractères
+- Résultat stocké en `malware_reports` avec `source = "typosquat-heuristic"` + `evidence.{score, resembles, distance}`
+
+#### 2.5.3 — Socket.dev opt-in
+- Si `PACKGUARD_SOCKET_TOKEN` présent dans l'env OU `.packguard.yml` contient `intel.socket.enabled: true` → activation
+- Fetch pour chaque package watched : score package + issues
+- Rate limit + backoff, concurrence bornée (même pattern que OSV API fallback)
+- Résultats stockés dans `malware_reports` avec `source = "socket.dev"` + `evidence = response JSON`
+- Sans token → skip silencieux, pas d'erreur
+- Documenté dans README : comment obtenir un token free tier
+
+#### 2.5.4 — Policy integration + nouveau variant
+- Le YAML policy accepte désormais `block.malware: true|false` (déjà parsé, à évaluer) et **nouveau** `block.typosquat: strict|warn|off` (par défaut `warn` — non-bloquant, juste signal)
+- Nouveau variant `Compliance::MalwareViolation(Vec<MalwareHit>)` — bloquante (comptée dans violations, déclenche `--fail-on-violation`)
+- `Compliance::TyposquatWarning(Vec<TyposquatHit>)` — **non** bloquante, affichée comme warning avec couleur distincte
+- Pour `block.typosquat: strict` → `TyposquatHit` remonte en `MalwareViolation` bloquante
+- Ordre d'évaluation : `block.deprecated`/`yanked` (Phase 1.5) → `block.cve_severity` (Phase 2) → `block.malware` (Phase 2.5) → `block.typosquat` (Phase 2.5)
+- Le resolver/remediation iterates de la même façon pour skipper les versions malware (identique au skip CVE Phase 2)
+
+#### 2.5.5 — CLI enrichment
+- **`packguard audit`** gagne des sections :
+  - Actuelle : `CVE/GHSA` (Phase 2)
+  - Nouvelle : `Malware` avec colonnes `package`, `installed`, `source` (OSV-MAL / GHSA / Socket), `evidence summary`
+  - Nouvelle : `Typosquat suspects` avec colonnes `package`, `resembles`, `score`
+  - Nouveau flag `--focus cve|malware|typosquat|all` (défaut `all`)
+  - Nouveau flag `--fail-on-malware` → exit 1 si ≥ 1 malware détecté
+- **`packguard report`** : la colonne `CVE` devient `Risk` (plus générale) :
+  - Format : `2🔴 · 1🟠 · 1🏴‍☠️` (CVE critical + CVE high + malware)
+  - Pied résumé gagne `malware: { confirmed: N, suspected_typosquat: M }`
+  - Icône 🏴‍☠️ = malware confirmé, ⚠️ = typosquat suspect
+
+#### 2.5.6 — Bonus : Phylum (si bandwidth)
+- Pattern identique à Socket : `PACKGUARD_PHYLUM_TOKEN`, `intel.phylum.enabled: true`
+- Source `phylum.io` dans `malware_reports`
+- Si les deux Socket et Phylum sont actifs → dedup au match-time (même union-find pattern que OSV×GHSA en Phase 2)
+- Autorisé seulement si Phases 2.5.1 → 2.5.5 sont livrées ET tests à jour
 
 ### Critères de sortie
-- [ ] `scan` peuple `package_versions` (npm + pypi) : une ligne par version connue par le registre, avec `published_at`, `deprecated`, `yanked`
-- [ ] Resolver supprime le fallback "major-distance" ; calcul d'offset strict ; `min_age_days` et `stability` actifs
-- [ ] Variant d'état `PolicyInsufficientCandidates` remonté proprement dans `report`
-- [ ] Snapshot tests sur 5+ fixtures d'historiques
-- [ ] Démo `report` sur Nalo/monorepo montre un changement de reco vs Phase 1 (attendu : recommandations plus précises, potentiellement des warnings devenus patches réels)
-- [ ] Tous les tests Phase 1 restent verts ; ajout de 15+ nouveaux tests
-- [ ] clippy & fmt clean
 
-### Hors scope Phase 1.5
-- OSV / CVE / GH Advisory → Phase 2
-- `block.cve_severity`, `block.malware` → Phase 2
-- Parsing lockfiles manquants (pnpm nested, yarn.lock) → à la demande
-- `PACKGUARD_LIVE_TESTS=1` automation → Phase 2
+- [ ] `packguard sync` récupère : MAL entries OSV/GHSA (harvest) + top-N lists (npm + pypi) + Socket scores (si token)
+- [ ] Table `malware_reports` peuplée avec `source` distinguant origine (`osv-mal`, `ghsa-malware`, `typosquat-heuristic`, `socket.dev`)
+- [ ] Typosquat heuristique testé : 10+ cas positifs connus (`colors` → `collors`, `lodash` → `lodahs`, `requests` → `request`, `discord.js` → `discord-js`, …) et 10+ cas négatifs (packages légitimes avec noms similaires)
+- [ ] `block.malware` évalué → `MalwareViolation` bloquante
+- [ ] `block.typosquat` évalué → `TyposquatWarning` par défaut, `MalwareViolation` si `strict`
+- [ ] Remediation : resolver saute les versions malware comme pour CVE
+- [ ] `audit --focus malware` / `--focus typosquat` / `--fail-on-malware`
+- [ ] `report` colonne unifiée `Risk` (CVE + malware + typosquat), résumé enrichi
+- [ ] Socket opt-in : token via env ou config, skip silencieux sans, README documente setup
+- [ ] Démo Nalo/monorepo : chiffres avant/après pour malware + typosquat (attendu : 0 malware confirmé, N suspects typosquat à valider manuellement)
+- [ ] 25+ nouveaux tests, clippy `-D warnings` clean, fmt OK
+- [ ] `PACKGUARD_LIVE_TESTS=1` : ajout tests live Socket.dev si token configuré
+
+### Hors scope Phase 2.5
+- **Scraping blogs** (BleepingComputer, Socket blog, Phylum research) → jamais en tant que source primaire. Si besoin de signal ad-hoc → alertes Phase 6+
+- **Auto-remediation** qui change le pin vers une version safe → Phase 7 (`apply --dry-run`)
+- **Dashboard visuel** des malwares → Phase 4
+- **Chaînes contaminées transitives** via malware → Phase 5 (graphe)
+- **OpenSSF Scorecard** intégration → Phase 6 (signal complémentaire, pas malware per se)
+- **Phylum obligatoire** — reste bonus opt-in identique à Socket
+
+### Nouvelles dépendances prévisibles
+- `strsim` (crate Rust, petit, pure Rust) pour Levenshtein + swaps
+- Pas de nouvelle crate HTTP ni de libgit2
 
 ---
 
@@ -581,13 +630,12 @@ Cette mini-phase verrouille la promesse avant que OSV s'en serve (Phase 2 indexe
    - yarn.lock (classic + berry) : **non parsé** — seul `package.json` est utilisé en fallback.
    - À traiter quand un repo cible les exigera (Nalo front est pnpm root, ça passe).
 
-3. **Évaluation `block.*`** *(dépend de Phase 2)*
-   - `block.cve_severity`, `block.malware`, `block.deprecated`, `block.yanked` : **parsés et stockés, non évalués**.
-   - Naturellement adressé en Phase 2 quand OSV/GH Advisory entrent + extraction `deprecated`/`yanked` depuis les payloads npm/PyPI.
+3. **Évaluation `block.*`** — partiellement résolu :
+   - ✅ `block.deprecated` / `block.yanked` câblés Phase 1.5
+   - ✅ `block.cve_severity` câblé Phase 2 (commit `42f11a2`, `VulnerabilityViolation`)
+   - ⏳ `block.malware` → Phase 2.5 (Socket.dev / Phylum / heuristiques typosquat)
 
-4. **Tests live gated** *(qualité process)*
-   - `PACKGUARD_LIVE_TESTS=1` prévu, non implémenté Phase 1. Validations live = manuelles pour l'instant (documentées dans les commits).
-   - À automatiser en Phase 2 avec fixtures réseau + dumps OSV.
+4. ~~**Tests live gated**~~ **✅ résolu Phase 2** (commit `477200d`). `PACKGUARD_LIVE_TESTS=1` opt-in pour 2 tests live contre l'API OSV.
 
 5. **Choix dépendance noté** *(informatif)*
    - `refinery 0.9` retenu (et non 0.8) car 0.8 pinne `rusqlite ≤ 0.26`, incompatible avec la version courante. Aucun impact fonctionnel.
