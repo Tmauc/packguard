@@ -83,9 +83,20 @@ fn build_matcher(pattern: &str) -> Option<GlobMatcher> {
     Glob::new(pattern).ok().map(|g| g.compile_matcher())
 }
 
-/// Filter + pick the highest version that complies with `resolved`. Returns
-/// the raw version string (untouched from `releases`) or `None` if nothing
-/// qualifies.
+/// Filter + pick the highest version that complies with `resolved`.
+///
+/// Strict Phase 1.5 semantics: `offset: -N` means the recommendation sits on
+/// the major that is *exactly* `latest_major - |N|`. No fallback window.
+/// Filter order (each pass can empty the pool → `None`):
+///
+/// 1. `stability: stable` drops prereleases.
+/// 2. `min_age_days` drops versions published less than N days ago. Versions
+///    without a publish date are kept (we don't have data to exclude them).
+/// 3. Offset caps the pool to the exact target major, derived from the
+///    highest surviving major post steps 1-2.
+///
+/// `pin` short-circuits everything: if the pin matches an entry in
+/// `releases`, that entry wins — the filters above do not apply.
 pub fn compute_recommended_version(
     resolved: &ResolvedPolicy,
     releases: &[ReleaseInfo],
@@ -99,62 +110,65 @@ pub fn compute_recommended_version(
             .map(|r| r.version.clone());
     }
 
-    let mut parsed: Vec<(&ReleaseInfo, VersionMeta)> = releases
+    let mut pool: Vec<(&ReleaseInfo, VersionMeta)> = releases
         .iter()
         .filter_map(|r| dialect.meta(&r.version).map(|m| (r, m)))
         .collect();
-    if parsed.is_empty() {
+    if pool.is_empty() {
         return None;
     }
 
-    // Max major among all parseable releases → reference for `offset`.
-    let latest_major = parsed
-        .iter()
-        .filter(|(_, m)| !m.is_prerelease || resolved.stability.allows_prerelease())
-        .map(|(_, m)| m.major)
-        .max()
-        .unwrap_or(0);
-    let max_allowed_major = latest_major.saturating_sub(resolved.offset as u64);
+    // 1. Stability.
+    if !resolved.stability.allows_prerelease() {
+        pool.retain(|(_, m)| !m.is_prerelease);
+    }
+    if pool.is_empty() {
+        return None;
+    }
 
-    parsed.retain(|(r, meta)| {
-        // Stability.
-        if meta.is_prerelease && !resolved.stability.allows_prerelease() {
-            return false;
-        }
-        // Offset cap.
-        if meta.major > max_allowed_major {
-            return false;
-        }
-        // Min age.
-        if resolved.min_age_days > 0 {
-            if let Some(pub_ts) = r
+    // 2. Minimum age.
+    if resolved.min_age_days > 0 {
+        pool.retain(|(r, _)| {
+            match r
                 .published_at
                 .as_deref()
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             {
-                let age = now.signed_duration_since(pub_ts.to_utc());
-                if age.num_days() < resolved.min_age_days as i64 {
-                    return false;
+                Some(ts) => {
+                    let age = now.signed_duration_since(ts.to_utc());
+                    age.num_days() >= resolved.min_age_days as i64
                 }
+                // No publish date → cannot prove it's too fresh, keep it.
+                None => true,
             }
-        }
-        true
-    });
+        });
+    }
+    if pool.is_empty() {
+        return None;
+    }
 
-    // Sort descending by dialect-aware comparison, picking the first that parses.
-    parsed.sort_by(|a, b| {
+    // 3. Offset — strict exact-major match.
+    let Some(latest_major) = pool.iter().map(|(_, m)| m.major).max() else {
+        return None;
+    };
+    let target_major = latest_major.saturating_sub(resolved.offset as u64);
+    pool.retain(|(_, m)| m.major == target_major);
+    if pool.is_empty() {
+        return None;
+    }
+
+    // Pick the max within the target major.
+    pool.sort_by(|a, b| {
         dialect
             .compare(&b.0.version, &a.0.version)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    parsed.first().map(|(r, _)| r.version.clone())
+    pool.first().map(|(r, _)| r.version.clone())
 }
 
-/// Reduce (installed, recommended) to a single compliance verdict. When the
-/// caller has full version history (`releases` covers many versions), the
-/// check runs against the recommended version. When only `latest` is known
-/// (Phase 1 store state), the evaluator falls back to a major-distance rule
-/// so conservative defaults still produce actionable signal.
+/// Reduce (installed, recommended) to a single compliance verdict. Requires
+/// a non-empty version history to produce anything other than
+/// `InsufficientCandidates`; the Phase-1 "major-distance fallback" is gone.
 pub fn evaluate_dependency(
     name: &str,
     installed: Option<&str>,
@@ -180,43 +194,20 @@ pub fn evaluate_dependency(
         return Compliance::Warning(format!("{}: no installed version resolved", name));
     };
 
-    if let Some(recommended) = compute_recommended_version(resolved, releases, dialect, now) {
-        return compare_installed_to_recommended(name, installed, &recommended, dialect);
-    }
-
-    // Fallback: we couldn't compute a recommendation (either no history or
-    // the offset window filtered everything out). Use the highest known
-    // version to run a major-distance check against `installed`.
-    let highest = releases
-        .iter()
-        .filter_map(|r| dialect.meta(&r.version).map(|m| (r, m)))
-        .max_by(|(_, a), (_, b)| a.major.cmp(&b.major));
-    let Some((_, latest_meta)) = highest else {
-        return Compliance::Warning(format!("{}: no latest version available", name));
-    };
-    let Some(installed_meta) = dialect.meta(installed) else {
-        return Compliance::Warning(format!(
-            "{}: unparsable installed version {}",
-            name, installed
-        ));
-    };
-    let max_allowed_major = latest_meta.major.saturating_sub(resolved.offset as u64);
-    if installed_meta.major > max_allowed_major {
-        return Compliance::Warning(format!(
-            "{}: installed {} is ahead of policy window (max major {})",
-            name, installed, max_allowed_major
-        ));
-    }
-    if installed_meta.major < max_allowed_major {
-        return Compliance::Violation(format!(
-            "{}: installed {} is {} major(s) behind policy window (max major {})",
+    match compute_recommended_version(resolved, releases, dialect, now) {
+        Some(recommended) => {
+            compare_installed_to_recommended(name, installed, &recommended, dialect)
+        }
+        None if releases.is_empty() => Compliance::InsufficientCandidates(format!(
+            "{}: no version history on record (run `packguard scan` first)",
+            name
+        )),
+        None => Compliance::InsufficientCandidates(format!(
+            "{}: policy filters (stability / min_age_days / offset) dropped all {} known versions",
             name,
-            installed,
-            max_allowed_major - installed_meta.major,
-            max_allowed_major
-        ));
+            releases.len()
+        )),
     }
-    Compliance::Compliant
 }
 
 fn compare_installed_to_recommended(

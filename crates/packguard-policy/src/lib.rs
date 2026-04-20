@@ -274,12 +274,11 @@ overrides:
     }
 
     #[test]
-    fn fallback_uses_major_distance_when_only_latest_is_known() {
-        // offset=-1 (one major behind) with *only* the latest release visible.
-        // compute_recommended_version correctly returns None (offset window
-        // excludes the latest), so evaluate falls back to major-distance.
+    fn insufficient_candidates_when_history_too_narrow_for_offset() {
+        // offset=-1 asks for the major *below* the latest one. If the store
+        // only holds the latest version, no candidate survives → the new
+        // status variant tells the user to rescan for history.
         let p = parse_policy("defaults: { offset: -1 }").unwrap();
-        // installed is in the allowed major-1 window → Compliant.
         let c = evaluate_dependency(
             "react",
             Some("18.3.0"),
@@ -288,18 +287,29 @@ overrides:
             Dialect::Semver,
             now(),
         );
-        assert!(matches!(c, Compliance::Compliant), "got {c:?}");
+        assert!(
+            matches!(c, Compliance::InsufficientCandidates(_)),
+            "got {c:?}"
+        );
+    }
 
-        // installed two majors behind → Violation.
+    #[test]
+    fn insufficient_candidates_on_empty_history() {
+        let p = parse_policy("defaults: { offset: 0 }").unwrap();
         let c = evaluate_dependency(
             "react",
-            Some("17.0.0"),
+            Some("18.3.0"),
             &p.resolve("react"),
-            &rels(&[("19.2.5", "2026-04-08T00:00:00Z")]),
+            &[],
             Dialect::Semver,
             now(),
         );
-        assert!(matches!(c, Compliance::Violation(_)), "got {c:?}");
+        match c {
+            Compliance::InsufficientCandidates(msg) => {
+                assert!(msg.contains("no version history"), "msg: {msg}");
+            }
+            other => panic!("expected InsufficientCandidates, got {other:?}"),
+        }
     }
 
     #[test]

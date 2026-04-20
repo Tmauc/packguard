@@ -359,6 +359,7 @@ struct ReportSummary {
     compliant: usize,
     warnings: usize,
     violations: usize,
+    insufficient: usize,
 }
 
 fn report(
@@ -383,15 +384,29 @@ fn report(
     let mut rows: Vec<ReportRow> = dependencies
         .into_iter()
         .map(|dep| {
-            let releases: Vec<ReleaseInfo> = match dep.latest.clone() {
-                Some(v) => vec![ReleaseInfo {
-                    version: v,
-                    published_at: dep.latest_published_at.clone(),
-                    deprecated: false,
-                    yanked: false,
-                }],
-                None => Vec::new(),
-            };
+            // Full history from the store. Falls back to the single latest
+            // row when history is absent (older stores / caches).
+            let releases: Vec<ReleaseInfo> =
+                match store.load_package_versions(&dep.ecosystem, &dep.name) {
+                    Ok(history) if !history.is_empty() => history
+                        .into_iter()
+                        .map(|v| ReleaseInfo {
+                            version: v.version,
+                            published_at: v.published_at,
+                            deprecated: v.deprecated,
+                            yanked: v.yanked,
+                        })
+                        .collect(),
+                    _ => match dep.latest.clone() {
+                        Some(v) => vec![ReleaseInfo {
+                            version: v,
+                            published_at: dep.latest_published_at.clone(),
+                            deprecated: false,
+                            yanked: false,
+                        }],
+                        None => Vec::new(),
+                    },
+                };
             let dialect = Dialect::for_ecosystem(&dep.ecosystem);
             let resolved = policy.resolve(&dep.name);
             let compliance = evaluate_dependency(
@@ -455,12 +470,14 @@ fn summarize(rows: &[ReportRow]) -> ReportSummary {
         compliant: 0,
         warnings: 0,
         violations: 0,
+        insufficient: 0,
     };
     for r in rows {
         match r.compliance {
             Compliance::Compliant => s.compliant += 1,
             Compliance::Warning(_) => s.warnings += 1,
             Compliance::Violation(_) => s.violations += 1,
+            Compliance::InsufficientCandidates(_) => s.insufficient += 1,
         }
     }
     s
@@ -532,13 +549,13 @@ fn render_table(rows: &[ReportRow], summary: &ReportSummary, path: &Path) {
     }
 
     println!(
-        "\n{} {}  {}  {}",
+        "\n{} {}  {}  {}  {}",
         "Summary:".bold(),
         format!("✅ {} compliant", summary.compliant).green(),
         format!("⚠️  {} warnings", summary.warnings).yellow(),
         format!("❌ {} violations", summary.violations).red(),
+        format!("❓ {} insufficient", summary.insufficient).magenta(),
     );
-    let _ = summary.violations; // silence clippy if optimizations prune.
     let _ = path;
 }
 
@@ -547,6 +564,7 @@ fn compliance_badge(c: &Compliance) -> (&'static str, Color) {
         Compliance::Compliant => ("compliant", Color::Green),
         Compliance::Warning(_) => ("warning", Color::Yellow),
         Compliance::Violation(_) => ("violation", Color::Red),
+        Compliance::InsufficientCandidates(_) => ("insufficient", Color::Magenta),
     }
 }
 
@@ -557,12 +575,14 @@ fn render_json(rows: &[ReportRow], summary: &ReportSummary) -> Result<()> {
             "compliant": summary.compliant,
             "warnings": summary.warnings,
             "violations": summary.violations,
+            "insufficient": summary.insufficient,
         },
         "rows": rows.iter().map(|r| {
             let (status, message) = match &r.compliance {
                 Compliance::Compliant => ("compliant", None),
                 Compliance::Warning(m) => ("warning", Some(m.as_str())),
                 Compliance::Violation(m) => ("violation", Some(m.as_str())),
+                Compliance::InsufficientCandidates(m) => ("insufficient", Some(m.as_str())),
             };
             json!({
                 "ecosystem": r.ecosystem,

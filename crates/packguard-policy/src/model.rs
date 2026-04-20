@@ -127,6 +127,11 @@ pub enum Compliance {
     Compliant,
     Warning(String),
     Violation(String),
+    /// The resolver couldn't pick a recommended version because filters
+    /// (stability / min_age_days / offset) dropped every candidate, or the
+    /// store held no history. Neither compliant nor blocking — surfaced so
+    /// users know the policy can't be evaluated against this dep.
+    InsufficientCandidates(String),
 }
 
 /// Version info fed to the policy engine. Phase 1 uses `published_at`; the
