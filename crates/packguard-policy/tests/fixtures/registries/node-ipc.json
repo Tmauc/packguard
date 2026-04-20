@@ -1,0 +1,12 @@
+{
+  "name": "node-ipc",
+  "dialect": "Semver",
+  "latest": "11.1.0",
+  "versions": [
+    { "version": "10.1.0",  "published_at": "2022-02-05T12:00:00Z" },
+    { "version": "10.1.1",  "published_at": "2022-03-08T12:00:00Z", "yanked": true, "deprecated": true },
+    { "version": "10.1.2",  "published_at": "2022-03-18T12:00:00Z", "yanked": true, "deprecated": true },
+    { "version": "11.0.0",  "published_at": "2022-04-10T12:00:00Z" },
+    { "version": "11.1.0",  "published_at": "2023-05-22T12:00:00Z" }
+  ]
+}

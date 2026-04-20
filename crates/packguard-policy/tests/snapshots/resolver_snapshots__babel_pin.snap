@@ -1,0 +1,7 @@
+---
+source: crates/packguard-policy/tests/resolver_snapshots.rs
+assertion_line: 191
+expression: "(rec, verdict(&c))"
+---
+- 7.24.0
+- "violation: @babel/core pinned to 7.24.0 but 7.20.0 is installed"

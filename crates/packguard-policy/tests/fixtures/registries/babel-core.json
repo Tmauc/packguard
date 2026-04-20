@@ -1,0 +1,15 @@
+{
+  "name": "@babel/core",
+  "dialect": "Semver",
+  "latest": "7.29.0",
+  "versions": [
+    { "version": "6.26.3", "published_at": "2018-08-24T12:00:00Z", "deprecated": true },
+    { "version": "7.0.0",  "published_at": "2018-08-27T17:00:00Z" },
+    { "version": "7.12.0", "published_at": "2020-10-15T20:00:00Z" },
+    { "version": "7.20.0", "published_at": "2022-11-02T15:30:00Z" },
+    { "version": "7.24.0", "published_at": "2024-02-28T17:14:00Z" },
+    { "version": "7.26.0", "published_at": "2025-04-18T12:00:00Z" },
+    { "version": "7.28.0", "published_at": "2025-11-10T09:45:00Z" },
+    { "version": "7.29.0", "published_at": "2026-01-31T17:39:22Z" }
+  ]
+}

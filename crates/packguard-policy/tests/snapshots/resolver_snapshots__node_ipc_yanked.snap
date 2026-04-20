@@ -1,0 +1,6 @@
+---
+source: crates/packguard-policy/tests/resolver_snapshots.rs
+assertion_line: 234
+expression: verdict(&c)
+---
+"violation: node-ipc: installed 10.1.2 is yanked on the registry and policy blocks yanked"

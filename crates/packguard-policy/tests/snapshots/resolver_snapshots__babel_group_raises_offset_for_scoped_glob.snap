@@ -1,0 +1,6 @@
+---
+source: crates/packguard-policy/tests/resolver_snapshots.rs
+assertion_line: 209
+expression: rec
+---
+6.26.3

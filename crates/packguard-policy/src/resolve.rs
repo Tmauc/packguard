@@ -148,9 +148,7 @@ pub fn compute_recommended_version(
     }
 
     // 3. Offset — strict exact-major match.
-    let Some(latest_major) = pool.iter().map(|(_, m)| m.major).max() else {
-        return None;
-    };
+    let latest_major = pool.iter().map(|(_, m)| m.major).max()?;
     let target_major = latest_major.saturating_sub(resolved.offset as u64);
     pool.retain(|(_, m)| m.major == target_major);
     if pool.is_empty() {
@@ -193,6 +191,24 @@ pub fn evaluate_dependency(
     let Some(installed) = installed else {
         return Compliance::Warning(format!("{}: no installed version resolved", name));
     };
+
+    // Bonus: evaluate block.deprecated / block.yanked against the installed
+    // version, using the flags persisted in the store. `block.cve_severity`
+    // and `block.malware` still wait for Phase 2 vuln intel.
+    if let Some(release_entry) = releases.iter().find(|r| r.version == installed) {
+        if release_entry.yanked && resolved.block.yanked {
+            return Compliance::Violation(format!(
+                "{}: installed {} is yanked on the registry and policy blocks yanked",
+                name, installed
+            ));
+        }
+        if release_entry.deprecated && resolved.block.deprecated {
+            return Compliance::Violation(format!(
+                "{}: installed {} is deprecated on the registry and policy blocks deprecated",
+                name, installed
+            ));
+        }
+    }
 
     match compute_recommended_version(resolved, releases, dialect, now) {
         Some(recommended) => {

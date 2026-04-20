@@ -1,0 +1,7 @@
+---
+source: crates/packguard-policy/tests/resolver_snapshots.rs
+assertion_line: 140
+expression: pair
+---
+- 19.2.5
+- 19.3.0-beta.1
