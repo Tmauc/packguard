@@ -1,0 +1,22 @@
+[package]
+name = "packguard-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PackGuard CLI binary."
+
+[[bin]]
+name = "packguard"
+path = "src/main.rs"
+
+[dependencies]
+packguard-core = { path = "../packguard-core" }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+comfy-table = { workspace = true }
+owo-colors = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
