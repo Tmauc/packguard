@@ -1,3 +1,5 @@
-//! Registry clients. Phase 0: npm only — lands in the next commit.
+//! Registry clients. Phase 0: npm only.
 
 pub mod npm;
+
+pub use npm::{NpmClient, PackageInfo};
