@@ -77,6 +77,18 @@ pub struct StoredMalware {
     pub fetched_at: String,
 }
 
+/// One `jobs` row — backs the dashboard's async Scan / Sync buttons.
+#[derive(Debug, Clone)]
+pub struct StoredJob {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub result_json: Option<String>,
+    pub error: Option<String>,
+}
+
 /// State of a remote intel source — consulted before the next sync pass to
 /// skip untouched dumps (ETag / Last-Modified / git commit).
 #[derive(Debug, Clone, Default)]
@@ -437,6 +449,24 @@ impl Store {
         Ok(out)
     }
 
+    /// Distinct repo root paths the store has scanned at least once. Used
+    /// by the dashboard's per-package detail view to find which projects
+    /// pin a given dependency.
+    pub fn distinct_repo_paths(&self) -> Result<Vec<PathBuf>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT path FROM repos")
+            .context("preparing distinct_repo_paths")?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .context("querying distinct_repo_paths")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(PathBuf::from(r?));
+        }
+        Ok(out)
+    }
+
     /// Every `(ecosystem, name)` pair currently tracked in `packages`. Used
     /// by `packguard sync` to filter OSV/GHSA advisories to what we actually
     /// care about — the full dumps contain hundreds of thousands of entries
@@ -558,6 +588,75 @@ impl Store {
         Ok(out)
     }
 
+    /// Insert a fresh job row in `pending` state. Returns the row as
+    /// inserted (with a server-resolved `started_at`).
+    pub fn create_job(&mut self, id: &str, kind: &str) -> Result<StoredJob> {
+        let now = Utc::now().to_rfc3339();
+        self.conn
+            .execute(
+                "INSERT INTO jobs (id, kind, status, started_at) VALUES (?1, ?2, 'pending', ?3)",
+                params![id, kind, now],
+            )
+            .context("inserting job row")?;
+        Ok(StoredJob {
+            id: id.into(),
+            kind: kind.into(),
+            status: "pending".into(),
+            started_at: now,
+            finished_at: None,
+            result_json: None,
+            error: None,
+        })
+    }
+
+    pub fn update_job_status(
+        &mut self,
+        id: &str,
+        status: &str,
+        result_json: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let finished_at = matches!(status, "succeeded" | "failed").then(|| Utc::now().to_rfc3339());
+        self.conn
+            .execute(
+                "UPDATE jobs SET status = ?1, finished_at = ?2, result_json = ?3, error = ?4 WHERE id = ?5",
+                params![status, finished_at, result_json, error, id],
+            )
+            .context("updating job row")?;
+        Ok(())
+    }
+
+    pub fn load_job(&self, id: &str) -> Result<Option<StoredJob>> {
+        self.conn
+            .query_row(
+                "SELECT id, kind, status, started_at, finished_at, result_json, error \
+                 FROM jobs WHERE id = ?1",
+                params![id],
+                read_stored_job,
+            )
+            .optional()
+            .context("loading job row")
+    }
+
+    /// All jobs ordered most-recent-first. Useful for an admin / audit view.
+    pub fn load_recent_jobs(&self, limit: i64) -> Result<Vec<StoredJob>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, kind, status, started_at, finished_at, result_json, error \
+                 FROM jobs ORDER BY started_at DESC LIMIT ?1",
+            )
+            .context("preparing load_recent_jobs")?;
+        let rows = stmt
+            .query_map(params![limit], read_stored_job)
+            .context("querying jobs")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     pub fn count_malware_reports(&self) -> Result<i64> {
         self.conn
             .query_row("SELECT COUNT(*) FROM malware_reports", [], |row| row.get(0))
@@ -638,6 +737,18 @@ fn read_stored_vulnerability(row: &rusqlite::Row<'_>) -> rusqlite::Result<Stored
         published_at: row.get(11)?,
         modified_at: row.get(12)?,
         fetched_at: row.get(13)?,
+    })
+}
+
+fn read_stored_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredJob> {
+    Ok(StoredJob {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        status: row.get(2)?,
+        started_at: row.get(3)?,
+        finished_at: row.get(4)?,
+        result_json: row.get(5)?,
+        error: row.get(6)?,
     })
 }
 
@@ -1072,6 +1183,33 @@ mod tests {
             .persist_malware_reports(std::slice::from_ref(&report))
             .unwrap();
         assert_eq!(store.count_malware_reports().unwrap(), 1);
+    }
+
+    #[test]
+    fn jobs_lifecycle_roundtrip() {
+        let mut store = Store::open_in_memory().unwrap();
+        let job = store.create_job("job-1", "scan").unwrap();
+        assert_eq!(job.status, "pending");
+        store
+            .update_job_status("job-1", "running", None, None)
+            .unwrap();
+        let mid = store.load_job("job-1").unwrap().unwrap();
+        assert_eq!(mid.status, "running");
+        assert!(mid.finished_at.is_none());
+
+        store
+            .update_job_status("job-1", "succeeded", Some(r#"{"persisted":3}"#), None)
+            .unwrap();
+        let done = store.load_job("job-1").unwrap().unwrap();
+        assert_eq!(done.status, "succeeded");
+        assert!(done.finished_at.is_some());
+        assert_eq!(done.result_json.as_deref(), Some(r#"{"persisted":3}"#));
+
+        // Recent ordering puts the most recent job first.
+        store.create_job("job-2", "sync").unwrap();
+        let recent = store.load_recent_jobs(10).unwrap();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].id, "job-2");
     }
 
     #[test]

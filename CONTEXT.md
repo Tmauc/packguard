@@ -276,9 +276,10 @@ Intégration CI : `packguard scan --fail-on-violation --format sarif`.
 | **1 — MVP CLI** | npm/pnpm/yarn + pip/poetry/uv, policy offset, SQLite, report CLI | ✅ done (2026-04-20, 9 commits, 71 tests, 4 crates) |
 | **1.5 — Historique versions** | Persister `package_versions` complet + resolver policy précis (offset exact, `min_age_days`, `stability`) | ✅ done (2026-04-20, 3 commits, 87 tests) |
 | **2 — Vuln intel online** | OSV + GH Advisory, cache, badges | ✅ done (2026-04-20, 6 commits, 126 tests, 5 crates, 8 CVE détectées sur Nalo) |
-| **2.5 — Malware & typosquat** | MAL entries OSV/GHSA + typosquat heuristique + Socket.dev opt-in + `block.malware` | 🎯 en cours |
+| **2.5 — Malware & typosquat** | MAL entries OSV/GHSA + typosquat heuristique + Socket.dev opt-in + `block.malware` | ✅ done (2026-04-20, 5 commits, 160 tests, 12 MAL records + 1 typosquat suspect sur Nalo) |
 | **3 — Sync offline (niveau 2)** | `sync` + `--offline`, dumps | |
-| **4 — Dashboard v1** | `ui` → localhost, Vite+React, table + détail + timeline | |
+| **4a — Dashboard foundations** | `packguard-server` + scaffold Vite/React/shadcn + Overview + Packages table + `ui` dev mode | 🎯 en cours |
+| **4b — Dashboard specialization** | Package detail + timeline visx + Policies editor dry-run + `build.rs` embed release | |
 | **5 — Graph + compat** | Cytoscape, peer deps, chaînes contaminées | |
 | **6 — Supply-chain+** | Socket/Phylum/Scorecard, typosquat, min_age | |
 | **7 — Apply & CI** | `apply --dry-run`, SARIF export | |
@@ -517,7 +518,80 @@ Décisions : dumps OSV prioritaires, API fallback opt-in (`--no-live-fallback`),
 
 ---
 
-## 14.7. Phase 2.5 — Malware & typosquat 🎯 en cours
+## 14.7. Phase 2.5 — Malware & typosquat ✅ done (2026-04-20)
+
+**Livré :** 5 commits, 160 tests verts (+34 nets), clippy & fmt clean, `packguard-intel` étendu sans nouveau crate. **12 vraies entries OSV-MAL harvestées + 1 typosquat suspect** (faux positif attendu : `eslint-plugin-import` vs `eslint-plugin-import-x`, fork légitime).
+
+**Commits :**
+- `3da2511` feat(intel,store): harvest MAL entries from OSV/GHSA dumps
+- `83f729e` feat(intel,cli): typosquat heuristic + top-N reference lists
+- `4a9a466` feat(intel,cli): Socket.dev opt-in scanner with token env activation
+- `febcd83` feat(policy,cli): `MalwareViolation` + `TyposquatWarning` + `audit --focus`
+- `807fee0` docs(readme): document Phase 2.5 surface + defer Phylum bonus
+
+**Architecture finale inchangée (5 crates) — `packguard-intel` étendu :**
+```
+crates/
+├── packguard-core     # + MalwareReport, MalwareKind (3 variants)
+├── packguard-policy   # + MalwareViolation + TyposquatWarning (Compliance variants)
+├── packguard-store    # + schema V3 malware_reports, natural key (source, rpkg_id, version)
+├── packguard-intel    # + malware::, typosquat::, socket:: modules
+└── packguard-cli      # audit --focus cve|malware|typosquat|all, --fail-on-malware, Risk column
+```
+
+**Démo Nalo/monorepo :**
+
+`packguard sync` (volumétrie) :
+```
+✓ osv-npm   — scanned 217703, persisted 191 vuln + 12 malware (watched)
+✓ osv-pypi  — scanned  19085, persisted 71 vuln + 1 malware (watched)
+✓ typosquat-pypi-top — refreshed (15000 entries cached)
+✓ typosquat — 1 suspect flagged
+📚 store holds 256 advisories + 13 malware reports
+```
+
+12 entries OSV-MAL harvestées ciblent des versions précises — `axios` 0.30.4/1.14.1, `react` 1.0.x, `eslint-plugin-prettier` 4.2.2/4.2.3, `posthog-js` 1.297.3, etc. **Aucune n'est la version installée par Nalo** → le matcher fait son travail : pas de faux positifs bloquants.
+
+`packguard audit --focus all front/vesta` : 3 CVE (eslint, lodash×2), **0 malware confirmé**, 1 typosquat suspect (`eslint-plugin-import`, distance 2 de `eslint-plugin-import-x`). Faux positif attendu — fork légitime, à ajouter à la WHITELIST si besoin de le faire taire.
+
+### Notes saillantes
+
+1. **Pas de nouveau crate** (respect de la consigne). `packguard-intel` étendu de 4 → 7 modules (`malware`, `typosquat::{mod,filters,lists}`, `socket`).
+
+2. **Schéma V3 `malware_reports`** reconstruit avec natural key `(source, rpkg_id, version)` + `kind` / `severity` / `evidence` JSON / `reported_at` / `fetched_at`. Phase 1 avait un stub vide → `DROP + rebuild` propre via refinery.
+
+3. **Routage MAL × Vuln au parse-time** : `osv::parse` et `ghsa::parse_cache` détectent `is_malware_advisory` dès le parsing et émettent `(Vec<Vulnerability>, Vec<MalwareReport>)`. Une advisory va dans une seule des deux buckets, jamais les deux.
+
+4. **Typosquat top-N** :
+   - PyPI : liste officielle `hugovk.github.io/top-pypi-packages` (15 000 noms), téléchargée
+   - npm : **baseline curée embarquée** `NPM_TOP` (~200 noms), car source communautaire instable. Override possible via `~/.packguard/cache/reference/npm-top-packages.json` (documenté README)
+
+5. **Filtres anti-faux-positifs typosquat** : length ≥ 4, pas de scope (`@org/*`), self-match exclu, `WHITELIST` curée (`request/requests`, `react/preact`, etc.). **21 tests** couvrent positifs + négatifs.
+
+6. **3 variants `MalwareKind` distincts** (sémantiques différentes) :
+   - `Malware` → bloquant par défaut
+   - `Typosquat` → warning par défaut (sauf `block.typosquat: strict`)
+   - `ScannerSignal` → informationnel (Socket alerts de low confidence)
+   Socket alerts mappent selon severity déclarée.
+
+7. **`MalwareViolation` bloquante** : comptée dans `violations`, déclenche `--fail-on-violation` ET `--fail-on-malware` (nouveau flag). Exit codes distincts pour discriminer en CI.
+
+8. **Phylum reporté explicitement** — non bloquant : l'API Phylum est **project-oriented** (analyse d'un manifest entier) et pas per-package comme Socket. Incompatible avec notre flow actuel. Socket sert de template quand on ajoutera des "project-scanners" en phase future.
+
+9. **`PACKGUARD_LIVE_TESTS` Socket non câblé** : rate limit rendrait la CI flakey. Pattern documenté dans le commit `4a9a466` pour Phase 3 future si besoin.
+
+10. **Tech-debt #3 partiellement soldée** : `block.malware` câblé (2.5.4). Reste `block.typosquat: strict` override per-package dans `.packguard.yml` → reportable à la demande.
+
+<details>
+<summary>Spec Phase 2.5 (pour historique)</summary>
+
+6 sous-lots : 2.5.1 harvest MAL OSV/GHSA déjà syncé (gratuit), 2.5.2 typosquat heuristique local (Levenshtein + swaps + filtres FP), 2.5.3 Socket.dev opt-in, 2.5.4 policy integration (`MalwareViolation` bloquante, `TyposquatWarning` non), 2.5.5 CLI (`audit --focus`, `Risk` column), 2.5.6 Phylum bonus.
+
+Décisions : 4 tiers de sources, pas de nouveau crate, Socket/Phylum opt-in strict, Phylum finalement reporté pour incompatibilité pattern.
+
+</details>
+
+---
 
 **Objectif :** compléter l'intelligence supply-chain de PackGuard avec la **détection de packages malveillants et typosquats**, en réutilisant au maximum l'infrastructure `packguard-intel` déjà en place. Évaluer `block.malware` dans le resolver. Exposer les résultats dans `audit` et `report` avec une distinction visuelle claire vis-à-vis des CVE.
 
@@ -619,6 +693,208 @@ Décisions : dumps OSV prioritaires, API fallback opt-in (`--no-live-fallback`),
 
 ---
 
+## 14.8. Phase 4 — Dashboard web
+
+**Split décidé en cours de cadrage :** Phase 4 découpée en **4a (Foundations)** et **4b (Specialization)** par l'agent (argumentaire retenu : 2 stacks complets + build pipeline custom + 35+ tests = risque de cut-corners si tout en une run ; sous-lots à coût très inégal ; mieux vaut livrer un noyau démontrable que tout en demi-fini).
+
+### Phase 4a — Foundations 🎯 en cours
+
+Inclut **sous-lots 4.1, 4.2, 4.3, 4.4, et 4.8 partiel** :
+- 4.1 — `packguard-server` crate (axum + REST API + job runner + V4 migration `jobs`) + tests d'intégration sur chaque endpoint
+- 4.2 — Frontend scaffold (`dashboard/` Vite + React 19 + TS + Tailwind + shadcn + **ts-rs roundtrip** + TanStack Query + react-router + layout sidebar/header)
+- 4.3 — Page Overview : cards + donuts recharts + boutons Scan/Sync avec feedback
+- 4.4 — Page Packages table : filtres + sort + pagination + click-through vers detail (detail page elle-même en 4b)
+- 4.8 partiel — CLI `packguard ui` en **dev mode** (Vite proxy). **`build.rs` embed différé à 4b**
+
+**Attendu 4a :** 5 commits, ~25 tests (~15 Rust API + ~10 front), démo screenshots Overview + Packages sur Nalo. Rapport flag explicitement ce qui reste à 4b.
+
+**Décision ts-rs :** génération + vérification **inline dans 4.1** (pas de commit séparé). Un test Rust asserte que les fichiers TS générés sont à jour via hash. CI run `cargo test` → check automatique.
+
+### Phase 4b — Specialization (run suivante)
+
+Inclut **sous-lots 4.5, 4.6, 4.7, et 4.8 fin** :
+- 4.5 — Page Package detail : onglets Versions / Vulnerabilities / Malware / Policy eval / Changelog
+- 4.6 — Timeline visx : 6 types de markers (gris/rouge/orange/magenta/violet + installed/recommended), virtualisation pour packages à > 500 versions, zoom/pan, tooltip
+- 4.7 — Policies editor : form + preview **dry-run** (endpoint qui évalue la policy sans la persister) + validation YAML + save
+- 4.8 fin — `build.rs` embed release + screenshots README + README majeur + docs install/usage
+
+**Attendu 4b :** ~7 commits, 25+ tests supplémentaires, démo complète avec 4 pages + GIF animé si possible.
+
+---
+
+### Spec détaillée (commune aux deux phases)
+
+**Objectif global :** exposer dans un dashboard web local l'intégralité du signal accumulé par la CLI sur les 4 phases précédentes. Mode `packguard ui` spawne un serveur HTTP sur `localhost`, ouvre le navigateur, et sert une SPA React qui consomme une API REST exposée par le binaire. Même binaire, même données (SQLite existant), pas de réimplémentation.
+
+**Objectif :** exposer dans un dashboard web local l'intégralité du signal accumulé par la CLI sur les 4 phases précédentes. Mode `packguard ui` spawne un serveur HTTP sur `localhost`, ouvre le navigateur, et sert une SPA React qui consomme une API REST exposée par le binaire. Même binaire, même données (SQLite existant), pas de réimplémentation.
+
+### Architecture cible
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  packguard (binaire Rust — 5 crates + 1 nouveau)             │
+│                                                               │
+│  packguard ui [--port N] [--no-open] [--host 127.0.0.1]      │
+│    └─ packguard-server (axum)                                 │
+│        ├─ GET /api/overview                                   │
+│        ├─ GET /api/packages  (filters, sort, pagination)      │
+│        ├─ GET /api/packages/:ecosystem/:name  (detail)        │
+│        ├─ GET /api/policies                                   │
+│        ├─ PUT /api/policies                                   │
+│        ├─ POST /api/scan   (async, returns job_id)            │
+│        ├─ POST /api/sync   (async, returns job_id)            │
+│        ├─ GET  /api/jobs/:id  (status polling)                │
+│        └─ GET /* → sert les assets Vite (rust-embed)          │
+│                                                               │
+│  dashboard/ (Vite + React + TS — repo racine, hors crates/)  │
+│    └─ build output → embarqué par rust-embed au release      │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Décisions d'architecture verrouillées :**
+- **Nouveau crate `packguard-server`** justifié : concerns séparés (routing, serialization, job runner) distincts du CLI et du core. Pattern identique à `packguard-intel` en Phase 2
+- **Frontend dans `dashboard/` à la racine** (pas dans `crates/`) — pnpm, Vite, TypeScript
+- **Types partagés Rust ↔ TS via `ts-rs`** — génère les types TS depuis les structs Rust annotées `#[derive(TS)]`. Pas de drift possible
+- **Build pipeline :** `build.rs` dans `packguard-server` invoque `pnpm build` si `dashboard/dist/` absent ou en mode release. Skip via `PACKGUARD_SKIP_FRONTEND=1` pour CI qui pré-build
+- **Dev flow :** Vite dev server sur `5173` qui proxy `/api/*` vers Rust sur `5174`. Hot reload front + `cargo watch` pour back. Documenté dans `dashboard/README.md`
+- **State management :** TanStack Query pour server state ; React state local pour UI. Pas de Zustand/Redux en v1
+- **Pas d'auth en v1** (binding `127.0.0.1` uniquement, reporté v2 pour `serve` mode)
+- **Pas de streaming SSE/WebSocket en v1** : polling via TanStack Query refetch pour les jobs scan/sync. SSE → Phase 4.5 si besoin réel
+
+### Sous-lots
+
+#### 4.1 — `packguard-server` crate + REST API
+- Nouveau crate avec axum, tower-http (CORS si besoin, trace layer), serde
+- Service layer qui **consomme** `packguard-store` / `packguard-core` / `packguard-policy` / `packguard-intel` — pas de logique métier dupliquée
+- Job runner async (tokio spawn) pour scan/sync avec stockage `jobs(id, kind, status, started_at, finished_at, result)` en SQLite (nouvelle table via migration V4)
+- Erreurs typées → réponses JSON cohérentes `{ "error": { "code": "...", "message": "...", "detail": ... } }`
+- Tests d'intégration sur chaque endpoint (test DB fixture)
+
+#### 4.2 — Frontend scaffold
+- `dashboard/` : Vite + React 19 + TypeScript + Tailwind + shadcn/ui
+- Installer shadcn components clés : `Button`, `Card`, `Table`, `Dialog`, `Tabs`, `Badge`, `Input`, `Select`, `Tooltip`, `Separator`, `Sonner` (toasts), `Form`
+- TanStack Query + fetcher typé basé sur les types `ts-rs`
+- Router : `react-router-dom` v7 (routes : `/`, `/packages`, `/packages/:ecosystem/:name`, `/policies`)
+- Palette couleurs alignée sur la CLI : rouge critical, orange major, jaune minor, vert compliant, magenta insufficient, violet malware. Tokens Tailwind custom
+- Layout de base : sidebar navigation + header avec actions Scan/Sync + toasts
+
+#### 4.3 — Page Overview
+- Header : bouton **Scan** (POST /api/scan), bouton **Sync** (POST /api/sync), badge indiquant dernier scan/sync
+- Cards :
+  - Health score (calculé : % compliant, avec évolution vs dernier scan)
+  - Total packages watched par écosystème
+  - Vulnerabilities breakdown (critical/high/medium/low)
+  - Malware breakdown (confirmé / suspect typosquat)
+  - Compliance breakdown (compliant / warning / violation / insufficient)
+- Graphique donut simple (recharts) pour chaque breakdown
+- Top 5 packages les plus à risque (somme pondérée CVE severity + malware flag)
+- Responsive : desktop-first, pas d'obligation mobile parfait en v1
+
+#### 4.4 — Page Packages table
+- Liste complète des deps watched, paginée server-side
+- Filtres : écosystème, compliance status, severity max, has malware, has typosquat, name search
+- Colonnes : Package, Écosystème, Installed, Recommended, Compliance badge, Risk (CVE + malware badges condensés), Last scanned
+- Tri sur chaque colonne
+- Click sur une ligne → navigate to detail
+- Actions bulk : export CSV/JSON de la vue courante (bonus)
+
+#### 4.5 — Page Package detail
+- Métadonnées : nom, écosystème, installed, recommended, policy appliquée (résolue), dernier scan
+- Onglet **Versions** : table de toutes les versions persistées en `package_versions`, colonnes `version`, `published_at`, `deprecated`, `yanked`, `matches_range` (highlight la version installée et la recommended)
+- Onglet **Vulnerabilities** : table des CVE/GHSA matchés, severity, affected range, fix version, source (OSV / GHSA / Socket)
+- Onglet **Malware** : MAL entries + typosquat suspects si applicable
+- Onglet **Policy eval** : trace explicative du résolveur — quelle règle a matché, quelles versions filtrées par `stability`, `min_age_days`, `block.*`, version retenue et pourquoi
+- Onglet **Changelog** (best-effort) : lazy-fetch GitHub Releases si URL repo devinable
+
+#### 4.6 — Timeline dans le Package detail
+- Composant `VersionTimeline` basé sur **visx** (flexible pour markers custom)
+- Axe temporel horizontal, points colorés par version :
+  - Gris : release normale
+  - Rouge : CVE critique active sur cette version
+  - Orange : CVE high
+  - Magenta : yanked
+  - Violet : MAL entry
+  - Souligné : version installée
+  - Contour : version recommandée
+- Zoom/pan, tooltip au hover avec détails
+- Performance : virtualiser si > 500 versions (cas `sentry-sdk` avec 329 versions)
+
+#### 4.7 — Page Policies editor
+- Lit `.packguard.yml` courant via API
+- Form strict basé sur le schéma policy : defaults, overrides (liste), groups (liste)
+- Preview live à droite : "Avec cette policy, le scan actuel donnerait X compliant / Y warnings / Z violations" (dry-run côté serveur sans persister)
+- Bouton Save : PUT /api/policies → écrit le fichier + reload store
+- Validation YAML côté backend, erreurs remontées au formulaire
+
+#### 4.8 — CLI `packguard ui` command + packaging
+- Nouvelle sous-commande CLI
+- Options : `--port N` (défaut 5174, fallback si occupé), `--host 127.0.0.1` (override pour `serve` v2), `--no-open` (skip auto-open browser)
+- Open browser via `open` crate (cross-platform)
+- Graceful shutdown sur Ctrl+C (ferme les jobs async proprement)
+- `build.rs` configuration pour embed Vite assets en release
+- Docs racine README : screenshot + commande d'install + workflow type
+
+### Critères de sortie
+
+- [ ] `packguard ui` lance le serveur, ouvre le navigateur, affiche l'Overview
+- [ ] 4 pages fonctionnelles : Overview, Packages, Package detail, Policies
+- [ ] Timeline visx affiche les versions + markers pour Nalo réel (`sentry-sdk` avec ses 329 versions, `fastapi` avec vulns)
+- [ ] Boutons Scan/Sync déclenchent les actions, feedback visuel (toast + progress), DB rafraîchie en live
+- [ ] Policies editor : modification + save + preview dry-run fonctionnent
+- [ ] Types partagés Rust ↔ TS via `ts-rs`, zéro drift possible (CI check)
+- [ ] `build.rs` embed les assets Vite au `cargo build --release`
+- [ ] Tests d'intégration API (chaque endpoint, sad paths compris)
+- [ ] Tests composants React clés (Overview cards, Packages filters, Policy form) via Vitest + Testing Library
+- [ ] Démo Nalo/monorepo : screenshot des 4 pages avec données réelles + courte vidéo ou GIF animé bienvenu
+- [ ] 20+ nouveaux tests Rust, 15+ tests frontend, clippy & fmt clean, `pnpm lint` + `pnpm typecheck` clean
+- [ ] README racine mis à jour : section "Dashboard" avec screenshot + install + usage
+
+### Hors scope Phase 4
+- **Dependency graph** (Cytoscape, chaînes contaminées visuelles) → Phase 5
+- **Alerts feed** → Phase 4.5 ou Phase 6 (nécessite un système d'événements)
+- **Compare view** (snapshot N vs N+1) → Phase 4.5
+- **Multi-repo aggregated view** → v2 `serve` mode
+- **Auth / login / users** → v2 `serve` mode
+- **Streaming SSE/WebSocket** → Phase 4.5 si besoin réel de temps réel
+- **Dark mode** → bonus seulement si bandwidth
+- **Mobile responsive parfait** → desktop-first, smartphone pas prioritaire
+- **i18n** → v2
+- **Export complet** (PDF reports, etc.) → Phase 7 ou v2
+
+### Nouvelles dépendances prévisibles
+
+**Rust (`packguard-server`) :**
+- `axum` (routing HTTP)
+- `tower`, `tower-http` (middleware, trace layer, éventuellement compression)
+- `ts-rs` (génération types TS depuis Rust)
+- `open` (ouvrir le browser cross-platform)
+- Réutilise `tokio`, `serde`, `thiserror`, `tracing` déjà présents
+
+**Frontend (`dashboard/`) :**
+- `react`, `react-dom` 19
+- `react-router-dom` 7
+- `@tanstack/react-query` 5
+- `tailwindcss` 4 + `@tailwindcss/vite`
+- `shadcn-ui` CLI + components installés selon besoin
+- `@visx/*` pour timeline
+- `recharts` pour donuts/bars Overview
+- `lucide-react` pour icônes
+- `sonner` pour toasts
+- `vitest` + `@testing-library/react` pour tests
+
+### Points d'attention pour l'agent
+
+- **Ne pas dupliquer la logique** : tout appel métier passe par les crates existantes (`packguard-core`, `packguard-store`, etc.). Le serveur est une fine couche de translation
+- **Types `ts-rs` générés dans un commit séparé** (ou script de check) pour éviter que le front drifte
+- **Port 5174** pour le backend, **5173** pour Vite dev — classique, évite les collisions communes
+- **Honnêteté sur les placeholders** : si une vue n'a rien à afficher (pas encore de scan), message clair "Run a scan to get started" avec bouton
+- **Couleurs sémantiques** alignées CLI/UI (même palette, même meaning) — éviter de réinventer
+- **Accessibilité raisonnable** : labels de form, alt sur images, contraste WCAG AA. Pas besoin de perfect AAA
+- **Performance** : le store Nalo contient ~260 advisories + ~120 deps + ~2000 versions. Pas besoin de SSR ou de Suspense exotique. Une SPA classique suffit largement
+- **Dashboard doit marcher offline** une fois la DB remplie — pas d'appel réseau sortant depuis le browser (tout passe par l'API Rust locale)
+
+---
+
 ## 15. Tech debt & follow-ups (remontés Phase 1)
 
 À traiter en Phase 1.5 ou intégré à une phase ultérieure. Ordre par priorité :
@@ -630,10 +906,11 @@ Décisions : dumps OSV prioritaires, API fallback opt-in (`--no-live-fallback`),
    - yarn.lock (classic + berry) : **non parsé** — seul `package.json` est utilisé en fallback.
    - À traiter quand un repo cible les exigera (Nalo front est pnpm root, ça passe).
 
-3. **Évaluation `block.*`** — partiellement résolu :
+3. **Évaluation `block.*`** — quasi résolu :
    - ✅ `block.deprecated` / `block.yanked` câblés Phase 1.5
    - ✅ `block.cve_severity` câblé Phase 2 (commit `42f11a2`, `VulnerabilityViolation`)
-   - ⏳ `block.malware` → Phase 2.5 (Socket.dev / Phylum / heuristiques typosquat)
+   - ✅ `block.malware` câblé Phase 2.5 (commit `febcd83`, `MalwareViolation`)
+   - ⏳ `block.typosquat: strict` override per-package dans `.packguard.yml` — reportable à la demande, actuellement seulement global
 
 4. ~~**Tests live gated**~~ **✅ résolu Phase 2** (commit `477200d`). `PACKGUARD_LIVE_TESTS=1` opt-in pour 2 tests live contre l'API OSV.
 

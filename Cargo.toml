@@ -5,6 +5,7 @@ members = [
     "crates/packguard-store",
     "crates/packguard-policy",
     "crates/packguard-intel",
+    "crates/packguard-server",
     "crates/packguard-cli",
 ]
 
@@ -44,6 +45,12 @@ sha2 = "0.10"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 walkdir = "2"
 strsim = "0.11"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+ts-rs = { version = "11", features = ["serde-json-impl"] }
+uuid = { version = "1", features = ["v4"] }
+open = "5"
 
 [profile.release]
 lto = "thin"

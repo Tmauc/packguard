@@ -1,0 +1,84 @@
+//! Async job runner. The handler returns a `JobAccepted { id }` payload
+//! immediately; the actual scan/sync runs on a tokio task that updates the
+//! `jobs` table as it transitions pending → running → succeeded/failed.
+
+use crate::dto::{JobKind, JobView};
+use crate::services::{scan, sync_intel};
+use crate::state::AppState;
+use anyhow::Result;
+use std::path::PathBuf;
+use uuid::Uuid;
+
+/// Spawn a job and persist it as `pending`. Returns the new id; callers
+/// poll `GET /api/jobs/:id` to track progress.
+pub async fn spawn(state: AppState, kind: JobKind) -> Result<String> {
+    let id = Uuid::new_v4().to_string();
+    {
+        let mut store = state.store.lock().await;
+        store.create_job(&id, kind.as_str())?;
+    }
+    let id_clone = id.clone();
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        run_job(state_clone, id_clone, kind).await;
+    });
+    Ok(id)
+}
+
+async fn run_job(state: AppState, id: String, kind: JobKind) {
+    {
+        let mut store = state.store.lock().await;
+        let _ = store.update_job_status(&id, "running", None, None);
+    }
+
+    let outcome: Result<serde_json::Value> = match kind {
+        JobKind::Scan => run_scan_job(&state, state.repo_path.clone()).await,
+        JobKind::Sync => run_sync_job(&state).await,
+    };
+
+    let mut store = state.store.lock().await;
+    match outcome {
+        Ok(payload) => {
+            let json = serde_json::to_string(&payload).unwrap_or_else(|_| "null".into());
+            let _ = store.update_job_status(&id, "succeeded", Some(&json), None);
+        }
+        Err(err) => {
+            let msg = format!("{err:#}");
+            let _ = store.update_job_status(&id, "failed", None, Some(&msg));
+        }
+    }
+}
+
+async fn run_scan_job(state: &AppState, repo: PathBuf) -> Result<serde_json::Value> {
+    let mut store = state.store.lock().await;
+    let report = scan::run(&mut store, &repo).await?;
+    Ok(serde_json::to_value(report)?)
+}
+
+async fn run_sync_job(state: &AppState) -> Result<serde_json::Value> {
+    let mut store = state.store.lock().await;
+    let report = sync_intel::run(&mut store).await?;
+    Ok(serde_json::to_value(report)?)
+}
+
+pub fn to_view(stored: packguard_store::StoredJob) -> JobView {
+    let kind = match stored.kind.as_str() {
+        "scan" => JobKind::Scan,
+        _ => JobKind::Sync,
+    };
+    let status =
+        crate::dto::JobStatus::parse(&stored.status).unwrap_or(crate::dto::JobStatus::Pending);
+    let result = stored
+        .result_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+    JobView {
+        id: stored.id,
+        kind,
+        status,
+        started_at: stored.started_at,
+        finished_at: stored.finished_at,
+        result,
+        error: stored.error,
+    }
+}
