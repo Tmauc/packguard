@@ -3,17 +3,12 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Stability {
+    #[default]
     Stable,
     Prerelease,
-}
-
-impl Default for Stability {
-    fn default() -> Self {
-        Stability::Stable
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

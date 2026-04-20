@@ -41,7 +41,7 @@ pub struct StoredDependency {
     pub kind: DepKind,
     pub source_lockfile: Option<String>,
     pub latest: Option<String>,
-    pub latest_fetched_at: Option<String>,
+    pub latest_published_at: Option<String>,
 }
 
 impl Store {
@@ -168,11 +168,12 @@ impl Store {
             .prepare(
                 "SELECT r.ecosystem, r.path, w.name, w.manifest_path, p.name, \
                         d.declared_range, d.installed, d.kind, d.source_lockfile, \
-                        p.latest, p.latest_fetched_at \
+                        p.latest, pv.published_at \
                  FROM dependencies d \
                  JOIN workspaces w ON w.id = d.workspace_id \
                  JOIN repos r ON r.id = w.repo_id \
                  JOIN packages p ON p.id = d.pkg_id \
+                 LEFT JOIN package_versions pv ON pv.pkg_id = p.id AND pv.version = p.latest \
                  WHERE r.path = ?1 \
                  ORDER BY r.ecosystem, w.name, p.name",
             )
@@ -190,7 +191,7 @@ impl Store {
                     kind: kind_from_label(&row.get::<_, String>(7)?),
                     source_lockfile: row.get(8)?,
                     latest: row.get(9)?,
-                    latest_fetched_at: row.get(10)?,
+                    latest_published_at: row.get(10)?,
                 })
             })
             .context("querying dependencies")?;

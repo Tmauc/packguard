@@ -1121,6 +1121,7 @@ name = "packguard-cli"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "comfy-table",
  "dirs",
@@ -1128,6 +1129,7 @@ dependencies = [
  "packguard-core",
  "packguard-policy",
  "packguard-store",
+ "serde_json",
  "sha2",
  "tempfile",
  "tokio",

@@ -150,7 +150,11 @@ pub fn compute_recommended_version(
     parsed.first().map(|(r, _)| r.version.clone())
 }
 
-/// Reduce (installed, recommended) to a single compliance verdict.
+/// Reduce (installed, recommended) to a single compliance verdict. When the
+/// caller has full version history (`releases` covers many versions), the
+/// check runs against the recommended version. When only `latest` is known
+/// (Phase 1 store state), the evaluator falls back to a major-distance rule
+/// so conservative defaults still produce actionable signal.
 pub fn evaluate_dependency(
     name: &str,
     installed: Option<&str>,
@@ -173,22 +177,60 @@ pub fn evaluate_dependency(
         };
     }
 
-    let recommended = compute_recommended_version(resolved, releases, dialect, now);
     let Some(installed) = installed else {
         return Compliance::Warning(format!("{}: no installed version resolved", name));
     };
-    let Some(recommended) = recommended else {
-        return Compliance::Warning(format!("{}: no recommended version", name));
+
+    if let Some(recommended) = compute_recommended_version(resolved, releases, dialect, now) {
+        return compare_installed_to_recommended(name, installed, &recommended, dialect);
+    }
+
+    // Fallback: we couldn't compute a recommendation (either no history or
+    // the offset window filtered everything out). Use the highest known
+    // version to run a major-distance check against `installed`.
+    let highest = releases
+        .iter()
+        .filter_map(|r| dialect.meta(&r.version).map(|m| (r, m)))
+        .max_by(|(_, a), (_, b)| a.major.cmp(&b.major));
+    let Some((_, latest_meta)) = highest else {
+        return Compliance::Warning(format!("{}: no latest version available", name));
     };
-    match dialect.compare(installed, &recommended) {
+    let Some(installed_meta) = dialect.meta(installed) else {
+        return Compliance::Warning(format!("{}: unparsable installed version {}", name, installed));
+    };
+    let max_allowed_major = latest_meta.major.saturating_sub(resolved.offset as u64);
+    if installed_meta.major > max_allowed_major {
+        return Compliance::Warning(format!(
+            "{}: installed {} is ahead of policy window (max major {})",
+            name, installed, max_allowed_major
+        ));
+    }
+    if installed_meta.major < max_allowed_major {
+        return Compliance::Violation(format!(
+            "{}: installed {} is {} major(s) behind policy window (max major {})",
+            name,
+            installed,
+            max_allowed_major - installed_meta.major,
+            max_allowed_major
+        ));
+    }
+    Compliance::Compliant
+}
+
+fn compare_installed_to_recommended(
+    name: &str,
+    installed: &str,
+    recommended: &str,
+    dialect: Dialect,
+) -> Compliance {
+    match dialect.compare(installed, recommended) {
         Some(std::cmp::Ordering::Equal) => Compliance::Compliant,
         Some(std::cmp::Ordering::Greater) => Compliance::Warning(format!(
             "{}: installed {} is ahead of policy-allowed {}",
             name, installed, recommended
         )),
         Some(std::cmp::Ordering::Less) => {
-            // Crossing a major boundary is a louder signal than minor/patch.
-            let (im, rm) = (dialect.meta(installed), dialect.meta(&recommended));
+            let (im, rm) = (dialect.meta(installed), dialect.meta(recommended));
             let major_behind = matches!((im, rm), (Some(a), Some(b)) if a.major != b.major);
             let msg = format!(
                 "{}: installed {} is behind policy-allowed {}",

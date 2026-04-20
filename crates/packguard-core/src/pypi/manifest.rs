@@ -153,7 +153,7 @@ pub fn parse_pep508_spec(spec: &str, kind: DepKind) -> Option<Dependency> {
     let spec = spec.split(';').next().unwrap_or(spec).trim();
     // Split name from spec.
     let name_end = spec
-        .find(|c: char| matches!(c, '[' | '=' | '<' | '>' | '!' | '~' | ' ' | '('))
+        .find(['[', '=', '<', '>', '!', '~', ' ', '('])
         .unwrap_or(spec.len());
     let name = spec[..name_end].trim().to_string();
     if name.is_empty() {

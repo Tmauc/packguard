@@ -1,10 +1,14 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use chrono::Utc;
+use clap::{Parser, Subcommand, ValueEnum};
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table};
 use owo_colors::OwoColorize;
 use packguard_core::model::{Delta, DepKind, Project, RemotePackage};
 use packguard_core::{Ecosystem, default_ecosystems};
+use packguard_policy::{
+    Compliance, Dialect, Policy, ReleaseInfo, evaluate_dependency, parse_policy,
+};
 use packguard_store::Store;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -31,6 +35,18 @@ enum Cmd {
         /// Overwrite an existing `.packguard.yml`.
         #[arg(long)]
         force: bool,
+    },
+    /// Render a compliance report from the SQLite store. Zero network.
+    Report {
+        /// Path to the repo root whose cached scan should be reported on.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = ReportFormat::Table)]
+        format: ReportFormat,
+        /// Exit with status 1 when at least one blocking violation exists.
+        #[arg(long)]
+        fail_on_violation: bool,
     },
     /// Scan a project, query registries, and persist the result to SQLite.
     Scan {
@@ -60,8 +76,20 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Cmd::Init { path, force } => init(path, force),
+        Cmd::Report {
+            path,
+            format,
+            fail_on_violation,
+        } => report(path, format, fail_on_violation, &store_path),
         Cmd::Scan { path, offline, force } => scan(path, offline, force, &store_path).await,
     }
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum ReportFormat {
+    Table,
+    Json,
+    Sarif,
 }
 
 fn init(path: PathBuf, force: bool) -> Result<()> {
@@ -299,4 +327,276 @@ fn delta_cell(d: Delta) -> Cell {
         Delta::Major => Cell::new("major").fg(Color::Red),
         Delta::Unknown => Cell::new("?").fg(Color::DarkGrey),
     }
+}
+
+/// One row in the report, already evaluated against the policy.
+struct ReportRow {
+    ecosystem: String,
+    workspace: Option<String>,
+    package: String,
+    kind: DepKind,
+    installed: Option<String>,
+    latest: Option<String>,
+    latest_published_at: Option<String>,
+    compliance: Compliance,
+}
+
+struct ReportSummary {
+    compliant: usize,
+    warnings: usize,
+    violations: usize,
+}
+
+fn report(
+    path: PathBuf,
+    format: ReportFormat,
+    fail_on_violation: bool,
+    store_path: &Path,
+) -> Result<()> {
+    let store = Store::open(store_path)
+        .with_context(|| format!("opening store at {}", store_path.display()))?;
+    let dependencies = store.load_repo_dependencies(&path)?;
+    if dependencies.is_empty() {
+        anyhow::bail!(
+            "no cached scan for {}; run `packguard scan` first",
+            path.display()
+        );
+    }
+
+    let policy = load_project_policy(&path)?;
+    let now = Utc::now();
+
+    let mut rows: Vec<ReportRow> = dependencies
+        .into_iter()
+        .map(|dep| {
+            let releases: Vec<ReleaseInfo> = match dep.latest.clone() {
+                Some(v) => vec![ReleaseInfo {
+                    version: v,
+                    published_at: dep.latest_published_at.clone(),
+                    deprecated: false,
+                    yanked: false,
+                }],
+                None => Vec::new(),
+            };
+            let dialect = Dialect::for_ecosystem(&dep.ecosystem);
+            let resolved = policy.resolve(&dep.name);
+            let compliance = evaluate_dependency(
+                &dep.name,
+                dep.installed.as_deref(),
+                &resolved,
+                &releases,
+                dialect,
+                now,
+            );
+            ReportRow {
+                ecosystem: dep.ecosystem,
+                workspace: dep.workspace_name,
+                package: dep.name,
+                kind: dep.kind,
+                installed: dep.installed,
+                latest: dep.latest,
+                latest_published_at: dep.latest_published_at,
+                compliance,
+            }
+        })
+        .collect();
+
+    rows.sort_by(|a, b| {
+        a.ecosystem
+            .cmp(&b.ecosystem)
+            .then(a.workspace.cmp(&b.workspace))
+            .then(a.package.cmp(&b.package))
+    });
+
+    let summary = summarize(&rows);
+
+    match format {
+        ReportFormat::Table => render_table(&rows, &summary, &path),
+        ReportFormat::Json => render_json(&rows, &summary)?,
+        ReportFormat::Sarif => render_sarif(&rows)?,
+    }
+
+    if fail_on_violation && summary.violations > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn load_project_policy(path: &Path) -> Result<Policy> {
+    let candidate = path.join(".packguard.yml");
+    if !candidate.exists() {
+        tracing::debug!("no .packguard.yml at {}; using built-in defaults", path.display());
+        return parse_policy(packguard_policy::CONSERVATIVE_DEFAULTS_YAML);
+    }
+    let text = std::fs::read_to_string(&candidate)
+        .with_context(|| format!("reading {}", candidate.display()))?;
+    parse_policy(&text)
+}
+
+fn summarize(rows: &[ReportRow]) -> ReportSummary {
+    let mut s = ReportSummary { compliant: 0, warnings: 0, violations: 0 };
+    for r in rows {
+        match r.compliance {
+            Compliance::Compliant => s.compliant += 1,
+            Compliance::Warning(_) => s.warnings += 1,
+            Compliance::Violation(_) => s.violations += 1,
+        }
+    }
+    s
+}
+
+fn render_table(rows: &[ReportRow], summary: &ReportSummary, path: &Path) {
+    println!(
+        "{} {}",
+        "📊".dimmed(),
+        format!("PackGuard report — {}", path.display()).bold()
+    );
+
+    // Group by ecosystem > workspace.
+    let mut current_eco: Option<&str> = None;
+    let mut current_ws: Option<&Option<String>> = None;
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL_CONDENSED)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec![
+            header("Package"),
+            header("Kind"),
+            header("Installed"),
+            header("Latest"),
+            header("Policy"),
+        ]);
+
+    for row in rows {
+        if current_eco != Some(row.ecosystem.as_str()) {
+            if !table.is_empty() {
+                println!("{table}");
+                table = Table::new();
+                table
+                    .load_preset(UTF8_FULL_CONDENSED)
+                    .set_content_arrangement(ContentArrangement::Dynamic)
+                    .set_header(vec![
+                        header("Package"),
+                        header("Kind"),
+                        header("Installed"),
+                        header("Latest"),
+                        header("Policy"),
+                    ]);
+            }
+            current_eco = Some(row.ecosystem.as_str());
+            println!("\n{} {}", "▸".dimmed(), format!("[{}]", row.ecosystem).bold());
+            current_ws = None;
+        }
+        if current_ws.is_none() || current_ws.unwrap() != &row.workspace {
+            let ws = row.workspace.as_deref().unwrap_or("<root>");
+            println!("  {} {}", "◦".dimmed(), ws);
+            current_ws = Some(&row.workspace);
+        }
+
+        let (badge, badge_color) = compliance_badge(&row.compliance);
+        table.add_row(vec![
+            Cell::new(&row.package),
+            Cell::new(kind_str(row.kind)).fg(Color::DarkGrey),
+            Cell::new(row.installed.as_deref().unwrap_or("-")),
+            Cell::new(row.latest.as_deref().unwrap_or("-")),
+            Cell::new(badge).fg(badge_color),
+        ]);
+    }
+    if !table.is_empty() {
+        println!("{table}");
+    }
+
+    println!(
+        "\n{} {}  {}  {}",
+        "Summary:".bold(),
+        format!("✅ {} compliant", summary.compliant).green(),
+        format!("⚠️  {} warnings", summary.warnings).yellow(),
+        format!("❌ {} violations", summary.violations).red(),
+    );
+    let _ = summary.violations; // silence clippy if optimizations prune.
+    let _ = path;
+}
+
+fn compliance_badge(c: &Compliance) -> (&'static str, Color) {
+    match c {
+        Compliance::Compliant => ("compliant", Color::Green),
+        Compliance::Warning(_) => ("warning", Color::Yellow),
+        Compliance::Violation(_) => ("violation", Color::Red),
+    }
+}
+
+fn render_json(rows: &[ReportRow], summary: &ReportSummary) -> Result<()> {
+    use serde_json::json;
+    let out = json!({
+        "summary": {
+            "compliant": summary.compliant,
+            "warnings": summary.warnings,
+            "violations": summary.violations,
+        },
+        "rows": rows.iter().map(|r| {
+            let (status, message) = match &r.compliance {
+                Compliance::Compliant => ("compliant", None),
+                Compliance::Warning(m) => ("warning", Some(m.as_str())),
+                Compliance::Violation(m) => ("violation", Some(m.as_str())),
+            };
+            json!({
+                "ecosystem": r.ecosystem,
+                "workspace": r.workspace,
+                "package": r.package,
+                "kind": kind_str(r.kind),
+                "installed": r.installed,
+                "latest": r.latest,
+                "latest_published_at": r.latest_published_at,
+                "status": status,
+                "message": message,
+            })
+        }).collect::<Vec<_>>(),
+    });
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
+/// Minimal SARIF 2.1.0 — only blocking violations are emitted as results.
+fn render_sarif(rows: &[ReportRow]) -> Result<()> {
+    use serde_json::json;
+    let results: Vec<_> = rows
+        .iter()
+        .filter_map(|r| match &r.compliance {
+            Compliance::Violation(msg) => Some((r, msg.clone())),
+            _ => None,
+        })
+        .map(|(r, msg)| {
+            json!({
+                "ruleId": "packguard.policy.violation",
+                "level": "error",
+                "message": { "text": msg },
+                "properties": {
+                    "ecosystem": r.ecosystem,
+                    "package": r.package,
+                    "installed": r.installed,
+                    "latest": r.latest,
+                },
+            })
+        })
+        .collect();
+    let sarif = json!({
+        "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "packguard",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "informationUri": "https://github.com/nalo/packguard",
+                    "rules": [{
+                        "id": "packguard.policy.violation",
+                        "shortDescription": { "text": "Dependency violates the repo policy" },
+                    }],
+                }
+            },
+            "results": results,
+        }],
+    });
+    println!("{}", serde_json::to_string_pretty(&sarif)?);
+    Ok(())
 }

@@ -268,6 +268,35 @@ overrides:
     }
 
     #[test]
+    fn fallback_uses_major_distance_when_only_latest_is_known() {
+        // offset=-1 (one major behind) with *only* the latest release visible.
+        // compute_recommended_version correctly returns None (offset window
+        // excludes the latest), so evaluate falls back to major-distance.
+        let p = parse_policy("defaults: { offset: -1 }").unwrap();
+        // installed is in the allowed major-1 window → Compliant.
+        let c = evaluate_dependency(
+            "react",
+            Some("18.3.0"),
+            &p.resolve("react"),
+            &rels(&[("19.2.5", "2026-04-08T00:00:00Z")]),
+            Dialect::Semver,
+            now(),
+        );
+        assert!(matches!(c, Compliance::Compliant), "got {c:?}");
+
+        // installed two majors behind → Violation.
+        let c = evaluate_dependency(
+            "react",
+            Some("17.0.0"),
+            &p.resolve("react"),
+            &rels(&[("19.2.5", "2026-04-08T00:00:00Z")]),
+            Dialect::Semver,
+            now(),
+        );
+        assert!(matches!(c, Compliance::Violation(_)), "got {c:?}");
+    }
+
+    #[test]
     fn pep440_prerelease_excluded_by_default() {
         let p = parse_policy("defaults: { offset: 0, stability: stable }").unwrap();
         let r = compute_recommended_version(
