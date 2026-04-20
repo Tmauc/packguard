@@ -1,0 +1,12 @@
+{
+  "name": "packguard-fixture-npm-basic",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "react": "^18.2.0",
+    "@babel/core": "^7.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
