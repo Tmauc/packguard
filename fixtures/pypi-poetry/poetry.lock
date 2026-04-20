@@ -1,0 +1,20 @@
+[[package]]
+name = "django"
+version = "4.2.7"
+description = "A high-level Python web framework"
+category = "main"
+optional = false
+
+[[package]]
+name = "requests"
+version = "2.31.0"
+description = "Python HTTP for Humans"
+category = "main"
+optional = false
+
+[[package]]
+name = "pytest"
+version = "8.0.0"
+description = "pytest: simple powerful testing"
+category = "dev"
+optional = false

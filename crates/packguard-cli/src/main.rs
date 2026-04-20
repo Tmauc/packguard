@@ -4,9 +4,8 @@ use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table};
 use owo_colors::OwoColorize;
 use packguard_core::model::{Delta, DepKind, Project};
-use packguard_core::{Ecosystem, Npm};
+use packguard_core::{Ecosystem, default_ecosystems};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(name = "packguard", version, about = "Local package version governance")]
@@ -41,10 +40,6 @@ async fn main() -> Result<()> {
     match cli.command {
         Cmd::Scan { path, offline } => scan(path, offline).await,
     }
-}
-
-fn default_ecosystems() -> Result<Vec<Arc<dyn Ecosystem>>> {
-    Ok(vec![Arc::new(Npm::new()?)])
 }
 
 async fn scan(path: PathBuf, offline: bool) -> Result<()> {

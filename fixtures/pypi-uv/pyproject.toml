@@ -1,0 +1,14 @@
+[project]
+name = "packguard-fixture-pypi-uv"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.100",
+    "pydantic==2.5.0",
+]
+
+[project.optional-dependencies]
+dev = ["ruff"]
+
+[dependency-groups]
+test = ["pytest==8.0.0"]

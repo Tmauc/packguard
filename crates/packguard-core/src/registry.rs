@@ -3,5 +3,7 @@
 //! cache, retries, etc. — see §7).
 
 pub mod npm;
+pub mod pypi;
 
 pub use npm::NpmClient;
+pub use pypi::PypiClient;

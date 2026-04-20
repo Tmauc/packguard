@@ -1,0 +1,6 @@
+# Phase 1 fixture: pip declared-only mode.
+# Only == pins produce installed versions; loose ranges stay Unknown.
+
+django==4.2.7
+requests==2.31.0
+flake8>=7.0
