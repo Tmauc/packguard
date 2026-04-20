@@ -52,6 +52,24 @@ enum Cmd {
         #[arg(long)]
         fail_on_violation: bool,
     },
+    /// Refresh vulnerability intel (OSV dumps + GHSA git repo) into the store.
+    Sync {
+        /// Skip the OSV HTTP dumps (useful when only GHSA is wanted).
+        #[arg(long)]
+        skip_osv: bool,
+        /// Skip the GHSA git clone/pull (useful when `git` is unavailable
+        /// or the cache lives on a read-only volume).
+        #[arg(long)]
+        skip_ghsa: bool,
+        /// Override the GHSA cache location. Defaults to
+        /// `~/.packguard/cache/ghsa/advisory-database`.
+        #[arg(long)]
+        ghsa_cache: Option<PathBuf>,
+        /// Do not filter advisories to locally-tracked packages — persist
+        /// everything OSV/GHSA know about (warning: balloons the DB).
+        #[arg(long)]
+        all: bool,
+    },
     /// Scan a project, query registries, and persist the result to SQLite.
     Scan {
         /// Path to the project root. Defaults to the current directory.
@@ -90,7 +108,112 @@ async fn main() -> Result<()> {
             offline,
             force,
         } => scan(path, offline, force, &store_path).await,
+        Cmd::Sync {
+            skip_osv,
+            skip_ghsa,
+            ghsa_cache,
+            all,
+        } => sync(skip_osv, skip_ghsa, ghsa_cache, all, &store_path).await,
     }
+}
+
+async fn sync(
+    skip_osv: bool,
+    skip_ghsa: bool,
+    ghsa_cache: Option<PathBuf>,
+    include_all: bool,
+    store_path: &Path,
+) -> Result<()> {
+    let mut store = Store::open(store_path)
+        .with_context(|| format!("opening store at {}", store_path.display()))?;
+
+    let watched: packguard_intel::WatchedPackages = if include_all {
+        None
+    } else {
+        let pairs = store.watched_packages()?;
+        if pairs.is_empty() {
+            eprintln!(
+                "{} no packages tracked yet — run `packguard scan` first, or use `--all`",
+                "warn".yellow()
+            );
+        }
+        Some(pairs.into_iter().collect())
+    };
+
+    if !skip_osv {
+        for dump in [&packguard_intel::osv::NPM, &packguard_intel::osv::PYPI] {
+            let prior_state = store.get_sync_state(dump.id)?;
+            let prior = packguard_intel::osv::PriorSyncState {
+                etag: prior_state.as_ref().and_then(|s| s.etag.clone()),
+                last_modified: prior_state.as_ref().and_then(|s| s.last_modified.clone()),
+            };
+            match packguard_intel::osv::fetch_dump(dump, &prior, &watched).await {
+                Ok(fetched) => {
+                    if fetched.summary.skipped_not_modified {
+                        println!(
+                            "{} {} — not modified since last sync (skipped)",
+                            "=".dimmed(),
+                            dump.id
+                        );
+                    } else {
+                        let persisted = store.persist_vulnerabilities(&fetched.vulnerabilities)?;
+                        if let Some(updated) = fetched.updated_state {
+                            let mut state = prior_state.unwrap_or_default();
+                            state.etag = updated.etag;
+                            state.last_modified = updated.last_modified;
+                            state.synced_at = Some(chrono::Utc::now().to_rfc3339());
+                            state.record_count = persisted as i64;
+                            store.put_sync_state(dump.id, &state)?;
+                        }
+                        println!(
+                            "{} {} — scanned {}, persisted {} {}",
+                            "✓".green(),
+                            dump.id,
+                            fetched.summary.advisories_scanned,
+                            persisted,
+                            if watched.is_none() {
+                                "(all)"
+                            } else {
+                                "(watched)"
+                            },
+                        );
+                    }
+                }
+                Err(err) => {
+                    eprintln!("{} {}: {:#}", "warn".yellow(), dump.id, err);
+                }
+            }
+        }
+    }
+
+    if !skip_ghsa {
+        let cache = ghsa_cache
+            .map(Ok)
+            .unwrap_or_else(packguard_intel::ghsa::default_cache_dir)?;
+        match packguard_intel::ghsa::sync(&cache, &watched) {
+            Ok((vulns, summary, head)) => {
+                let persisted = store.persist_vulnerabilities(&vulns)?;
+                let mut state = store.get_sync_state("ghsa")?.unwrap_or_default();
+                state.last_commit = Some(head);
+                state.synced_at = Some(chrono::Utc::now().to_rfc3339());
+                state.record_count = persisted as i64;
+                store.put_sync_state("ghsa", &state)?;
+                println!(
+                    "{} ghsa — scanned {}, persisted {}",
+                    "✓".green(),
+                    summary.advisories_scanned,
+                    persisted,
+                );
+            }
+            Err(err) => {
+                eprintln!("{} ghsa: {:#}", "warn".yellow(), err);
+            }
+        }
+    }
+
+    let total = store.count_vulnerabilities()?;
+    println!("{} store holds {} advisories", "📚".dimmed(), total);
+    Ok(())
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]

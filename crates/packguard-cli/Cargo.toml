@@ -15,6 +15,7 @@ path = "src/main.rs"
 packguard-core = { path = "../packguard-core" }
 packguard-store = { path = "../packguard-store" }
 packguard-policy = { path = "../packguard-policy" }
+packguard-intel = { path = "../packguard-intel" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }

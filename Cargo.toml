@@ -4,6 +4,7 @@ members = [
     "crates/packguard-core",
     "crates/packguard-store",
     "crates/packguard-policy",
+    "crates/packguard-intel",
     "crates/packguard-cli",
 ]
 
@@ -40,6 +41,8 @@ tempfile = "3"
 dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 sha2 = "0.10"
+zip = { version = "8", default-features = false, features = ["deflate"] }
+walkdir = "2"
 
 [profile.release]
 lto = "thin"

@@ -420,6 +420,27 @@ impl Store {
         Ok(out)
     }
 
+    /// Every `(ecosystem, name)` pair currently tracked in `packages`. Used
+    /// by `packguard sync` to filter OSV/GHSA advisories to what we actually
+    /// care about — the full dumps contain hundreds of thousands of entries
+    /// most users don't need.
+    pub fn watched_packages(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT ecosystem, name FROM packages")
+            .context("prepare watched_packages")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .context("query watched_packages")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Total advisory count — cheap enough to call for the CLI status line.
     pub fn count_vulnerabilities(&self) -> Result<i64> {
         self.conn
