@@ -127,10 +127,15 @@ pub enum Compliance {
     Compliant,
     Warning(String),
     Violation(String),
+    /// The installed version is affected by at least one advisory whose
+    /// severity is listed in `block.cve_severity`. Blocking (counted under
+    /// `--fail-on-violation`), with the raw match records attached so the
+    /// CLI can render CVE ids, urls, fix versions, etc.
+    VulnerabilityViolation(Vec<packguard_intel::MatchedVuln>),
     /// The resolver couldn't pick a recommended version because filters
-    /// (stability / min_age_days / offset) dropped every candidate, or the
-    /// store held no history. Neither compliant nor blocking — surfaced so
-    /// users know the policy can't be evaluated against this dep.
+    /// (stability / min_age_days / offset / vulnerability remediation)
+    /// dropped every candidate. Neither compliant nor blocking — surfaced
+    /// so users know the policy can't be evaluated against this dep.
     InsufficientCandidates(String),
 }
 

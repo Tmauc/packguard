@@ -6,6 +6,13 @@ use crate::model::{
 };
 use chrono::{DateTime, Utc};
 use globset::{Glob, GlobMatcher};
+use packguard_core::Severity;
+use packguard_intel::MatchedVuln;
+use std::collections::BTreeMap;
+
+/// Convenience alias — the resolver only ever looks at the installed version
+/// and the candidate pool, so a per-version map is the cheapest shape.
+pub type VulnsByVersion = BTreeMap<String, Vec<MatchedVuln>>;
 
 /// Resolve defaults → groups → overrides for a given package name. Later
 /// layers strictly override earlier ones on a per-field basis.
@@ -97,9 +104,36 @@ fn build_matcher(pattern: &str) -> Option<GlobMatcher> {
 ///
 /// `pin` short-circuits everything: if the pin matches an entry in
 /// `releases`, that entry wins — the filters above do not apply.
+/// Phase 1.5 entry point — kept for callers that don't have vuln data yet
+/// (snapshot tests, simple CLI invocations). Delegates to
+/// [`compute_recommended_version_with_vulns`] with an empty vuln map.
 pub fn compute_recommended_version(
     resolved: &ResolvedPolicy,
     releases: &[ReleaseInfo],
+    dialect: Dialect,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    compute_recommended_version_with_vulns(resolved, releases, &BTreeMap::new(), dialect, now)
+}
+
+/// Filter + pick the highest version that complies with `resolved`.
+///
+/// Pipeline (each pass can empty the pool → `None`):
+///
+/// 1. `stability: stable` drops prereleases.
+/// 2. `min_age_days` drops versions published less than N days ago.
+/// 3. Offset caps the pool to the exact target major (Phase 1.5 strict
+///    semantics — no fallback window).
+/// 4. **Remediation** (Phase 2): for each candidate in descending order,
+///    skip it if any vuln attached to that version has severity in
+///    `resolved.block.cve_severity`. The first safe candidate wins.
+///
+/// `pin` short-circuits everything: if the pin matches an entry in
+/// `releases`, that entry wins — the filters above do not apply.
+pub fn compute_recommended_version_with_vulns(
+    resolved: &ResolvedPolicy,
+    releases: &[ReleaseInfo],
+    vulns_by_version: &VulnsByVersion,
     dialect: Dialect,
     now: DateTime<Utc>,
 ) -> Option<String> {
@@ -155,23 +189,87 @@ pub fn compute_recommended_version(
         return None;
     }
 
-    // Pick the max within the target major.
+    // Pick the max within the target major, skipping vulnerable candidates.
     pool.sort_by(|a, b| {
         dialect
             .compare(&b.0.version, &a.0.version)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    pool.first().map(|(r, _)| r.version.clone())
+    let block_sev = block_severity_set(resolved);
+    for (release, _) in &pool {
+        if !is_blocking_version(&release.version, vulns_by_version, &block_sev) {
+            return Some(release.version.clone());
+        }
+    }
+    None
 }
 
-/// Reduce (installed, recommended) to a single compliance verdict. Requires
-/// a non-empty version history to produce anything other than
-/// `InsufficientCandidates`; the Phase-1 "major-distance fallback" is gone.
+/// `block.cve_severity` values expressed as the strongly-typed enum. Skipped
+/// values (typos, empty strings) become `Severity::Unknown` and therefore
+/// never block anything they weren't already pointing at.
+fn block_severity_set(resolved: &ResolvedPolicy) -> Vec<Severity> {
+    resolved
+        .block
+        .cve_severity
+        .iter()
+        .map(|s| Severity::parse(s))
+        .filter(|s| !matches!(s, Severity::Unknown))
+        .collect()
+}
+
+/// Does `version` carry at least one vuln that the policy blocks?
+fn is_blocking_version(
+    version: &str,
+    vulns_by_version: &VulnsByVersion,
+    block_sev: &[Severity],
+) -> bool {
+    if block_sev.is_empty() {
+        return false;
+    }
+    vulns_by_version
+        .get(version)
+        .map(|vs| vs.iter().any(|v| block_sev.contains(&v.severity)))
+        .unwrap_or(false)
+}
+
+/// Phase 1.5 entry point — kept for callers with no vuln data. Delegates to
+/// [`evaluate_dependency_with_vulns`] with an empty vuln map.
 pub fn evaluate_dependency(
     name: &str,
     installed: Option<&str>,
     resolved: &ResolvedPolicy,
     releases: &[ReleaseInfo],
+    dialect: Dialect,
+    now: DateTime<Utc>,
+) -> Compliance {
+    evaluate_dependency_with_vulns(
+        name,
+        installed,
+        resolved,
+        releases,
+        &BTreeMap::new(),
+        dialect,
+        now,
+    )
+}
+
+/// Reduce (installed, recommended, vulns) to a single compliance verdict.
+///
+/// Order of checks:
+/// 1. `pin` match (Violation if mismatched).
+/// 2. Missing installed version (Warning).
+/// 3. `block.yanked` / `block.deprecated` against the installed version
+///    (Violation; Phase 1.5 behaviour preserved).
+/// 4. **`block.cve_severity`** (Phase 2): any matched vuln on the installed
+///    version whose severity is in the block list → VulnerabilityViolation.
+/// 5. Recommended version (with remediation) vs installed → Compliant /
+///    Warning / Violation / InsufficientCandidates.
+pub fn evaluate_dependency_with_vulns(
+    name: &str,
+    installed: Option<&str>,
+    resolved: &ResolvedPolicy,
+    releases: &[ReleaseInfo],
+    vulns_by_version: &VulnsByVersion,
     dialect: Dialect,
     now: DateTime<Utc>,
 ) -> Compliance {
@@ -192,9 +290,7 @@ pub fn evaluate_dependency(
         return Compliance::Warning(format!("{}: no installed version resolved", name));
     };
 
-    // Bonus: evaluate block.deprecated / block.yanked against the installed
-    // version, using the flags persisted in the store. `block.cve_severity`
-    // and `block.malware` still wait for Phase 2 vuln intel.
+    // Bonus 1.5 — block.yanked / block.deprecated on the installed version.
     if let Some(release_entry) = releases.iter().find(|r| r.version == installed) {
         if release_entry.yanked && resolved.block.yanked {
             return Compliance::Violation(format!(
@@ -210,7 +306,23 @@ pub fn evaluate_dependency(
         }
     }
 
-    match compute_recommended_version(resolved, releases, dialect, now) {
+    // Phase 2 — block.cve_severity on the installed version.
+    let block_sev = block_severity_set(resolved);
+    if !block_sev.is_empty() {
+        if let Some(matched) = vulns_by_version.get(installed) {
+            let blocking: Vec<MatchedVuln> = matched
+                .iter()
+                .filter(|v| block_sev.contains(&v.severity))
+                .cloned()
+                .collect();
+            if !blocking.is_empty() {
+                return Compliance::VulnerabilityViolation(blocking);
+            }
+        }
+    }
+
+    match compute_recommended_version_with_vulns(resolved, releases, vulns_by_version, dialect, now)
+    {
         Some(recommended) => {
             compare_installed_to_recommended(name, installed, &recommended, dialect)
         }
@@ -219,7 +331,8 @@ pub fn evaluate_dependency(
             name
         )),
         None => Compliance::InsufficientCandidates(format!(
-            "{}: policy filters (stability / min_age_days / offset) dropped all {} known versions",
+            "{}: policy filters (stability / min_age_days / offset / cve remediation) \
+             dropped all {} known versions",
             name,
             releases.len()
         )),

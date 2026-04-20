@@ -1189,6 +1189,8 @@ dependencies = [
  "chrono",
  "globset",
  "insta",
+ "packguard-core",
+ "packguard-intel",
  "pep440_rs",
  "semver",
  "serde",

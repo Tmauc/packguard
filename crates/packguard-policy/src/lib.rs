@@ -16,7 +16,10 @@ pub use model::{
     ResolvedPolicy, Stability,
 };
 pub use parse::{load_policy, parse_policy, CONSERVATIVE_DEFAULTS_YAML};
-pub use resolve::{compute_recommended_version, evaluate_dependency};
+pub use resolve::{
+    compute_recommended_version, compute_recommended_version_with_vulns, evaluate_dependency,
+    evaluate_dependency_with_vulns, VulnsByVersion,
+};
 
 #[cfg(test)]
 mod tests {
@@ -310,6 +313,146 @@ overrides:
             }
             other => panic!("expected InsufficientCandidates, got {other:?}"),
         }
+    }
+
+    fn vuln(advisory: &str, severity: packguard_core::Severity) -> packguard_intel::MatchedVuln {
+        packguard_intel::MatchedVuln {
+            advisory_id: advisory.to_string(),
+            source: "osv".into(),
+            ecosystem: "npm".into(),
+            package_name: "lodash".into(),
+            version: String::new(),
+            severity,
+            cve_id: Some(format!("CVE-FAKE-{advisory}")),
+            aliases: vec![],
+            summary: None,
+            url: None,
+            fixed_versions: vec!["4.17.21".into()],
+            published_at: None,
+        }
+    }
+
+    #[test]
+    fn cve_severity_on_installed_triggers_vulnerability_violation() {
+        let p = parse_policy(
+            r#"
+defaults:
+  offset: 0
+  block:
+    cve_severity: [high, critical]
+"#,
+        )
+        .unwrap();
+        let mut vulns: crate::VulnsByVersion = Default::default();
+        vulns.insert(
+            "4.17.20".into(),
+            vec![vuln("GHSA-bad", packguard_core::Severity::High)],
+        );
+        let c = evaluate_dependency_with_vulns(
+            "lodash",
+            Some("4.17.20"),
+            &p.resolve("lodash"),
+            &rels(&[
+                ("4.17.20", "2024-01-01T00:00:00Z"),
+                ("4.17.21", "2024-02-01T00:00:00Z"),
+            ]),
+            &vulns,
+            Dialect::Semver,
+            now(),
+        );
+        match c {
+            Compliance::VulnerabilityViolation(v) => {
+                assert_eq!(v.len(), 1);
+                assert_eq!(v[0].advisory_id, "GHSA-bad");
+            }
+            other => panic!("expected VulnerabilityViolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cve_severity_below_block_threshold_does_not_violate() {
+        let p = parse_policy(
+            r#"
+defaults:
+  offset: 0
+  block:
+    cve_severity: [critical]
+"#,
+        )
+        .unwrap();
+        let mut vulns: crate::VulnsByVersion = Default::default();
+        vulns.insert(
+            "4.17.20".into(),
+            vec![vuln("GHSA-mid", packguard_core::Severity::High)],
+        );
+        let c = evaluate_dependency_with_vulns(
+            "lodash",
+            Some("4.17.20"),
+            &p.resolve("lodash"),
+            &rels(&[
+                ("4.17.20", "2024-01-01T00:00:00Z"),
+                ("4.17.21", "2024-02-01T00:00:00Z"),
+            ]),
+            &vulns,
+            Dialect::Semver,
+            now(),
+        );
+        // High isn't in the block list (only `critical` is) → falls through
+        // to the normal "behind the recommended" warning.
+        assert!(matches!(c, Compliance::Warning(_)), "got {c:?}");
+    }
+
+    #[test]
+    fn remediation_skips_vulnerable_recommendation() {
+        // offset=0 normally recommends 4.17.21. When that tip has a blocking
+        // CVE, the resolver falls back to 4.17.20.
+        let p = parse_policy(
+            r#"
+defaults:
+  offset: 0
+  block:
+    cve_severity: [high, critical]
+"#,
+        )
+        .unwrap();
+        let releases = rels(&[
+            ("4.17.18", "2024-01-01T00:00:00Z"),
+            ("4.17.20", "2024-02-01T00:00:00Z"),
+            ("4.17.21", "2024-03-01T00:00:00Z"),
+        ]);
+
+        let mut vulns_tip: crate::VulnsByVersion = Default::default();
+        vulns_tip.insert(
+            "4.17.21".into(),
+            vec![vuln("GHSA-at-tip", packguard_core::Severity::High)],
+        );
+        let rec_tip = compute_recommended_version_with_vulns(
+            &p.resolve("lodash"),
+            &releases,
+            &vulns_tip,
+            Dialect::Semver,
+            now(),
+        );
+        assert_eq!(rec_tip.as_deref(), Some("4.17.20"));
+
+        // All three candidates vulnerable → None.
+        let mut vulns_all = vulns_tip.clone();
+        vulns_all.insert(
+            "4.17.20".into(),
+            vec![vuln("GHSA-2", packguard_core::Severity::High)],
+        );
+        vulns_all.insert(
+            "4.17.18".into(),
+            vec![vuln("GHSA-3", packguard_core::Severity::High)],
+        );
+        let rec_all = compute_recommended_version_with_vulns(
+            &p.resolve("lodash"),
+            &releases,
+            &vulns_all,
+            Dialect::Semver,
+            now(),
+        );
+        assert!(rec_all.is_none());
     }
 
     #[test]

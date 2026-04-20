@@ -82,6 +82,7 @@ fn verdict(c: &Compliance) -> String {
         Compliance::Compliant => "compliant".into(),
         Compliance::Warning(m) => format!("warning: {m}"),
         Compliance::Violation(m) => format!("violation: {m}"),
+        Compliance::VulnerabilityViolation(v) => format!("cve-violation: {} vulns", v.len()),
         Compliance::InsufficientCandidates(m) => format!("insufficient: {m}"),
     }
 }

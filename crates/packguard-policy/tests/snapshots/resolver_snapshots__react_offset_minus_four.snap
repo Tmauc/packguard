@@ -1,7 +1,7 @@
 ---
 source: crates/packguard-policy/tests/resolver_snapshots.rs
-assertion_line: 127
+assertion_line: 128
 expression: "(rec, verdict(&c))"
 ---
 - ~
-- "insufficient: react: policy filters (stability / min_age_days / offset) dropped all 12 known versions"
+- "insufficient: react: policy filters (stability / min_age_days / offset / cve remediation) dropped all 12 known versions"

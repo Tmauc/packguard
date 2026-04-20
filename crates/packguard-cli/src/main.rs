@@ -6,8 +6,10 @@ use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table};
 use owo_colors::OwoColorize;
 use packguard_core::model::{Delta, DepKind, Project, RemotePackage};
 use packguard_core::{default_ecosystems, Ecosystem};
+use packguard_intel::{match_vulnerabilities, MatchedVuln};
 use packguard_policy::{
-    evaluate_dependency, parse_policy, Compliance, Dialect, Policy, ReleaseInfo,
+    evaluate_dependency_with_vulns, parse_policy, Compliance, Dialect, Policy, ReleaseInfo,
+    VulnsByVersion,
 };
 use packguard_store::Store;
 use sha2::{Digest, Sha256};
@@ -532,11 +534,14 @@ fn report(
                 };
             let dialect = Dialect::for_ecosystem(&dep.ecosystem);
             let resolved = policy.resolve(&dep.name);
-            let compliance = evaluate_dependency(
+            let vulns_by_version =
+                build_vulns_by_version(&store, &dep.ecosystem, &dep.name, &releases);
+            let compliance = evaluate_dependency_with_vulns(
                 &dep.name,
                 dep.installed.as_deref(),
                 &resolved,
                 &releases,
+                &vulns_by_version,
                 dialect,
                 now,
             );
@@ -574,6 +579,54 @@ fn report(
     Ok(())
 }
 
+fn build_vulns_by_version(
+    store: &Store,
+    ecosystem: &str,
+    name: &str,
+    releases: &[ReleaseInfo],
+) -> VulnsByVersion {
+    let stored = match store.load_vulnerabilities(ecosystem, name) {
+        Ok(rows) => rows,
+        Err(err) => {
+            tracing::warn!(%ecosystem, %name, ?err, "failed to load vulnerabilities");
+            return VulnsByVersion::new();
+        }
+    };
+    if stored.is_empty() {
+        return VulnsByVersion::new();
+    }
+    // Convert the store's StoredVulnerability into core's Vulnerability for
+    // the matching engine.
+    let advisories: Vec<packguard_core::Vulnerability> = stored
+        .into_iter()
+        .map(|s| packguard_core::Vulnerability {
+            source: s.source,
+            advisory_id: s.advisory_id,
+            ecosystem: s.ecosystem,
+            package_name: s.package_name,
+            severity: s.severity,
+            cve_id: s.cve_id,
+            aliases: s.aliases,
+            summary: s.summary,
+            url: s.url,
+            affected: s.affected,
+            fixed_versions: s.fixed_versions,
+            published_at: s.published_at,
+            modified_at: s.modified_at,
+        })
+        .collect();
+
+    let mut by_version: VulnsByVersion = VulnsByVersion::new();
+    for rel in releases {
+        let matches: Vec<MatchedVuln> =
+            match_vulnerabilities(ecosystem, name, &rel.version, &advisories);
+        if !matches.is_empty() {
+            by_version.insert(rel.version.clone(), matches);
+        }
+    }
+    by_version
+}
+
 fn load_project_policy(path: &Path) -> Result<Policy> {
     let candidate = path.join(".packguard.yml");
     if !candidate.exists() {
@@ -596,10 +649,14 @@ fn summarize(rows: &[ReportRow]) -> ReportSummary {
         insufficient: 0,
     };
     for r in rows {
-        match r.compliance {
+        match &r.compliance {
             Compliance::Compliant => s.compliant += 1,
             Compliance::Warning(_) => s.warnings += 1,
             Compliance::Violation(_) => s.violations += 1,
+            // A VulnerabilityViolation is semantically a blocking
+            // violation — fold it into the violation counter so
+            // --fail-on-violation keeps working.
+            Compliance::VulnerabilityViolation(_) => s.violations += 1,
             Compliance::InsufficientCandidates(_) => s.insufficient += 1,
         }
     }
@@ -682,11 +739,54 @@ fn render_table(rows: &[ReportRow], summary: &ReportSummary, path: &Path) {
     let _ = path;
 }
 
+fn vuln_violation_message(package: &str, vulns: &[MatchedVuln]) -> String {
+    let ids = vulns
+        .iter()
+        .map(|v| v.cve_id.clone().unwrap_or_else(|| v.advisory_id.clone()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{}: {} blocking CVE(s): {}", package, vulns.len(), ids)
+}
+
+fn json_row_for(r: &ReportRow) -> serde_json::Value {
+    use serde_json::json;
+    let (status, message): (&str, Option<String>) = match &r.compliance {
+        Compliance::Compliant => ("compliant", None),
+        Compliance::Warning(m) => ("warning", Some(m.clone())),
+        Compliance::Violation(m) => ("violation", Some(m.clone())),
+        Compliance::VulnerabilityViolation(vulns) => (
+            "cve-violation",
+            Some(vuln_violation_message(&r.package, vulns)),
+        ),
+        Compliance::InsufficientCandidates(m) => ("insufficient", Some(m.clone())),
+    };
+    let cve_ids: Vec<String> = match &r.compliance {
+        Compliance::VulnerabilityViolation(vulns) => vulns
+            .iter()
+            .map(|v| v.cve_id.clone().unwrap_or_else(|| v.advisory_id.clone()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    json!({
+        "ecosystem": r.ecosystem,
+        "workspace": r.workspace,
+        "package": r.package,
+        "kind": kind_str(r.kind),
+        "installed": r.installed,
+        "latest": r.latest,
+        "latest_published_at": r.latest_published_at,
+        "status": status,
+        "message": message,
+        "cve_ids": cve_ids,
+    })
+}
+
 fn compliance_badge(c: &Compliance) -> (&'static str, Color) {
     match c {
         Compliance::Compliant => ("compliant", Color::Green),
         Compliance::Warning(_) => ("warning", Color::Yellow),
         Compliance::Violation(_) => ("violation", Color::Red),
+        Compliance::VulnerabilityViolation(_) => ("cve-violation", Color::Red),
         Compliance::InsufficientCandidates(_) => ("insufficient", Color::Magenta),
     }
 }
@@ -700,37 +800,24 @@ fn render_json(rows: &[ReportRow], summary: &ReportSummary) -> Result<()> {
             "violations": summary.violations,
             "insufficient": summary.insufficient,
         },
-        "rows": rows.iter().map(|r| {
-            let (status, message) = match &r.compliance {
-                Compliance::Compliant => ("compliant", None),
-                Compliance::Warning(m) => ("warning", Some(m.as_str())),
-                Compliance::Violation(m) => ("violation", Some(m.as_str())),
-                Compliance::InsufficientCandidates(m) => ("insufficient", Some(m.as_str())),
-            };
-            json!({
-                "ecosystem": r.ecosystem,
-                "workspace": r.workspace,
-                "package": r.package,
-                "kind": kind_str(r.kind),
-                "installed": r.installed,
-                "latest": r.latest,
-                "latest_published_at": r.latest_published_at,
-                "status": status,
-                "message": message,
-            })
-        }).collect::<Vec<_>>(),
+        "rows": rows.iter().map(json_row_for).collect::<Vec<_>>(),
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
 
 /// Minimal SARIF 2.1.0 — only blocking violations are emitted as results.
+/// Both plain `Violation` (policy pin / major-behind) and
+/// `VulnerabilityViolation` (blocking CVE) show up as `level: error`.
 fn render_sarif(rows: &[ReportRow]) -> Result<()> {
     use serde_json::json;
     let results: Vec<_> = rows
         .iter()
         .filter_map(|r| match &r.compliance {
             Compliance::Violation(msg) => Some((r, msg.clone())),
+            Compliance::VulnerabilityViolation(vulns) => {
+                Some((r, vuln_violation_message(&r.package, vulns)))
+            }
             _ => None,
         })
         .map(|(r, msg)| {
