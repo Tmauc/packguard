@@ -847,12 +847,75 @@ async fn audit(
         }
     };
 
+    // Opt-in Socket.dev scanner: only active when PACKGUARD_SOCKET_TOKEN is
+    // set in the env. Silent skip otherwise — supply-chain scanners are
+    // genuinely opt-in. Same TTL bookkeeping as the OSV fallback.
+    let socket_client = if no_live_fallback {
+        None
+    } else {
+        packguard_intel::socket::token_from_env().and_then(|tok| {
+            match packguard_intel::socket::SocketClient::new(&tok) {
+                Ok(c) => {
+                    eprintln!(
+                        "{} Socket.dev token detected — supplementing audit with scanner alerts",
+                        "•".dimmed()
+                    );
+                    Some(c)
+                }
+                Err(err) => {
+                    eprintln!(
+                        "{} Socket.dev client init failed ({:#}) — skipping",
+                        "warn".yellow(),
+                        err
+                    );
+                    None
+                }
+            }
+        })
+    };
+
     let mut rows: Vec<AuditRow> = Vec::new();
     for dep in dependencies {
         let Some(installed) = dep.installed.as_deref() else {
             continue;
         };
         let stored = store.load_vulnerabilities(&dep.ecosystem, &dep.name)?;
+
+        // Socket scanner enrichment: persist its alerts as MalwareReports.
+        // 24h TTL via sync_log key `socket:{eco}:{name}@{version}`.
+        if let Some(client) = &socket_client {
+            let key = format!("socket:{}:{}@{}", dep.ecosystem, dep.name, installed);
+            let stale = store
+                .get_sync_state(&key)?
+                .and_then(|s| s.synced_at)
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+                .map(|ts| Utc::now().signed_duration_since(ts.to_utc()).num_hours() >= 24)
+                .unwrap_or(true);
+            if stale {
+                match client.query(&dep.ecosystem, &dep.name, installed).await {
+                    Ok(reports) => {
+                        if !reports.is_empty() {
+                            store.persist_malware_reports(&reports)?;
+                        }
+                        let state = packguard_store::SyncState {
+                            synced_at: Some(Utc::now().to_rfc3339()),
+                            record_count: reports.len() as i64,
+                            ..Default::default()
+                        };
+                        store.put_sync_state(&key, &state)?;
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "{} Socket query for {}@{}: {:#}",
+                            "warn".yellow(),
+                            dep.name,
+                            installed,
+                            err
+                        );
+                    }
+                }
+            }
+        }
 
         // Live fallback: empty cache OR stale lookup (>24h) → POST /v1/query.
         // Results are persisted with source="osv-api-live"; a sync_log entry

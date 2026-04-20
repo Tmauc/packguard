@@ -12,6 +12,7 @@ pub mod matcher;
 pub mod normalize;
 pub mod osv;
 pub mod osv_api;
+pub mod socket;
 pub mod typosquat;
 
 pub use matcher::{match_vulnerabilities, version_matches_spec, MatchedVuln};
