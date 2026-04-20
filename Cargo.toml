@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/packguard-core", "crates/packguard-store", "crates/packguard-cli"]
+members = [
+    "crates/packguard-core",
+    "crates/packguard-store",
+    "crates/packguard-policy",
+    "crates/packguard-cli",
+]
 
 [workspace.package]
 version = "0.0.1"

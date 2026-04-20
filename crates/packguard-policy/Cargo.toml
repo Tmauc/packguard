@@ -1,0 +1,22 @@
+[package]
+name = "packguard-policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PackGuard policy engine: offset rules, pins, recommended-version computation."
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+semver = { workspace = true }
+pep440_rs = { workspace = true }
+globset = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
