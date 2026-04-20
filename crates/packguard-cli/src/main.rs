@@ -5,9 +5,9 @@ use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table};
 use owo_colors::OwoColorize;
 use packguard_core::model::{Delta, DepKind, Project, RemotePackage};
-use packguard_core::{Ecosystem, default_ecosystems};
+use packguard_core::{default_ecosystems, Ecosystem};
 use packguard_policy::{
-    Compliance, Dialect, Policy, ReleaseInfo, evaluate_dependency, parse_policy,
+    evaluate_dependency, parse_policy, Compliance, Dialect, Policy, ReleaseInfo,
 };
 use packguard_store::Store;
 use sha2::{Digest, Sha256};
@@ -15,7 +15,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
-#[command(name = "packguard", version, about = "Local package version governance")]
+#[command(
+    name = "packguard",
+    version,
+    about = "Local package version governance"
+)]
 struct Cli {
     /// SQLite store location. Defaults to `~/.packguard/store.db`.
     #[arg(long, global = true)]
@@ -81,7 +85,11 @@ async fn main() -> Result<()> {
             format,
             fail_on_violation,
         } => report(path, format, fail_on_violation, &store_path),
-        Cmd::Scan { path, offline, force } => scan(path, offline, force, &store_path).await,
+        Cmd::Scan {
+            path,
+            offline,
+            force,
+        } => scan(path, offline, force, &store_path).await,
     }
 }
 
@@ -198,7 +206,11 @@ async fn handle_project(
         }
         BTreeMap::new()
     } else {
-        let names: Vec<String> = project.dependencies.iter().map(|d| d.name.clone()).collect();
+        let names: Vec<String> = project
+            .dependencies
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         let results = eco.fetch_latest(names).await;
         let mut map = BTreeMap::new();
         for (name, result) in results {
@@ -250,9 +262,7 @@ fn hash_file_if_exists(hasher: &mut Sha256, path: &Path) -> Result<()> {
             Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => {
-            Err(anyhow::Error::from(e).context(format!("hashing {}", path.display())))
-        }
+        Err(e) => Err(anyhow::Error::from(e).context(format!("hashing {}", path.display()))),
     }
 }
 
@@ -265,7 +275,11 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
-fn render_project(eco: &dyn Ecosystem, project: &Project, remotes: &BTreeMap<String, RemotePackage>) {
+fn render_project(
+    eco: &dyn Ecosystem,
+    project: &Project,
+    remotes: &BTreeMap<String, RemotePackage>,
+) {
     println!(
         "{} {} {} — {} direct deps",
         "📦".dimmed(),
@@ -425,7 +439,10 @@ fn report(
 fn load_project_policy(path: &Path) -> Result<Policy> {
     let candidate = path.join(".packguard.yml");
     if !candidate.exists() {
-        tracing::debug!("no .packguard.yml at {}; using built-in defaults", path.display());
+        tracing::debug!(
+            "no .packguard.yml at {}; using built-in defaults",
+            path.display()
+        );
         return parse_policy(packguard_policy::CONSERVATIVE_DEFAULTS_YAML);
     }
     let text = std::fs::read_to_string(&candidate)
@@ -434,7 +451,11 @@ fn load_project_policy(path: &Path) -> Result<Policy> {
 }
 
 fn summarize(rows: &[ReportRow]) -> ReportSummary {
-    let mut s = ReportSummary { compliant: 0, warnings: 0, violations: 0 };
+    let mut s = ReportSummary {
+        compliant: 0,
+        warnings: 0,
+        violations: 0,
+    };
     for r in rows {
         match r.compliance {
             Compliance::Compliant => s.compliant += 1,
@@ -484,7 +505,11 @@ fn render_table(rows: &[ReportRow], summary: &ReportSummary, path: &Path) {
                     ]);
             }
             current_eco = Some(row.ecosystem.as_str());
-            println!("\n{} {}", "▸".dimmed(), format!("[{}]", row.ecosystem).bold());
+            println!(
+                "\n{} {}",
+                "▸".dimmed(),
+                format!("[{}]", row.ecosystem).bold()
+            );
             current_ws = None;
         }
         if current_ws.is_none() || current_ws.unwrap() != &row.workspace {

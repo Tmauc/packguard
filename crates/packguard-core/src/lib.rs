@@ -15,7 +15,7 @@ pub use classify::classify_semver;
 pub use ecosystem::Ecosystem;
 pub use model::{Delta, DepKind, Dependency, Project, RemotePackage};
 pub use npm::Npm;
-pub use pypi::{Pypi, classify_pep440, normalize_name};
+pub use pypi::{classify_pep440, normalize_name, Pypi};
 
 /// Default set of Tier 1 ecosystems enabled in Phase 1.
 pub fn default_ecosystems() -> anyhow::Result<Vec<std::sync::Arc<dyn Ecosystem>>> {

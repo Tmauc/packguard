@@ -86,7 +86,11 @@ fn env_with_store() -> Env {
     let repo = tmp.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     seed_store(&store, &repo);
-    Env { _tmp: tmp, store, repo }
+    Env {
+        _tmp: tmp,
+        store,
+        repo,
+    }
 }
 
 #[test]
@@ -156,11 +160,9 @@ overrides:
     assert_eq!(sarif["version"], "2.1.0");
     let results = sarif["runs"][0]["results"].as_array().unwrap();
     assert!(!results.is_empty(), "expected a violation; sarif: {stdout}");
-    assert!(
-        results
-            .iter()
-            .any(|r| r["message"]["text"].as_str().unwrap().contains("lodash"))
-    );
+    assert!(results
+        .iter()
+        .any(|r| r["message"]["text"].as_str().unwrap().contains("lodash")));
 }
 
 #[test]
@@ -182,7 +184,11 @@ overrides:
         .arg(&env.repo)
         .output()
         .unwrap();
-    assert!(!out.status.success(), "stdout: {}", String::from_utf8_lossy(&out.stdout));
+    assert!(
+        !out.status.success(),
+        "stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
     assert_eq!(out.status.code(), Some(1));
 }
 

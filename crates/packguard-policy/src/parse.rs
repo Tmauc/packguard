@@ -21,8 +21,8 @@ pub fn parse_policy(text: &str) -> Result<Policy> {
 }
 
 pub fn load_policy(path: &Path) -> Result<Policy> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     parse_policy(&text)
 }
 
@@ -90,8 +90,7 @@ pub(crate) fn deserialize_offset_opt<'de, D>(de: D) -> Result<Option<u32>, D::Er
 where
     D: Deserializer<'de>,
 {
-    Ok(Option::<i64>::deserialize(de)?
-        .map(|n| n.unsigned_abs().min(u32::MAX as u64) as u32))
+    Ok(Option::<i64>::deserialize(de)?.map(|n| n.unsigned_abs().min(u32::MAX as u64) as u32))
 }
 
 impl Policy {
@@ -133,7 +132,10 @@ groups:
         )
         .unwrap();
         assert_eq!(p.groups[0].match_globs, vec!["bcrypt*".to_string()]);
-        assert_eq!(p.groups[1].match_globs, vec!["foo".to_string(), "bar*".to_string()]);
+        assert_eq!(
+            p.groups[1].match_globs,
+            vec!["foo".to_string(), "bar*".to_string()]
+        );
     }
 
     #[test]

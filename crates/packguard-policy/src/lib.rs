@@ -15,7 +15,7 @@ pub use model::{
     BlockRule, Compliance, GroupRule, OverrideRule, Policy, PolicyDefaults, ReleaseInfo,
     ResolvedPolicy, Stability,
 };
-pub use parse::{CONSERVATIVE_DEFAULTS_YAML, load_policy, parse_policy};
+pub use parse::{load_policy, parse_policy, CONSERVATIVE_DEFAULTS_YAML};
 pub use resolve::{compute_recommended_version, evaluate_dependency};
 
 #[cfg(test)]
@@ -199,7 +199,10 @@ overrides:
             "lodash",
             Some("4.17.20"),
             &p.resolve("lodash"),
-            &rels(&[("4.17.20", "2024-01-01T00:00:00Z"), ("4.17.21", "2024-02-01T00:00:00Z")]),
+            &rels(&[
+                ("4.17.20", "2024-01-01T00:00:00Z"),
+                ("4.17.21", "2024-02-01T00:00:00Z"),
+            ]),
             Dialect::Semver,
             now(),
         );
@@ -213,7 +216,10 @@ overrides:
             "foo",
             Some("1.0.0"),
             &p.resolve("foo"),
-            &rels(&[("1.0.0", "2024-01-01T00:00:00Z"), ("1.1.0", "2024-06-01T00:00:00Z")]),
+            &rels(&[
+                ("1.0.0", "2024-01-01T00:00:00Z"),
+                ("1.1.0", "2024-06-01T00:00:00Z"),
+            ]),
             Dialect::Semver,
             now(),
         );

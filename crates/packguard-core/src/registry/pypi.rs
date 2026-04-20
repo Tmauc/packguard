@@ -50,7 +50,11 @@ impl PypiClient {
             .connect_timeout(Duration::from_secs(5))
             .build()
             .context("building reqwest client")?;
-        Ok(Self { http, base_url, concurrency: 16 })
+        Ok(Self {
+            http,
+            base_url,
+            concurrency: 16,
+        })
     }
 
     pub fn with_concurrency(mut self, n: usize) -> Self {

@@ -27,10 +27,10 @@ pub fn parse_uv_lock(path: &Path) -> Result<BTreeMap<String, String>> {
 }
 
 fn parse_generic(path: &Path) -> Result<BTreeMap<String, String>> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let parsed: Lockfile = toml::from_str(&text)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let parsed: Lockfile =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
     let mut out = BTreeMap::new();
     for p in parsed.package {
         out.insert(normalize_name(&p.name), p.version);

@@ -166,10 +166,9 @@ pub fn evaluate_dependency(
     if let Some(pin) = &resolved.pin {
         return match installed {
             Some(v) if v == pin => Compliance::Compliant,
-            Some(v) => Compliance::Violation(format!(
-                "{} pinned to {} but {} is installed",
-                name, pin, v
-            )),
+            Some(v) => {
+                Compliance::Violation(format!("{} pinned to {} but {} is installed", name, pin, v))
+            }
             None => Compliance::Violation(format!(
                 "{} pinned to {} but installed version unknown",
                 name, pin
@@ -196,7 +195,10 @@ pub fn evaluate_dependency(
         return Compliance::Warning(format!("{}: no latest version available", name));
     };
     let Some(installed_meta) = dialect.meta(installed) else {
-        return Compliance::Warning(format!("{}: unparsable installed version {}", name, installed));
+        return Compliance::Warning(format!(
+            "{}: unparsable installed version {}",
+            name, installed
+        ));
     };
     let max_allowed_major = latest_meta.major.saturating_sub(resolved.offset as u64);
     if installed_meta.major > max_allowed_major {

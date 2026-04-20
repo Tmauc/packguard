@@ -6,7 +6,7 @@
 use crate::ecosystem::Ecosystem;
 use crate::model::{Delta, DepKind, Dependency, Project, RemotePackage};
 use crate::registry::npm::NpmClient;
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -119,8 +119,8 @@ fn load_installed_versions(root: &Path) -> Result<(BTreeMap<String, String>, Opt
     if !lock_path.exists() {
         return Ok((BTreeMap::new(), None));
     }
-    let bytes = std::fs::read(&lock_path)
-        .with_context(|| format!("reading {}", lock_path.display()))?;
+    let bytes =
+        std::fs::read(&lock_path).with_context(|| format!("reading {}", lock_path.display()))?;
     let lock: PackageLock = serde_json::from_slice(&bytes)
         .with_context(|| format!("parsing {}", lock_path.display()))?;
 
@@ -213,7 +213,10 @@ mod tests {
 
     #[test]
     fn direct_dep_name_scoped() {
-        assert_eq!(direct_dep_name("node_modules/@babel/core"), Some("@babel/core"));
+        assert_eq!(
+            direct_dep_name("node_modules/@babel/core"),
+            Some("@babel/core")
+        );
     }
 
     #[test]
@@ -302,7 +305,11 @@ mod tests {
     #[test]
     fn rejects_lockfile_v1() {
         let tmp = tempdir().unwrap();
-        std::fs::write(tmp.path().join("package.json"), r#"{"dependencies":{"a":"1"}}"#).unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"dependencies":{"a":"1"}}"#,
+        )
+        .unwrap();
         std::fs::write(
             tmp.path().join("package-lock.json"),
             r#"{"lockfileVersion":1,"packages":{}}"#,

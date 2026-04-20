@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use packguard_core::model::{DepKind, Project, RemotePackage};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -52,8 +52,8 @@ impl Store {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
-        let mut conn = Connection::open(path)
-            .with_context(|| format!("opening {}", path.display()))?;
+        let mut conn =
+            Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("enabling WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")
@@ -258,11 +258,7 @@ fn upsert_workspace(
     Ok(id)
 }
 
-fn upsert_package(
-    tx: &rusqlite::Transaction<'_>,
-    ecosystem: &str,
-    name: &str,
-) -> Result<i64> {
+fn upsert_package(tx: &rusqlite::Transaction<'_>, ecosystem: &str, name: &str) -> Result<i64> {
     tx.execute(
         "INSERT INTO packages (ecosystem, name) VALUES (?1, ?2) \
          ON CONFLICT(ecosystem, name) DO NOTHING",
@@ -434,11 +430,9 @@ mod tests {
     #[test]
     fn fingerprint_is_none_when_repo_unknown() {
         let store = Store::open_in_memory().unwrap();
-        assert!(
-            store
-                .last_fingerprint(&PathBuf::from("/nope"), "npm")
-                .unwrap()
-                .is_none()
-        );
+        assert!(store
+            .last_fingerprint(&PathBuf::from("/nope"), "npm")
+            .unwrap()
+            .is_none());
     }
 }

@@ -169,10 +169,7 @@ fn resolve_installed(
                 let key = normalize_name(&dep.name);
                 pinned.insert(key, v);
                 if source.is_none() {
-                    source = req
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(str::to_string);
+                    source = req.file_name().and_then(|n| n.to_str()).map(str::to_string);
                 }
             }
         }
@@ -226,7 +223,10 @@ mod tests {
 
     #[test]
     fn classify_basics() {
-        assert_eq!(classify_pep440(Some("1.2.3"), Some("1.2.3")), Delta::Current);
+        assert_eq!(
+            classify_pep440(Some("1.2.3"), Some("1.2.3")),
+            Delta::Current
+        );
         assert_eq!(classify_pep440(Some("1.2.3"), Some("1.2.4")), Delta::Patch);
         assert_eq!(classify_pep440(Some("1.2.3"), Some("1.3.0")), Delta::Minor);
         assert_eq!(classify_pep440(Some("1.2.3"), Some("2.0.0")), Delta::Major);
@@ -242,7 +242,10 @@ mod tests {
 
     #[test]
     fn classify_unknown_on_garbage() {
-        assert_eq!(classify_pep440(Some("not-a-version"), Some("1.0")), Delta::Unknown);
+        assert_eq!(
+            classify_pep440(Some("not-a-version"), Some("1.0")),
+            Delta::Unknown
+        );
         assert_eq!(classify_pep440(None, Some("1.0")), Delta::Unknown);
     }
 }

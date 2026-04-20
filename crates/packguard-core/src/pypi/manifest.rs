@@ -57,10 +57,10 @@ struct PoetryGroup {
 }
 
 pub fn parse_pyproject(path: &Path) -> Result<Pyproject> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let raw: PyprojectRaw = toml::from_str(&text)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let raw: PyprojectRaw =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
 
     let mut deps = Vec::new();
     let mut name = raw.project.as_ref().and_then(|p| p.name.clone());
@@ -114,7 +114,10 @@ pub fn parse_pyproject(path: &Path) -> Result<Pyproject> {
         }
     }
 
-    Ok(Pyproject { name, dependencies: deps })
+    Ok(Pyproject {
+        name,
+        dependencies: deps,
+    })
 }
 
 fn add_poetry_deps(out: &mut Vec<Dependency>, src: &BTreeMap<String, toml::Value>, kind: DepKind) {
@@ -170,7 +173,11 @@ pub fn parse_pep508_spec(spec: &str, kind: DepKind) -> Option<Dependency> {
 
     Some(Dependency {
         name,
-        declared_range: if rest.is_empty() { "*".to_string() } else { rest },
+        declared_range: if rest.is_empty() {
+            "*".to_string()
+        } else {
+            rest
+        },
         installed,
         kind,
         source_lockfile: None,
@@ -213,8 +220,8 @@ pub fn find_requirements_files(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 pub fn parse_requirements_file(path: &Path) -> Result<Vec<Dependency>> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let mut out = Vec::new();
     for line in text.lines() {
         let line = line.split('#').next().unwrap_or(line).trim();

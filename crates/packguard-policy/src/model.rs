@@ -82,7 +82,11 @@ pub struct OverrideRule {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupRule {
     pub name: String,
-    #[serde(rename = "match", default, deserialize_with = "crate::parse::deserialize_match_list")]
+    #[serde(
+        rename = "match",
+        default,
+        deserialize_with = "crate::parse::deserialize_match_list"
+    )]
     pub match_globs: Vec<String>,
     #[serde(default, deserialize_with = "crate::parse::deserialize_offset_opt")]
     pub offset: Option<u32>,

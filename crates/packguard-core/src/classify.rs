@@ -28,8 +28,14 @@ mod tests {
 
     #[test]
     fn current_when_equal_or_ahead() {
-        assert_eq!(classify_semver(Some("1.2.3"), Some("1.2.3")), Delta::Current);
-        assert_eq!(classify_semver(Some("2.0.0"), Some("1.9.9")), Delta::Current);
+        assert_eq!(
+            classify_semver(Some("1.2.3"), Some("1.2.3")),
+            Delta::Current
+        );
+        assert_eq!(
+            classify_semver(Some("2.0.0"), Some("1.9.9")),
+            Delta::Current
+        );
     }
 
     #[test]
@@ -43,6 +49,9 @@ mod tests {
     fn unknown_when_missing_or_unparsable() {
         assert_eq!(classify_semver(None, Some("1.2.3")), Delta::Unknown);
         assert_eq!(classify_semver(Some("1.2.3"), None), Delta::Unknown);
-        assert_eq!(classify_semver(Some("latest"), Some("1.2.3")), Delta::Unknown);
+        assert_eq!(
+            classify_semver(Some("latest"), Some("1.2.3")),
+            Delta::Unknown
+        );
     }
 }
