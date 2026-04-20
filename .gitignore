@@ -5,3 +5,8 @@ Cargo.lock.bak
 .idea/
 .vscode/
 *.swp
+
+# ts-rs writes transitive deps to <crate>/bindings/ even when export_all_to
+# points elsewhere — scratch output from the drift test. The canonical files
+# live in dashboard/src/api/types/.
+crates/packguard-server/bindings/

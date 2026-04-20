@@ -100,6 +100,29 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// Boot the local dashboard. Phase 4a: serves the REST API on
+    /// `--port` (default 5174); the Vite dev server (port 5173) proxies
+    /// `/api/*` here. Phase 4b will embed the built assets so the same
+    /// command serves both API + UI in release.
+    Ui {
+        /// Path the server uses as the project root for scan operations.
+        /// Defaults to the current directory.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// TCP port to bind. Default 5174 (matches the Vite proxy in
+        /// `dashboard/vite.config.ts`).
+        #[arg(long, default_value_t = 5174)]
+        port: u16,
+        /// Bind address. Default 127.0.0.1 — Phase 4a is local-only,
+        /// the `serve` mode (v2) will widen this safely with auth.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Skip the auto-open browser step. Recommended when running
+        /// alongside `pnpm dev` (the Vite server is the user-facing
+        /// URL during dev; the Rust server is the API the proxy calls).
+        #[arg(long)]
+        no_open: bool,
+    },
     /// Scan a project, query registries, and persist the result to SQLite.
     Scan {
         /// Path to the project root. Defaults to the current directory.
@@ -159,6 +182,12 @@ async fn main() -> Result<()> {
             offline,
             force,
         } => scan(path, offline, force, &store_path).await,
+        Cmd::Ui {
+            path,
+            port,
+            host,
+            no_open,
+        } => ui(path, port, host, no_open, &store_path).await,
         Cmd::Sync {
             skip_osv,
             skip_ghsa,
@@ -419,6 +448,54 @@ fn init(path: PathBuf, force: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+async fn ui(
+    path: PathBuf,
+    port: u16,
+    host: String,
+    no_open: bool,
+    store_path: &Path,
+) -> Result<()> {
+    let store = Store::open(store_path)
+        .with_context(|| format!("opening store at {}", store_path.display()))?;
+    let repo_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+    let app = packguard_server::router(packguard_server::ServerConfig { repo_path, store });
+    let addr: std::net::SocketAddr = format!("{host}:{port}")
+        .parse()
+        .with_context(|| format!("parsing bind address {host}:{port}"))?;
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("binding {addr}"))?;
+    let bound = listener.local_addr()?;
+    let url = format!("http://{}", bound);
+    println!(
+        "{} {} on {}",
+        "🚀".dimmed(),
+        "PackGuard server".bold(),
+        url.cyan()
+    );
+    println!(
+        "{} dev front-end: {} (run `pnpm dev` in dashboard/)",
+        "→".dimmed(),
+        "http://127.0.0.1:5173".cyan()
+    );
+    if !no_open {
+        if let Err(err) = open::that_detached(&url) {
+            tracing::warn!(?err, "could not auto-open browser");
+        }
+    }
+    println!("{} press Ctrl+C to stop\n", "•".dimmed());
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("axum::serve")?;
+    Ok(())
+}
+
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+    println!("\n{} shutting down…", "⏹".dimmed());
 }
 
 fn resolve_store_path(explicit: Option<PathBuf>) -> Result<PathBuf> {

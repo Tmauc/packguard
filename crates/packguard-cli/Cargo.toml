@@ -16,6 +16,7 @@ packguard-core = { path = "../packguard-core" }
 packguard-store = { path = "../packguard-store" }
 packguard-policy = { path = "../packguard-policy" }
 packguard-intel = { path = "../packguard-intel" }
+packguard-server = { path = "../packguard-server" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
@@ -27,6 +28,8 @@ sha2 = { workspace = true }
 dirs = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
+open = { workspace = true }
+axum = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
