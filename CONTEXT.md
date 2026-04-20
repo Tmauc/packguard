@@ -273,7 +273,8 @@ Intégration CI : `packguard scan --fail-on-violation --format sarif`.
 | Phase | Contenu | État |
 |---|---|---|
 | **0 — Spike** | POC Rust qui scan un projet npm + query registry npm + classif semver + sortie table | ✅ done (2026-04-20, 3 commits, 12 tests) |
-| **1 — MVP CLI** | npm/pnpm/yarn + pip/poetry/uv, policy offset, SQLite, report CLI | 🎯 prochain |
+| **1 — MVP CLI** | npm/pnpm/yarn + pip/poetry/uv, policy offset, SQLite, report CLI | ✅ done (2026-04-20, 9 commits, 71 tests, 4 crates) |
+| **1.5 — Historique versions** | Persister `package_versions` complet + resolver policy précis (offset exact, `min_age_days`, `stability`) | 🎯 en cours |
 | **2 — Vuln intel online** | OSV + GH Advisory, cache, badges | |
 | **3 — Sync offline (niveau 2)** | `sync` + `--offline`, dumps | |
 | **4 — Dashboard v1** | `ui` → localhost, Vite+React, table + détail + timeline | |
@@ -320,7 +321,139 @@ typescript   5.4.5   → 6.0.3    major
 
 ---
 
-## 14. Phase 1 — MVP CLI 🎯 en cours
+## 14. Phase 1 — MVP CLI ✅ done (2026-04-20)
+
+**Livré :** 9 commits, 71 tests verts, clippy clean, fmt OK. Validé live sur `../monorepo` (front/vesta pnpm + services/incentive Poetry).
+
+**Architecture livrée :**
+```
+crates/
+├── packguard-core     # Ecosystem trait, npm (package-lock + pnpm-lock), pypi
+├── packguard-policy   # YAML parser, resolver dialect-aware, evaluate_dependency
+├── packguard-store    # rusqlite + refinery 0.9, schéma §8 complet
+└── packguard-cli      # scan / init / report
+```
+
+**Commits clés :**
+- `5a78154` refactor(core): extract `Ecosystem` trait
+- `3788822` feat(core): pypi ecosystem (pip/poetry/uv)
+- `87d1684` feat(store): rusqlite + refinery persistence
+- `f8e573c` feat(policy): YAML rules + recommendation engine
+- `cf9fe19` feat(cli): `packguard init`
+- `7f55330` feat(cli): `packguard report` (compliance + sarif/json/table)
+- `2f922ce` fix(core): pnpm-lock.yaml + tolerate non-string npm time entries
+
+**Critères de sortie — tous verts :**
+- ✅ `packguard init` détecte auto les écosystèmes
+- ✅ `scan` lit npm + pypi, écrit SQLite, skip sur fingerprint inchangé
+- ✅ `report` : tableau groupé + compliance + résumé + sarif/json/table
+- ✅ `--fail-on-violation` → exit 1
+- ✅ `scan --offline` échoue proprement si cache vide
+- ✅ README racine : usage, limitation pip, format policy
+- ✅ 71 tests verts (> 40 visés), clippy & fmt OK
+
+**Spec Phase 1 (pour historique) — détail du découpage 1.1 → 1.5 archivé ci-dessous :**
+
+<details>
+<summary>Scope originel</summary>
+
+Découpage en 5 sous-lots :
+- **1.1** multi-écosystème via trait `Ecosystem` (npm refacto + PyPI pip/poetry/uv, PEP 440)
+- **1.2** SQLite store (`rusqlite` + `refinery`, schéma §8, WAL)
+- **1.3** policy engine (`.packguard.yml` : defaults + overrides + groups, glob, `compute_recommended_version`)
+- **1.4** `packguard init` (détection auto + YAML conservateur + `--force`)
+- **1.5** rapport CLI enrichi (`report` distinct de `scan`, groupé, compliance, `--format`, `--fail-on-violation`)
+
+Décisions verrouillées Phase 1 :
+- PyPI : pip + poetry + uv ensemble, pip en declared-only mode
+- Store : `rusqlite` + `refinery`
+- Pas de `.packguard.yml` dans `../monorepo` ; usage uniquement en lecture comme cible de test
+
+</details>
+
+---
+
+## 14.5. Phase 1.5 — Historique versions 🎯 en cours
+
+**Objectif :** tenir la promesse produit du policy engine. Aujourd'hui le store ne persiste que `latest_version` par package, donc le resolver a un fallback "major-distance" imprécis. `min_age_days` et `stability` sont parsés mais ne peuvent pas être évalués faute d'historique.
+
+Cette mini-phase verrouille la promesse avant que OSV s'en serve (Phase 2 indexera les affected_ranges sur cet historique).
+
+### Découpage en 3 sous-lots
+
+#### 1.5.1 — Alimenter `package_versions` depuis les scanners
+- Schéma SQL déjà prévu (§8) : `package_versions(pkg_id, version, published_at, deprecated, yanked, metadata_json)`
+- **npm** : payload registre expose `time.<version>` (ISO timestamp) pour chaque version, `versions.<version>.deprecated` (string ou null), `dist-tags.latest`
+- **PyPI** : payload expose `releases.<version> = [{upload_time, upload_time_iso_8601, yanked, yanked_reason, ...}]`
+- Insertion bulk par package, idempotent (INSERT OR REPLACE keyé sur `(pkg_id, version)`)
+- `scan` doit peupler `package_versions` quand il touche un package ; `--offline` doit continuer à marcher si l'historique est déjà en DB
+
+#### 1.5.2 — Resolver policy consomme l'historique
+- Remplacer le fallback "major-distance" dans `packguard-policy::evaluate_dependency`
+- **`offset: N`** = recommandation = max version telle que `(latest_major - version_major) == abs(N)` (pour N négatif ; N = 0 → latest major exact)
+- **`min_age_days`** = filtre : exclure toute version avec `published_at > now() - duration(days)` avant calcul du max
+- **`stability: stable`** = filtre : exclure toute version pre-release (détectée via le dialecte semver de l'écosystème : `-` suffix pour SemVer npm, `a/b/rc/dev` pour PEP 440)
+- Ordre d'application : `stability` → `min_age_days` → `offset/pin/overrides` → `block.*` (le bloc `block.*` reste non évalué hors `deprecated`/`yanked` optionnels — voir sous-lot 1.5.3)
+- Si aucune version ne survit aux filtres → status `PolicyInsufficientCandidates` (nouveau variant) avec message clair, pas de panic
+
+#### 1.5.3 — Tests + fixtures riches
+- Fixtures JSON avec historiques réels (react, django, @babel/core) stockées en `tests/fixtures/registries/`
+- Snapshot tests (`cargo-insta`) pour le resolver sur chaque combinaison policy × historique
+- Cas couverts :
+  - offset exact (`-1` avec majors 17/18/19 présents → 18.x.y le plus haut)
+  - offset insuffisant (majors manquants → `PolicyInsufficientCandidates`)
+  - `min_age_days: 7` filtre les versions trop récentes
+  - `stability: stable` exclut `19.0.0-rc.1`, `3.0.0a1`
+  - Interaction avec `overrides` (pin qui écrase offset, group qui écrase defaults)
+- Test d'intégration : re-scanner Nalo/monorepo et vérifier que les recos sont cohérentes
+- **Bonus si ça ne déborde pas** : câbler `block.deprecated` et `block.yanked` (trivial maintenant qu'on a les colonnes). `block.cve_severity` et `block.malware` restent Phase 2.
+
+### Critères de sortie
+- [ ] `scan` peuple `package_versions` (npm + pypi) : une ligne par version connue par le registre, avec `published_at`, `deprecated`, `yanked`
+- [ ] Resolver supprime le fallback "major-distance" ; calcul d'offset strict ; `min_age_days` et `stability` actifs
+- [ ] Variant d'état `PolicyInsufficientCandidates` remonté proprement dans `report`
+- [ ] Snapshot tests sur 5+ fixtures d'historiques
+- [ ] Démo `report` sur Nalo/monorepo montre un changement de reco vs Phase 1 (attendu : recommandations plus précises, potentiellement des warnings devenus patches réels)
+- [ ] Tous les tests Phase 1 restent verts ; ajout de 15+ nouveaux tests
+- [ ] clippy & fmt clean
+
+### Hors scope Phase 1.5
+- OSV / CVE / GH Advisory → Phase 2
+- `block.cve_severity`, `block.malware` → Phase 2
+- Parsing lockfiles manquants (pnpm nested, yarn.lock) → à la demande
+- `PACKGUARD_LIVE_TESTS=1` automation → Phase 2
+
+---
+
+## 15. Tech debt & follow-ups (remontés Phase 1)
+
+À traiter en Phase 1.5 ou intégré à une phase ultérieure. Ordre par priorité :
+
+1. **Store : enrichir l'historique des versions** *(bloquant pour recos précises)*
+   - Aujourd'hui le store ne persiste que `latest_version` par package. Le résolveur policy a donc un fallback "major-distance" : quand on ne peut pas calculer la recommandation faute d'historique, on compare la majeure installée vs majeure latest.
+   - npm et PyPI renvoient déjà l'historique complet dans leur payload → l'absorber en DB.
+   - Débloque : `offset: -1` précis (patch/minor réels), `min_age_days`, stability filters, recommandations exactes.
+   - **Doit passer avant Phase 2** : OSV indexe les affected_ranges → besoin de l'historique pour matcher.
+
+2. **Parsers lockfiles manquants** *(limitation usage réel)*
+   - pnpm-lock.yaml : **supporté racine uniquement**. Workspaces pnpm imbriqués reportés.
+   - yarn.lock (classic + berry) : **non parsé** — seul `package.json` est utilisé en fallback.
+   - À traiter quand un repo cible les exigera (Nalo front est pnpm root, ça passe).
+
+3. **Évaluation `block.*`** *(dépend de Phase 2)*
+   - `block.cve_severity`, `block.malware`, `block.deprecated`, `block.yanked` : **parsés et stockés, non évalués**.
+   - Naturellement adressé en Phase 2 quand OSV/GH Advisory entrent + extraction `deprecated`/`yanked` depuis les payloads npm/PyPI.
+
+4. **Tests live gated** *(qualité process)*
+   - `PACKGUARD_LIVE_TESTS=1` prévu, non implémenté Phase 1. Validations live = manuelles pour l'instant (documentées dans les commits).
+   - À automatiser en Phase 2 avec fixtures réseau + dumps OSV.
+
+5. **Choix dépendance noté** *(informatif)*
+   - `refinery 0.9` retenu (et non 0.8) car 0.8 pinne `rusqlite ≤ 0.26`, incompatible avec la version courante. Aucun impact fonctionnel.
+
+---
+
+## 16. Décisions verrouillées ✅
 
 **Objectif :** passer du spike fonctionnel à un MVP CLI utilisable — multi-écosystèmes, persistance, policy, rapport structuré.
 

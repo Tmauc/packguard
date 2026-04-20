@@ -46,4 +46,16 @@ pub struct RemotePackage {
     pub name: String,
     pub latest: Option<String>,
     pub latest_published_at: Option<String>,
+    /// Every version the registry advertises for this package, in no
+    /// particular order. Phase 1.5+: consumed by the policy resolver for
+    /// strict offset / stability / min_age_days filtering.
+    pub versions: Vec<RemoteVersion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteVersion {
+    pub version: String,
+    pub published_at: Option<String>,
+    pub deprecated: bool,
+    pub yanked: bool,
 }

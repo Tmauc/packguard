@@ -26,6 +26,16 @@ pub struct SaveStats {
     pub packages: usize,
     pub dependencies: usize,
     pub updated_latest: usize,
+    pub persisted_versions: usize,
+}
+
+/// One `package_versions` row as read back by the resolver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredVersion {
+    pub version: String,
+    pub published_at: Option<String>,
+    pub deprecated: bool,
+    pub yanked: bool,
 }
 
 /// A full dependency row as read back from the store, in display-friendly form.
@@ -127,8 +137,32 @@ impl Store {
                 if update_package_latest(&tx, pkg_id, remote, now)? {
                     stats.updated_latest += 1;
                 }
-                if let (Some(v), published_at) = (&remote.latest, &remote.latest_published_at) {
-                    upsert_package_version(&tx, pkg_id, v, published_at.as_deref())?;
+                if remote.versions.is_empty() {
+                    // Fall back to the single `latest` entry when the registry
+                    // client didn't surface a history (older code paths, tests).
+                    if let (Some(v), published_at) = (&remote.latest, &remote.latest_published_at) {
+                        upsert_package_version(
+                            &tx,
+                            pkg_id,
+                            v,
+                            published_at.as_deref(),
+                            false,
+                            false,
+                        )?;
+                        stats.persisted_versions += 1;
+                    }
+                } else {
+                    for v in &remote.versions {
+                        upsert_package_version(
+                            &tx,
+                            pkg_id,
+                            &v.version,
+                            v.published_at.as_deref(),
+                            v.deprecated,
+                            v.yanked,
+                        )?;
+                        stats.persisted_versions += 1;
+                    }
                 }
             }
 
@@ -158,6 +192,37 @@ impl Store {
 
         tx.commit().context("committing save_project")?;
         Ok(stats)
+    }
+
+    /// Read the full version history persisted for `(ecosystem, name)`. Rows
+    /// are returned in ascending published_at order (nulls first) so callers
+    /// can pick a dialect-aware comparator without another sort pass.
+    pub fn load_package_versions(&self, ecosystem: &str, name: &str) -> Result<Vec<StoredVersion>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT pv.version, pv.published_at, pv.deprecated, pv.yanked \
+                 FROM package_versions pv \
+                 JOIN packages p ON p.id = pv.pkg_id \
+                 WHERE p.ecosystem = ?1 AND p.name = ?2 \
+                 ORDER BY pv.published_at",
+            )
+            .context("preparing load_package_versions")?;
+        let rows = stmt
+            .query_map(params![ecosystem, name], |row| {
+                Ok(StoredVersion {
+                    version: row.get(0)?,
+                    published_at: row.get(1)?,
+                    deprecated: row.get::<_, i64>(2)? != 0,
+                    yanked: row.get::<_, i64>(3)? != 0,
+                })
+            })
+            .context("querying package_versions")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     /// Read every dependency row stored for the given repo_path across all
@@ -295,12 +360,23 @@ fn upsert_package_version(
     pkg_id: i64,
     version: &str,
     published_at: Option<&str>,
+    deprecated: bool,
+    yanked: bool,
 ) -> Result<()> {
     tx.execute(
-        "INSERT INTO package_versions (pkg_id, version, published_at) \
-         VALUES (?1, ?2, ?3) \
-         ON CONFLICT(pkg_id, version) DO UPDATE SET published_at = excluded.published_at",
-        params![pkg_id, version, published_at],
+        "INSERT INTO package_versions (pkg_id, version, published_at, deprecated, yanked) \
+         VALUES (?1, ?2, ?3, ?4, ?5) \
+         ON CONFLICT(pkg_id, version) DO UPDATE SET \
+            published_at = excluded.published_at, \
+            deprecated = excluded.deprecated, \
+            yanked = excluded.yanked",
+        params![
+            pkg_id,
+            version,
+            published_at,
+            deprecated as i64,
+            yanked as i64,
+        ],
     )
     .context("upsert package_version")?;
     Ok(())
@@ -363,6 +439,20 @@ mod tests {
                 name: "react".into(),
                 latest: Some("19.0.0".into()),
                 latest_published_at: Some("2026-04-08T18:39:24Z".into()),
+                versions: vec![
+                    packguard_core::model::RemoteVersion {
+                        version: "18.2.0".into(),
+                        published_at: Some("2022-06-14T00:00:00Z".into()),
+                        deprecated: false,
+                        yanked: false,
+                    },
+                    packguard_core::model::RemoteVersion {
+                        version: "19.0.0".into(),
+                        published_at: Some("2026-04-08T18:39:24Z".into()),
+                        deprecated: false,
+                        yanked: false,
+                    },
+                ],
             },
         );
         m
@@ -388,6 +478,52 @@ mod tests {
         let react = rows.iter().find(|r| r.name == "react").unwrap();
         assert_eq!(react.latest.as_deref(), Some("19.0.0"));
         assert_eq!(react.kind, DepKind::Runtime);
+        assert_eq!(stats.persisted_versions, 2); // react history only
+    }
+
+    #[test]
+    fn load_package_versions_returns_full_history() {
+        let mut store = Store::open_in_memory().unwrap();
+        let root = PathBuf::from("/tmp/demo");
+        let project = sample_project(&root);
+        store
+            .save_project(&root, &project, &sample_remotes(), "fp-hist")
+            .unwrap();
+
+        let versions = store.load_package_versions("npm", "react").unwrap();
+        let raw: Vec<_> = versions.iter().map(|v| v.version.as_str()).collect();
+        assert_eq!(raw, vec!["18.2.0", "19.0.0"]);
+        assert!(!versions[0].deprecated && !versions[0].yanked);
+
+        // typescript has no remote → no versions persisted.
+        let versions = store.load_package_versions("npm", "typescript").unwrap();
+        assert!(versions.is_empty());
+    }
+
+    #[test]
+    fn upsert_package_version_updates_flags() {
+        let mut store = Store::open_in_memory().unwrap();
+        let root = PathBuf::from("/tmp/demo");
+        let project = sample_project(&root);
+
+        // First save: clean history.
+        store
+            .save_project(&root, &project, &sample_remotes(), "fp-1")
+            .unwrap();
+
+        // Second save: mark 18.2.0 yanked + deprecated.
+        let mut remotes = sample_remotes();
+        let react = remotes.get_mut("react").unwrap();
+        react.versions[0].deprecated = true;
+        react.versions[0].yanked = true;
+        store
+            .save_project(&root, &project, &remotes, "fp-2")
+            .unwrap();
+
+        let versions = store.load_package_versions("npm", "react").unwrap();
+        let v18 = versions.iter().find(|v| v.version == "18.2.0").unwrap();
+        assert!(v18.deprecated);
+        assert!(v18.yanked);
     }
 
     #[test]

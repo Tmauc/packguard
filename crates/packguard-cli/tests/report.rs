@@ -51,6 +51,7 @@ fn seed_store(store_path: &Path, repo: &Path) {
             name: "react".into(),
             latest: Some("19.2.5".into()),
             latest_published_at: Some("2026-04-08T00:00:00Z".into()),
+            versions: vec![],
         },
     );
     remotes.insert(
@@ -59,6 +60,7 @@ fn seed_store(store_path: &Path, repo: &Path) {
             name: "lodash".into(),
             latest: Some("4.17.21".into()),
             latest_published_at: Some("2024-06-01T00:00:00Z".into()),
+            versions: vec![],
         },
     );
     remotes.insert(
@@ -67,6 +69,7 @@ fn seed_store(store_path: &Path, repo: &Path) {
             name: "typescript".into(),
             latest: Some("5.4.5".into()),
             latest_published_at: Some("2026-04-16T00:00:00Z".into()),
+            versions: vec![],
         },
     );
     store

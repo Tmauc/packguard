@@ -1,7 +1,7 @@
 //! npm registry client — reads `dist-tags.latest` and the `time` map from
 //! `https://registry.npmjs.org/<name>`.
 
-use crate::model::RemotePackage;
+use crate::model::{RemotePackage, RemoteVersion};
 use anyhow::{Context, Result};
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
@@ -20,6 +20,27 @@ struct RegistryResponse {
     // lookup time so one weird entry doesn't blow up the whole response.
     #[serde(default)]
     time: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    versions: BTreeMap<String, NpmVersionMeta>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct NpmVersionMeta {
+    /// npm's `deprecated` is a free-form string message (non-empty ⇒ deprecated),
+    /// occasionally `true` or `null` in the wild.
+    #[serde(default)]
+    deprecated: Option<serde_json::Value>,
+}
+
+impl NpmVersionMeta {
+    fn is_deprecated(&self) -> bool {
+        match &self.deprecated {
+            Some(serde_json::Value::String(s)) => !s.trim().is_empty(),
+            Some(serde_json::Value::Bool(b)) => *b,
+            Some(serde_json::Value::Null) | None => false,
+            Some(_) => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -73,10 +94,26 @@ impl NpmClient {
             .as_ref()
             .and_then(|v| body.time.get(v))
             .and_then(|value| value.as_str().map(str::to_string));
+        let versions = body
+            .versions
+            .iter()
+            .map(|(version, meta)| RemoteVersion {
+                version: version.clone(),
+                published_at: body
+                    .time
+                    .get(version)
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                deprecated: meta.is_deprecated(),
+                // npm has no native yanked flag — the concept lives in `time.unpublished`.
+                yanked: false,
+            })
+            .collect();
         Ok(RemotePackage {
             name: name.to_string(),
             latest,
             latest_published_at,
+            versions,
         })
     }
 

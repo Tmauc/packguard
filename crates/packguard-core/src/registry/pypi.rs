@@ -3,7 +3,7 @@
 //! Returns `RemotePackage::latest` from `info.version`, with the matching
 //! `releases[version][0].upload_time_iso_8601` as `latest_published_at`.
 
-use crate::model::RemotePackage;
+use crate::model::{RemotePackage, RemoteVersion};
 use anyhow::{Context, Result};
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
@@ -29,6 +29,8 @@ struct Info {
 struct ReleaseFile {
     #[serde(default)]
     upload_time_iso_8601: Option<String>,
+    #[serde(default)]
+    yanked: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -83,10 +85,23 @@ impl PypiClient {
             .get(&latest)
             .and_then(|files| files.first())
             .and_then(|f| f.upload_time_iso_8601.clone());
+        let versions = body
+            .releases
+            .iter()
+            .filter(|(_, files)| !files.is_empty()) // skip placeholder keys
+            .map(|(version, files)| RemoteVersion {
+                version: version.clone(),
+                published_at: files.first().and_then(|f| f.upload_time_iso_8601.clone()),
+                deprecated: false, // PyPI has no per-version deprecated flag.
+                // A release is yanked when every distribution file is yanked.
+                yanked: files.iter().all(|f| f.yanked),
+            })
+            .collect();
         Ok(RemotePackage {
             name: name.to_string(),
             latest: Some(latest),
             latest_published_at,
+            versions,
         })
     }
 
