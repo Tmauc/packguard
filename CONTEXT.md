@@ -274,8 +274,8 @@ Intégration CI : `packguard scan --fail-on-violation --format sarif`.
 |---|---|---|
 | **0 — Spike** | POC Rust qui scan un projet npm + query registry npm + classif semver + sortie table | ✅ done (2026-04-20, 3 commits, 12 tests) |
 | **1 — MVP CLI** | npm/pnpm/yarn + pip/poetry/uv, policy offset, SQLite, report CLI | ✅ done (2026-04-20, 9 commits, 71 tests, 4 crates) |
-| **1.5 — Historique versions** | Persister `package_versions` complet + resolver policy précis (offset exact, `min_age_days`, `stability`) | 🎯 en cours |
-| **2 — Vuln intel online** | OSV + GH Advisory, cache, badges | |
+| **1.5 — Historique versions** | Persister `package_versions` complet + resolver policy précis (offset exact, `min_age_days`, `stability`) | ✅ done (2026-04-20, 3 commits, 87 tests) |
+| **2 — Vuln intel online** | OSV + GH Advisory, cache, badges | 🎯 prochain |
 | **3 — Sync offline (niveau 2)** | `sync` + `--offline`, dumps | |
 | **4 — Dashboard v1** | `ui` → localhost, Vite+React, table + détail + timeline | |
 | **5 — Graph + compat** | Cytoscape, peer deps, chaînes contaminées | |
@@ -373,7 +373,152 @@ Décisions verrouillées Phase 1 :
 
 ---
 
-## 14.5. Phase 1.5 — Historique versions 🎯 en cours
+## 14.5. Phase 1.5 — Historique versions ✅ done (2026-04-20)
+
+**Livré :** 3 commits, 87 tests verts (+16), clippy & fmt clean. Dette #1 soldée.
+
+**Commits :**
+- `be9bf9b` feat(core,store): fetch + persist full version history
+- `e359112` feat(policy,cli): strict offset resolver + `InsufficientCandidates` status
+- `68da896` test(policy): resolver snapshot tests + `block.deprecated`/`yanked` bonus
+
+**Validation live — `report` sur Nalo/services/incentive, avant vs après :**
+
+```
+Avant (Phase 1, fallback major-distance) :
+  { compliant: 5, warnings: 20, violations: 2 }
+
+Après (Phase 1.5, resolver strict) :
+  { compliant: 3, warnings: 21, violations: 2, insufficient: 3 }
+```
+
+Shifts de statut confirment le gain de précision :
+- `fastapi` : compliant → warning (`0.120.4` → `0.136.0` dans la fenêtre offset-1, raté par le fallback)
+- `rich` : compliant → warning (`14.1.0` → `14.2.0`)
+- `psycopg`, `sepaxml` : warning → insufficient (saut de major, pas de release dans latest-1)
+- `types-requests` : déplacement similaire
+
+**Volumétrie store :** historique complet persisté — 358 versions `faker`, 329 `sentry-sdk`, 322 `sqlalchemy`, 290 `fastapi`. Flags `yanked`/`deprecated` détectés (ex : `pydantic 1.10.3`, `pytest 8.1.0`, `requests 2.32.0`).
+
+**Bonus livré (sous-lot 1.5.3) :** `block.deprecated` et `block.yanked` câblés. Si la version installée match une release flaggée, le resolver retourne `Violation` avec message explicite. Couvert par snapshots sur fixture `node-ipc` (versions `10.1.1`/`10.1.2` yanked+deprecated).
+
+### Notes saillantes — à connaître pour Phase 2
+
+1. **Sémantique `offset` durcie :** recommandation = max version ≤ `latest_major - N`. Si la major cible n'existe pas (ex: package ayant sauté 2.x → 3.x sans 2 stable récent), retour `InsufficientCandidates` plutôt qu'approximation. Le fallback major-distance de Phase 1 est volontairement supprimé.
+
+2. **`min_age_days` sans date** : si un registre ne retourne pas de `published_at` pour une release, elle est **gardée** (principe du bénéfice du doute). PyPI expose systématiquement la date ; npm dans ~99 % des cas. Pas d'impact observé.
+
+3. **`InsufficientCandidates` ≠ violation** : `--fail-on-violation` ne se déclenche pas sur `insufficient`. Design volontaire : c'est un signal neutre ("la policy ne peut pas se prononcer"), affiché en **magenta** dans la table et comme `"status": "insufficient"` en JSON. Sinon, les users seraient forcés de changer leur policy à chaque saut de major — antipattern.
+
+4. **`block.cve_severity` et `block.malware`** : toujours parsés/stockés mais non évalués → Phase 2 quand OSV entrera. Aucun changement par rapport au brief.
+
+5. **Fixtures réutilisables Phase 2 :** 4 fixtures JSON réelles ajoutées — `react` (12 versions), `django` (10), `@babel/core` (8), `node-ipc` (yanked/deprecated) — dans `crates/packguard-policy/tests/fixtures/registries/`. Réutilisables pour tests intégration OSV (affected_ranges vs historique).
+
+<details>
+<summary>Spec Phase 1.5 (pour historique)</summary>
+
+Découpage en 3 sous-lots :
+- **1.5.1** alimenter `package_versions` depuis scanners (npm `time.<ver>`, PyPI `releases.<ver>`), insertion bulk idempotente
+- **1.5.2** resolver policy consomme l'historique : offset strict + `min_age_days` + `stability`, nouveau variant `PolicyInsufficientCandidates`
+- **1.5.3** fixtures JSON riches + snapshot tests (5+), démo avant/après sur Nalo
+
+Bonus autorisé : `block.deprecated`/`block.yanked` (trivial avec les colonnes en place).
+
+</details>
+
+---
+
+## 14.6. Phase 2 — Vuln intel online 🎯 en cours
+
+**Objectif :** introduire l'intelligence vulnérabilités dans PackGuard — faire entrer les CVE dans le store, matcher les versions affectées, évaluer `block.cve_severity` dans le resolver, et exposer le tout dans `report` + une nouvelle commande `audit`.
+
+Le malware / typosquat / dependency confusion (Socket.dev, Phylum, scraping) est **reporté en Phase 2.5** pour garder Phase 2 resserrée.
+
+### Sources & mode de fetch
+
+**Sources Phase 2 :**
+- **OSV.dev** — source primaire, agrégateur Google, couvre tous les écosystèmes
+- **GitHub Advisory Database** — secondaire, complète OSV sur certains GHSA ; repo git public
+
+**Mode de fetch — dumps en priorité, API en fallback :**
+- OSV dumps par écosystème : `https://osv-vulnerabilities.storage.googleapis.com/{ecosystem}/all.zip`
+  - Écosystèmes Phase 2 : `npm`, `PyPI`
+  - Fichier JSON par advisory, schéma OSV 1.6.0
+  - Incrémental via `Last-Modified` / `ETag`
+- GH Advisory DB : `git clone https://github.com/github/advisory-database.git` dans `~/.packguard/cache/ghsa/`, puis `git pull` pour refresh
+  - Filtrer uniquement `advisories/github-reviewed/`, ignorer `unreviewed/` (bruit)
+- Fallback API : `POST https://api.osv.dev/v1/query` pour les packages pas encore dans le dump
+  - TTL de cache 24h configurable
+  - Rate-limit ~100/min, concurrence bornée
+
+### Sous-lots
+
+#### 2.1 — Fetch & store des vulns
+- Nouveau crate `packguard-intel` : fetchers + parsers + dedup, indépendant de `store`
+- Commande `packguard sync --vulns` (ou `packguard sync` par défaut) télécharge tout et peuple la DB
+- Parser OSV : affected ranges (events `introduced`/`fixed`/`last_affected`/`limit`), severity (CVSS v3/v4 quand présent), aliases (CVE, GHSA), `database_specific`
+- Parser GHSA : overlap avec OSV via aliases → **dedup** : si un GHSA a un alias OSV déjà présent, on merge (prendre severity max, conserver les URLs des deux)
+- Table `vulnerabilities` existante (§8) — stockage de-normalisé : une ligne par `(vuln_id, pkg_id)`, `affected_range` stocké en JSON (événements OSV bruts, interprétés au match time)
+- Insertion bulk idempotente (`INSERT OR REPLACE` sur `(source, id, pkg_id)`)
+- `sync` respecte `--offline` : échec propre si cache absent
+
+#### 2.2 — Matching engine (dialect-aware)
+- Dans `packguard-intel` : `match_vulnerabilities(pkg, version, ecosystem) -> Vec<MatchedVuln>`
+- Matching d'un range OSV sur une version : interpréter les événements (`introduced`/`fixed`/`last_affected`) selon le dialecte :
+  - npm : crate `semver` déjà en place
+  - PyPI : crate `pep440_rs`
+- Tests unitaires sur vrais cas connus : `log4shell` (Java, hors MVP), `colors.js` 1.4.1/1.4.2 (npm), `event-stream` 3.3.6 (npm), `ua-parser-js` 0.7.29/0.8.0/1.0.0 (npm), `django` CVE-2023-41164 (PyPI), `pillow` CVE-2023-50447 (PyPI)
+
+#### 2.3 — Intégration policy + remediation basique
+- `packguard-policy::evaluate_dependency` consomme les match results
+- **`block.cve_severity`** : liste de severités à bloquer (`[high, critical]` par défaut). Si ≥ 1 vuln de cette severité match la version installée → nouveau variant `Compliance::VulnerabilityViolation(Vec<MatchedVuln>)`, traité comme violation bloquante (`--fail-on-violation` se déclenche)
+- **Remediation basique dans le resolver** : si la version recommandée calculée a elle-même une vuln connue, **itérer sur les candidates** (par ordre décroissant dans la fenêtre policy) et choisir la première non-vulnérable. Si aucune candidate n'est safe → `InsufficientCandidates` avec raison explicite
+- Les `block.deprecated`/`block.yanked` (déjà câblés Phase 1.5) continuent de marcher ; on ajoute juste `cve_severity` au même endroit
+
+#### 2.4 — CLI : `audit` + enrichissement `report`
+- **`packguard audit`** nouvelle sous-commande :
+  - Liste toutes les vulns matchées dans le dernier scan, groupées par écosystème → package
+  - Colonnes : `package`, `installed`, `CVE/GHSA`, `severity`, `range`, `fix`
+  - `--severity critical,high` filtre
+  - `--fail-on critical` → exit 1 si ≥ 1 match de cette severité
+  - `--format table|json|sarif` (SARIF = format GitHub code scanning, consommable CI)
+  - Ne touche pas le réseau : lit uniquement le store
+- **`packguard report`** gagne une colonne `CVE` compacte : `2🔴 · 1🟠` (2 critical + 1 high), tri-able. Résumé en pied ajoute `vulnerabilities: { critical: N, high: M, medium: K, low: L }`
+
+#### 2.5 — Fallback API temps réel
+- Si `sync` n'a pas tourné depuis > 24h **OU** un package scanné n'est pas dans la DB vulns → appel `POST /v1/query` OSV pour ce `(name, version)`
+- Rate-limit + backoff, concurrence bornée, timeout 10s
+- Résultat caché en DB avec `source = "osv-api-live"` + `fetched_at`
+- Configurable : `--no-live-fallback` pour rester 100 % cache
+
+### Critères de sortie
+- [ ] `packguard sync` (ou `sync --vulns`) télécharge OSV npm+pypi + clone/pull GHSA, peuple `vulnerabilities` avec dedup
+- [ ] Cache incrémental : deuxième `sync` ne retélécharge rien si rien n'a bougé (ETag/Last-Modified + `git pull --ff-only`)
+- [ ] Matching engine testé sur 6+ vulns réelles connues (npm + pypi)
+- [ ] `packguard audit` : table + json + sarif, `--severity`, `--fail-on`
+- [ ] `packguard report` : colonne `CVE` et résumé vuln dans le pied
+- [ ] `block.cve_severity` évalué → `VulnerabilityViolation` bloquante
+- [ ] Remediation : resolver saute les versions vulnérables dans l'offset autorisé
+- [ ] Fallback API OSV implémenté, TTL 24h, flag `--no-live-fallback`
+- [ ] Démo live sur Nalo/monorepo : count de vulns avant/après, au moins 1 vuln détectée si elle existe réellement
+- [ ] 20+ nouveaux tests (+ snapshots sur audit output), tous les tests Phase 1.5 restent verts
+- [ ] clippy `-D warnings` clean, fmt OK
+- [ ] **Tech-debt #4 résolue** : `PACKGUARD_LIVE_TESTS=1` implémenté pour les tests live contre OSV API (gated, opt-in)
+
+### Hors scope Phase 2
+- **Malware / typosquat / dependency confusion** (Socket.dev, Phylum, npm-force-resolutions heuristics) → Phase 2.5
+- **Scraping** blogs (BleepingComputer, Phylum research, Socket blog) → Phase 2.5 ou jamais selon utilité
+- **Auto-PR / auto-apply** de fix version → Phase 7
+- **Dashboard web** → Phase 4
+- **CVSS scoring customisé** — on utilise la severity OSV brute, pas de recalcul
+- **Vulnérabilités transitives** (chaînes contaminées visuelles) → Phase 5 (graphe)
+
+### Nouvelles dépendances prévisibles
+- `flate2` + `zip` pour OSV dumps
+- `git2` ou `gix` pour GHSA clone/pull
+- Ne pas introduire de nouvelle crate HTTP : réutiliser le `reqwest` existant
+
+---
 
 **Objectif :** tenir la promesse produit du policy engine. Aujourd'hui le store ne persiste que `latest_version` par package, donc le resolver a un fallback "major-distance" imprécis. `min_age_days` et `stability` sont parsés mais ne peuvent pas être évalués faute d'historique.
 
@@ -429,11 +574,7 @@ Cette mini-phase verrouille la promesse avant que OSV s'en serve (Phase 2 indexe
 
 À traiter en Phase 1.5 ou intégré à une phase ultérieure. Ordre par priorité :
 
-1. **Store : enrichir l'historique des versions** *(bloquant pour recos précises)*
-   - Aujourd'hui le store ne persiste que `latest_version` par package. Le résolveur policy a donc un fallback "major-distance" : quand on ne peut pas calculer la recommandation faute d'historique, on compare la majeure installée vs majeure latest.
-   - npm et PyPI renvoient déjà l'historique complet dans leur payload → l'absorber en DB.
-   - Débloque : `offset: -1` précis (patch/minor réels), `min_age_days`, stability filters, recommandations exactes.
-   - **Doit passer avant Phase 2** : OSV indexe les affected_ranges → besoin de l'historique pour matcher.
+1. ~~**Store : enrichir l'historique des versions**~~ **✅ résolu Phase 1.5** (commits `be9bf9b` + `e359112`). Historique complet persisté pour npm + PyPI ; resolver strict ; `InsufficientCandidates` remonté proprement. Cf. §14.5.
 
 2. **Parsers lockfiles manquants** *(limitation usage réel)*
    - pnpm-lock.yaml : **supporté racine uniquement**. Workspaces pnpm imbriqués reportés.

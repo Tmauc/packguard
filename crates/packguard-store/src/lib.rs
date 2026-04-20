@@ -6,7 +6,9 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use packguard_core::model::{DepKind, Project, RemotePackage};
+use packguard_core::model::{
+    AffectedSpec, DepKind, Project, RemotePackage, Severity, Vulnerability,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -36,6 +38,37 @@ pub struct StoredVersion {
     pub published_at: Option<String>,
     pub deprecated: bool,
     pub yanked: bool,
+}
+
+/// One vulnerability row with pkg info attached, as returned to the
+/// matching engine / CLI audit.
+#[derive(Debug, Clone)]
+pub struct StoredVulnerability {
+    pub source: String,
+    pub advisory_id: String,
+    pub ecosystem: String,
+    pub package_name: String,
+    pub severity: Severity,
+    pub cve_id: Option<String>,
+    pub aliases: Vec<String>,
+    pub summary: Option<String>,
+    pub url: Option<String>,
+    pub affected: AffectedSpec,
+    pub fixed_versions: Vec<String>,
+    pub published_at: Option<String>,
+    pub modified_at: Option<String>,
+    pub fetched_at: String,
+}
+
+/// State of a remote intel source — consulted before the next sync pass to
+/// skip untouched dumps (ETag / Last-Modified / git commit).
+#[derive(Debug, Clone, Default)]
+pub struct SyncState {
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub last_commit: Option<String>,
+    pub synced_at: Option<String>,
+    pub record_count: i64,
 }
 
 /// A full dependency row as read back from the store, in display-friendly form.
@@ -266,6 +299,209 @@ impl Store {
         }
         Ok(out)
     }
+
+    /// Upsert a batch of vulnerabilities into the store. The pkg_id is
+    /// resolved for each advisory by `(ecosystem, package_name)`; unknown
+    /// packages are created with a `latest` of NULL so the FK resolves but
+    /// they're still flagged as "no registry history seen yet" — a
+    /// subsequent `scan` will fill that in.
+    ///
+    /// Returns the number of rows inserted/updated. Idempotent on re-runs
+    /// (unique key = `(source, advisory_id, pkg_id)`).
+    pub fn persist_vulnerabilities(&mut self, vulns: &[Vulnerability]) -> Result<usize> {
+        if vulns.is_empty() {
+            return Ok(0);
+        }
+        let now = Utc::now().to_rfc3339();
+        let tx = self.conn.transaction().context("begin vuln tx")?;
+        let mut count = 0usize;
+        for v in vulns {
+            let pkg_id = upsert_package(&tx, &v.ecosystem, &v.package_name)?;
+            let aliases_json = serde_json::to_string(&v.aliases).context("serializing aliases")?;
+            let affected_json =
+                serde_json::to_string(&v.affected).context("serializing affected spec")?;
+            let fixed_json =
+                serde_json::to_string(&v.fixed_versions).context("serializing fixed_versions")?;
+            let severity = if matches!(v.severity, Severity::Unknown) {
+                None
+            } else {
+                Some(v.severity.as_str().to_string())
+            };
+            tx.execute(
+                "INSERT INTO vulnerabilities \
+                   (source, advisory_id, pkg_id, severity, cve_id, aliases_json, \
+                    summary, url, affected_json, fixed_versions_json, \
+                    published_at, modified_at, fetched_at) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) \
+                 ON CONFLICT(source, advisory_id, pkg_id) DO UPDATE SET \
+                    severity = excluded.severity, \
+                    cve_id = excluded.cve_id, \
+                    aliases_json = excluded.aliases_json, \
+                    summary = excluded.summary, \
+                    url = excluded.url, \
+                    affected_json = excluded.affected_json, \
+                    fixed_versions_json = excluded.fixed_versions_json, \
+                    published_at = excluded.published_at, \
+                    modified_at = excluded.modified_at, \
+                    fetched_at = excluded.fetched_at",
+                params![
+                    v.source,
+                    v.advisory_id,
+                    pkg_id,
+                    severity,
+                    v.cve_id,
+                    aliases_json,
+                    v.summary,
+                    v.url,
+                    affected_json,
+                    fixed_json,
+                    v.published_at,
+                    v.modified_at,
+                    now,
+                ],
+            )
+            .context("upsert vulnerability")?;
+            count += 1;
+        }
+        tx.commit().context("commit vuln tx")?;
+        Ok(count)
+    }
+
+    /// Load every advisory the store has for `(ecosystem, package_name)`.
+    /// The matching engine filters further by version.
+    pub fn load_vulnerabilities(
+        &self,
+        ecosystem: &str,
+        name: &str,
+    ) -> Result<Vec<StoredVulnerability>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT v.source, v.advisory_id, p.ecosystem, p.name, v.severity, \
+                        v.cve_id, v.aliases_json, v.summary, v.url, v.affected_json, \
+                        v.fixed_versions_json, v.published_at, v.modified_at, v.fetched_at \
+                 FROM vulnerabilities v \
+                 JOIN packages p ON p.id = v.pkg_id \
+                 WHERE p.ecosystem = ?1 AND p.name = ?2",
+            )
+            .context("prepare load_vulnerabilities")?;
+        let rows = stmt
+            .query_map(params![ecosystem, name], read_stored_vulnerability)
+            .context("query vulnerabilities")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Dump every advisory in the store grouped by `(ecosystem, package)` —
+    /// used by `packguard audit` to stream the last scan's vulns without
+    /// re-querying per dep.
+    pub fn load_all_vulnerabilities(&self) -> Result<Vec<StoredVulnerability>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT v.source, v.advisory_id, p.ecosystem, p.name, v.severity, \
+                        v.cve_id, v.aliases_json, v.summary, v.url, v.affected_json, \
+                        v.fixed_versions_json, v.published_at, v.modified_at, v.fetched_at \
+                 FROM vulnerabilities v \
+                 JOIN packages p ON p.id = v.pkg_id \
+                 ORDER BY p.ecosystem, p.name, v.advisory_id",
+            )
+            .context("prepare load_all_vulnerabilities")?;
+        let rows = stmt
+            .query_map([], read_stored_vulnerability)
+            .context("query all vulnerabilities")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Total advisory count — cheap enough to call for the CLI status line.
+    pub fn count_vulnerabilities(&self) -> Result<i64> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM vulnerabilities", [], |row| row.get(0))
+            .context("count vulnerabilities")
+    }
+
+    pub fn get_sync_state(&self, kind: &str) -> Result<Option<SyncState>> {
+        self.conn
+            .query_row(
+                "SELECT etag, last_modified, last_commit, synced_at, record_count \
+                 FROM sync_log WHERE kind = ?1",
+                params![kind],
+                |row| {
+                    Ok(SyncState {
+                        etag: row.get(0)?,
+                        last_modified: row.get(1)?,
+                        last_commit: row.get(2)?,
+                        synced_at: row.get(3)?,
+                        record_count: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .context("get_sync_state")
+    }
+
+    pub fn put_sync_state(&mut self, kind: &str, state: &SyncState) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let synced_at = state.synced_at.clone().unwrap_or(now);
+        self.conn
+            .execute(
+                "INSERT INTO sync_log (kind, etag, last_modified, last_commit, synced_at, record_count) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+                 ON CONFLICT(kind) DO UPDATE SET \
+                    etag = excluded.etag, \
+                    last_modified = excluded.last_modified, \
+                    last_commit = excluded.last_commit, \
+                    synced_at = excluded.synced_at, \
+                    record_count = excluded.record_count",
+                params![
+                    kind,
+                    state.etag,
+                    state.last_modified,
+                    state.last_commit,
+                    synced_at,
+                    state.record_count,
+                ],
+            )
+            .context("put_sync_state")?;
+        Ok(())
+    }
+}
+
+fn read_stored_vulnerability(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVulnerability> {
+    let aliases_json: String = row.get(6)?;
+    let affected_json: String = row.get(9)?;
+    let fixed_json: String = row.get(10)?;
+    let severity_raw: Option<String> = row.get(4)?;
+    let severity = severity_raw
+        .as_deref()
+        .map(Severity::parse)
+        .unwrap_or(Severity::Unknown);
+    let aliases: Vec<String> = serde_json::from_str(&aliases_json).unwrap_or_default();
+    let affected: AffectedSpec = serde_json::from_str(&affected_json).unwrap_or_default();
+    let fixed_versions: Vec<String> = serde_json::from_str(&fixed_json).unwrap_or_default();
+    Ok(StoredVulnerability {
+        source: row.get(0)?,
+        advisory_id: row.get(1)?,
+        ecosystem: row.get(2)?,
+        package_name: row.get(3)?,
+        severity,
+        cve_id: row.get(5)?,
+        aliases,
+        summary: row.get(7)?,
+        url: row.get(8)?,
+        affected,
+        fixed_versions,
+        published_at: row.get(11)?,
+        modified_at: row.get(12)?,
+        fetched_at: row.get(13)?,
+    })
 }
 
 fn upsert_repo(
@@ -570,5 +806,103 @@ mod tests {
             .last_fingerprint(&PathBuf::from("/nope"), "npm")
             .unwrap()
             .is_none());
+    }
+
+    fn sample_vuln() -> Vulnerability {
+        use packguard_core::model::{AffectedEvent, AffectedRange, AffectedRangeKind};
+        Vulnerability {
+            source: "osv".into(),
+            advisory_id: "GHSA-1234-5678-abcd".into(),
+            ecosystem: "npm".into(),
+            package_name: "lodash".into(),
+            severity: Severity::High,
+            cve_id: Some("CVE-2021-23337".into()),
+            aliases: vec!["CVE-2021-23337".into(), "GHSA-35jh-r3h4-6jhm".into()],
+            summary: Some("Command Injection in lodash".into()),
+            url: Some("https://github.com/advisories/GHSA-35jh-r3h4-6jhm".into()),
+            affected: AffectedSpec {
+                ranges: vec![AffectedRange {
+                    kind: AffectedRangeKind::Semver,
+                    events: vec![
+                        AffectedEvent::Introduced("0.0.0".into()),
+                        AffectedEvent::Fixed("4.17.21".into()),
+                    ],
+                }],
+                versions: vec![],
+            },
+            fixed_versions: vec!["4.17.21".into()],
+            published_at: Some("2021-02-15T00:00:00Z".into()),
+            modified_at: Some("2023-07-18T00:00:00Z".into()),
+        }
+    }
+
+    #[test]
+    fn persist_and_load_vulnerabilities_roundtrip() {
+        let mut store = Store::open_in_memory().unwrap();
+        let vuln = sample_vuln();
+        let n = store
+            .persist_vulnerabilities(std::slice::from_ref(&vuln))
+            .unwrap();
+        assert_eq!(n, 1);
+
+        let rows = store.load_vulnerabilities("npm", "lodash").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].advisory_id, "GHSA-1234-5678-abcd");
+        assert_eq!(rows[0].severity, Severity::High);
+        assert_eq!(rows[0].aliases.len(), 2);
+        assert_eq!(rows[0].fixed_versions, vec!["4.17.21".to_string()]);
+    }
+
+    #[test]
+    fn persist_vulnerabilities_is_idempotent_on_reruns() {
+        let mut store = Store::open_in_memory().unwrap();
+        let vuln = sample_vuln();
+        store
+            .persist_vulnerabilities(std::slice::from_ref(&vuln))
+            .unwrap();
+        store
+            .persist_vulnerabilities(std::slice::from_ref(&vuln))
+            .unwrap();
+        assert_eq!(store.count_vulnerabilities().unwrap(), 1);
+
+        // Updating the severity in a re-run is reflected (ON CONFLICT DO UPDATE).
+        let mut bumped = vuln;
+        bumped.severity = Severity::Critical;
+        store
+            .persist_vulnerabilities(std::slice::from_ref(&bumped))
+            .unwrap();
+        let rows = store.load_vulnerabilities("npm", "lodash").unwrap();
+        assert_eq!(rows[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn sync_log_roundtrip() {
+        let mut store = Store::open_in_memory().unwrap();
+        assert!(store.get_sync_state("osv-npm").unwrap().is_none());
+
+        let state = SyncState {
+            etag: Some("\"abc123\"".into()),
+            last_modified: Some("Wed, 15 Apr 2026 12:00:00 GMT".into()),
+            last_commit: None,
+            synced_at: Some("2026-04-20T10:00:00Z".into()),
+            record_count: 42_000,
+        };
+        store.put_sync_state("osv-npm", &state).unwrap();
+        let got = store.get_sync_state("osv-npm").unwrap().unwrap();
+        assert_eq!(got.etag.as_deref(), Some("\"abc123\""));
+        assert_eq!(got.record_count, 42_000);
+
+        // Upsert replaces.
+        let mut next = state.clone();
+        next.record_count = 43_000;
+        store.put_sync_state("osv-npm", &next).unwrap();
+        assert_eq!(
+            store
+                .get_sync_state("osv-npm")
+                .unwrap()
+                .unwrap()
+                .record_count,
+            43_000,
+        );
     }
 }

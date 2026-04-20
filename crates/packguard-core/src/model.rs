@@ -59,3 +59,92 @@ pub struct RemoteVersion {
     pub deprecated: bool,
     pub yanked: bool,
 }
+
+/// Normalized severity. OSV npm advisories use
+/// `database_specific.severity = "CRITICAL|HIGH|MODERATE|LOW"`; PyPI
+/// advisories usually carry CVSS. We flatten everything to this enum so
+/// policy comparisons stay dialect-agnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Severity {
+    /// Catch-all for malformed / missing / unrecognised severity fields.
+    Unknown,
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl Severity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Severity::Critical => "critical",
+            Severity::High => "high",
+            Severity::Medium => "medium",
+            Severity::Low => "low",
+            Severity::Unknown => "unknown",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "critical" | "crit" => Severity::Critical,
+            "high" => Severity::High,
+            "moderate" | "medium" | "med" => Severity::Medium,
+            "low" => Severity::Low,
+            _ => Severity::Unknown,
+        }
+    }
+}
+
+/// One affected-range event from an OSV advisory. Events are ordered within
+/// a range such that `Introduced` opens a window and `Fixed` / `LastAffected`
+/// closes it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "version")]
+pub enum AffectedEvent {
+    Introduced(String),
+    Fixed(String),
+    LastAffected(String),
+    Limit(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AffectedRangeKind {
+    Semver,
+    Ecosystem,
+    Git,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AffectedRange {
+    pub kind: AffectedRangeKind,
+    pub events: Vec<AffectedEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct AffectedSpec {
+    #[serde(default)]
+    pub ranges: Vec<AffectedRange>,
+    #[serde(default)]
+    pub versions: Vec<String>,
+}
+
+/// A normalized advisory record — what the fetchers produce and what the
+/// store persists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vulnerability {
+    pub source: String,
+    pub advisory_id: String,
+    pub ecosystem: String,
+    pub package_name: String,
+    pub severity: Severity,
+    pub cve_id: Option<String>,
+    pub aliases: Vec<String>,
+    pub summary: Option<String>,
+    pub url: Option<String>,
+    pub affected: AffectedSpec,
+    pub fixed_versions: Vec<String>,
+    pub published_at: Option<String>,
+    pub modified_at: Option<String>,
+}
