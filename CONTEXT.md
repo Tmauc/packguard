@@ -272,8 +272,8 @@ Intégration CI : `packguard scan --fail-on-violation --format sarif`.
 
 | Phase | Contenu | État |
 |---|---|---|
-| **0 — Spike** | POC Rust qui scan un projet npm + query registry npm + classif semver + sortie table | 🎯 prochain |
-| **1 — MVP CLI** | npm/pnpm/yarn + pip/poetry/uv, policy offset, SQLite, report CLI | |
+| **0 — Spike** | POC Rust qui scan un projet npm + query registry npm + classif semver + sortie table | ✅ done (2026-04-20, 3 commits, 12 tests) |
+| **1 — MVP CLI** | npm/pnpm/yarn + pip/poetry/uv, policy offset, SQLite, report CLI | 🎯 prochain |
 | **2 — Vuln intel online** | OSV + GH Advisory, cache, badges | |
 | **3 — Sync offline (niveau 2)** | `sync` + `--offline`, dumps | |
 | **4 — Dashboard v1** | `ui` → localhost, Vite+React, table + détail + timeline | |
@@ -294,34 +294,118 @@ Intégration CI : `packguard scan --fail-on-violation --format sarif`.
 
 ---
 
-## 13. Phase 0 — Spike (prochain pas)
+## 13. Phase 0 — Spike ✅ done (2026-04-20)
 
-**Durée cible :** ~1 semaine.
+**Livré :** workspace `crates/packguard-core` + `crates/packguard-cli`, 3 commits, 12 tests verts, validé en live contre `registry.npmjs.org`.
 
-**Scope :**
-1. `packguard scan ./un-projet-npm` → lit `package.json` + `package-lock.json`
-2. Pour chaque dep directe, query `registry.npmjs.org` → `latest`
-3. Compare installé vs latest → classifie (patch/minor/major)
-4. Sortie table colorée en terminal
+- `470c136` — scaffold workspace + parsing npm manifest/lockfile
+- `f82184c` — client registre async
+- `dc548ff` — commande `scan` + table colorée + smoke test offline
 
-**Hors scope du spike :**
-- Pas de SQLite encore (tout en mémoire)
-- Pas de dashboard
-- Pas de vulns
-- Pas de policy (juste affichage brut)
-- Pas de Python
-- Pas de peer deps / graphe
+**Validé :**
+- Détection manifest/lockfile (package.json + lockfile v2/v3, scoped packages, skip nested)
+- Parsing JSON robuste (4 catégories de deps, rejet lockfile v1)
+- Registry client async, concurrence bornée (16 par défaut), timeout 10s, rustls-only
+- Classif semver (Current / Patch / Minor / Major / Unknown) via crate `semver`
+- CLI (clap : `--offline`, `--concurrency`, table colorée)
 
-**Ce que ça valide :**
-- Détection manifest/lockfile
-- Parsing
-- Client registre + rate-limit basique
-- Comparaison semver via `node-semver-rs`
-- Ergonomie CLI de base
+**Démo réelle :**
+```
+react        18.2.0  → 19.2.5   major
+@babel/core  7.24.0  → 7.29.0   minor
+typescript   5.4.5   → 6.0.3    major
+```
+
+**Volontairement laissé hors du spike (→ Phase 1) :** SQLite, policy engine, Python, peer deps, dashboard.
 
 ---
 
-## 14. Décisions verrouillées ✅
+## 14. Phase 1 — MVP CLI 🎯 en cours
+
+**Objectif :** passer du spike fonctionnel à un MVP CLI utilisable — multi-écosystèmes, persistance, policy, rapport structuré.
+
+### Découpage en 5 sous-lots (ordre imposé)
+
+#### 1.1 — Multi-écosystème via trait `Ecosystem`
+- Refactor le code npm existant derrière le trait `Ecosystem` (cf. §5)
+- Ajouter l'écosystème PyPI : **pip + poetry + uv ensemble**
+- Parsers : `requirements*.txt`, `pyproject.toml` (sections `[project]` et `[tool.poetry]`), `poetry.lock`, `uv.lock`
+- Client registre : `https://pypi.org/pypi/{name}/json`
+- Dialecte semver : **PEP 440** via crate `pep440_rs`
+- **Pip en "declared-only mode"** : pas de lockfile natif → classif sur latest publiée, limitation documentée dans le README
+- Détection monorepo Python (pyproject workspaces) — best-effort
+
+#### 1.2 — SQLite store
+- `rusqlite` + `refinery` pour migrations
+- Schéma conforme à §8
+- WAL mode, fichier `~/.packguard/store.db` (override via `--store`)
+- Nouveau crate `packguard-store`
+- Refactor `scan` pour persister : repos, packages, versions, dependencies, scan_history
+
+#### 1.3 — Policy engine
+- Parser `.packguard.yml` conforme à §6 (defaults + overrides + groups)
+- Support : `offset`, `pin`, `allow_patch`, `allow_security_patch`, `stability`, `min_age_days`, `block.{cve_severity, malware, deprecated, yanked}`
+- Glob matching sur noms de packages (`@babel/*`, `bcrypt*`)
+- `compute_recommended_version(package, all_versions, policy) -> Version`
+- Tests unitaires riches (overrides qui se chevauchent, groups vs overrides, prereleases)
+
+#### 1.4 — `packguard init`
+- Auto-détection des écosystèmes présents
+- Génère un `.packguard.yml` sensé avec defaults conservateurs : `offset: -1`, `allow_patch: true`, `stability: stable`, `min_age_days: 7`, bloque critical/high CVE et malware
+- Refuse d'écraser un fichier existant sauf `--force`
+- En-tête pointant vers la doc
+
+#### 1.5 — Rapport CLI enrichi
+- `packguard report` distinct de `scan` : lit SQLite, zéro réseau
+- Grouping : écosystème → workspace → package
+- Colonne "Policy" avec compliance (✅ compliant / ⚠️ warning / ❌ violation)
+- Summary : # compliant / warnings / violations bloquantes
+- `--fail-on-violation` → exit `1` si ≥ 1 violation bloquante
+- `--format table|json|sarif` (sarif minimal, seulement violations bloquantes)
+
+### Décisions verrouillées Phase 1
+1. PyPI : pip + poetry + uv dans 1.1 (pas de séparation), pip en declared-only
+2. Store : `rusqlite` + `refinery`
+3. Pas de `.packguard.yml` dans `../monorepo`. PackGuard reste isolé. `../monorepo` utilisable uniquement en lecture comme cible de test manuel.
+
+### Contraintes techniques
+- Étendre le workspace existant, pas de refonte
+- Nouveaux crates bienvenus si ça clarifie (`packguard-store`, `packguard-policy`, `packguard-ecosystem-pypi`…)
+- Tous les parsers → snapshot tests (`cargo-insta`) sur fixtures
+- Tests d'intégration live contre vrai registre gated par `PACKGUARD_LIVE_TESTS=1`
+- Concurrence bornée + timeout sur HTTP, rustls-only
+- Pas de `unwrap()`/`expect()` hors tests ; erreurs via `thiserror` + `anyhow`
+- 40+ tests verts, `cargo clippy -- -D warnings` clean, `cargo fmt` OK
+
+### Critères de sortie
+- [ ] `packguard init` dans un repo Nalo (front/vesta + services/incentive) produit un `.packguard.yml` sensé
+- [ ] `packguard scan` lit npm ET pypi, écrit SQLite, skip si fingerprint inchangé
+- [ ] `packguard report` : tableau groupé + compliance + résumé
+- [ ] `--fail-on-violation` → exit `1` sur violation bloquante
+- [ ] `packguard scan --offline` échoue proprement si cache vide (message explicite)
+- [ ] README racine : usage, limitation pip, format policy
+- [ ] 40+ tests verts, clippy clean, fmt OK
+
+### Hors scope Phase 1 (à NE PAS faire)
+- Vulns / CVE / OSV → Phase 2
+- `sync` offline niveau 2 → Phase 3
+- Dashboard web → Phase 4
+- Graphe / peer deps / compat matrix → Phase 5
+- Malware / typosquat / Socket.dev → Phase 6
+- `apply` / modification de manifests → Phase 7
+- Mode `serve` / Docker / auth → v2
+- Cargo, Go, Maven, autres → Tier 2/3
+
+### Attentes de delivery
+- Commits atomiques par sous-lot, messages conventionnels (`feat(core)`, `feat(cli)`, `feat(store)`, `test`, `refactor`)
+- Chaque sous-lot laisse le workspace compilable + testé
+- Hésitation sur un design → documenter alternatives dans le commit ou `DESIGN_NOTES.md`, ne pas demander 10 questions
+- À remonter : blocage architectural imprévu, edge case qui change le scope, critère de sortie inatteignable
+- Rapport final attendu : format identique à Phase 0 (commits + tests + démo + notes)
+
+---
+
+## 15. Décisions verrouillées ✅
 
 | Dimension | Choix |
 |---|---|
@@ -329,7 +413,7 @@ Intégration CI : `packguard scan --fail-on-violation --format sarif`.
 | Forme | 1 binaire, 3 modes (`scan` / `sync` / `ui`) |
 | Core | Rust |
 | Dashboard | Vite + React + shadcn/ui + Tailwind |
-| Store | SQLite (WAL) |
+| Store | SQLite (WAL) via `rusqlite` + `refinery` |
 | Offline | Niveaux 1 (online) + 2 (snapshot) en v1 |
 | Écosystèmes MVP | npm/pnpm/yarn + pip/poetry/uv |
 | Auth `serve` | Reportée v2 (basic login/pw à l'époque) |
@@ -337,6 +421,6 @@ Intégration CI : `packguard scan --fail-on-violation --format sarif`.
 
 ---
 
-## 15. Questions en suspens
+## 16. Questions en suspens
 
-- Aucune bloquante. Prochaine étape = démarrer le spike Phase 0.
+- Aucune bloquante.
