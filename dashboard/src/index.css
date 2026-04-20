@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+/* Semantic colour tokens — mirrors the CLI palette so the dashboard and
+   the terminal speak the same visual language. */
+@theme {
+  --color-risk-critical: oklch(0.55 0.21 25);
+  --color-risk-high: oklch(0.65 0.19 50);
+  --color-risk-medium: oklch(0.78 0.17 90);
+  --color-risk-low: oklch(0.72 0.15 145);
+  --color-risk-malware: oklch(0.45 0.21 320);
+  --color-risk-typosquat: oklch(0.55 0.18 290);
+  --color-risk-insufficient: oklch(0.6 0.17 340);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
