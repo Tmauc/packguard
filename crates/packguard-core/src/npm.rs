@@ -115,22 +115,35 @@ fn push(
 }
 
 fn load_installed_versions(root: &Path) -> Result<(BTreeMap<String, String>, Option<String>)> {
-    let lock_path = root.join("package-lock.json");
-    if !lock_path.exists() {
-        return Ok((BTreeMap::new(), None));
+    // npm (package-lock.json) first, then pnpm (pnpm-lock.yaml). yarn.lock
+    // parsing lands when someone actually hits it — see Phase 1 follow-ups.
+    let pkg_lock = root.join("package-lock.json");
+    if pkg_lock.exists() {
+        return Ok((
+            parse_package_lock(&pkg_lock)?,
+            Some("package-lock.json".to_string()),
+        ));
     }
-    let bytes =
-        std::fs::read(&lock_path).with_context(|| format!("reading {}", lock_path.display()))?;
-    let lock: PackageLock = serde_json::from_slice(&bytes)
-        .with_context(|| format!("parsing {}", lock_path.display()))?;
+    let pnpm_lock = root.join("pnpm-lock.yaml");
+    if pnpm_lock.exists() {
+        return Ok((
+            parse_pnpm_lock(&pnpm_lock)?,
+            Some("pnpm-lock.yaml".to_string()),
+        ));
+    }
+    Ok((BTreeMap::new(), None))
+}
 
+fn parse_package_lock(path: &Path) -> Result<BTreeMap<String, String>> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let lock: PackageLock =
+        serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))?;
     if lock.lockfile_version < 2 {
         bail!(
             "package-lock.json lockfileVersion={} is not supported (need >= 2)",
             lock.lockfile_version
         );
     }
-
     let mut out = BTreeMap::new();
     for (path, pkg) in lock.packages {
         if let Some(name) = direct_dep_name(&path) {
@@ -139,7 +152,68 @@ fn load_installed_versions(root: &Path) -> Result<(BTreeMap<String, String>, Opt
             }
         }
     }
-    Ok((out, Some("package-lock.json".to_string())))
+    Ok(out)
+}
+
+#[derive(Debug, Deserialize)]
+struct PnpmLock {
+    #[serde(default)]
+    importers: BTreeMap<String, PnpmImporter>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct PnpmImporter {
+    #[serde(default)]
+    dependencies: BTreeMap<String, PnpmEntry>,
+    #[serde(default, rename = "devDependencies")]
+    dev_dependencies: BTreeMap<String, PnpmEntry>,
+    #[serde(default, rename = "optionalDependencies")]
+    optional_dependencies: BTreeMap<String, PnpmEntry>,
+    #[serde(default, rename = "peerDependencies")]
+    peer_dependencies: BTreeMap<String, PnpmEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PnpmEntry {
+    version: String,
+}
+
+/// Parses pnpm-lock.yaml v6 / v7 / v9. Multi-importer workspaces use the
+/// root importer (`"."`) only — nested workspaces are Phase 1 follow-up.
+fn parse_pnpm_lock(path: &Path) -> Result<BTreeMap<String, String>> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let lock: PnpmLock =
+        serde_yaml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    let importer = lock
+        .importers
+        .get(".")
+        .cloned()
+        .or_else(|| lock.importers.values().next().cloned())
+        .unwrap_or_default();
+
+    let mut out = BTreeMap::new();
+    let groups = [
+        &importer.dependencies,
+        &importer.dev_dependencies,
+        &importer.optional_dependencies,
+        &importer.peer_dependencies,
+    ];
+    for group in groups {
+        for (name, entry) in group.iter() {
+            out.insert(name.clone(), strip_pnpm_peer_decoration(&entry.version));
+        }
+    }
+    Ok(out)
+}
+
+/// pnpm appends peer-dep resolution to the version (`18.2.0(react@18.2.0)`).
+/// Strip everything from the first `(` so plain semver comparisons work.
+fn strip_pnpm_peer_decoration(v: &str) -> String {
+    match v.find('(') {
+        Some(i) => v[..i].trim().to_string(),
+        None => v.trim().to_string(),
+    }
 }
 
 /// Top-level deps live at `node_modules/<name>` or `node_modules/@scope/<name>`.
@@ -300,6 +374,53 @@ mod tests {
         let project = parse(tmp.path()).unwrap().unwrap();
         assert_eq!(project.dependencies[0].installed, None);
         assert_eq!(project.dependencies[0].source_lockfile, None);
+    }
+
+    #[test]
+    fn parse_reads_pnpm_lockfile() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{ "name": "demo", "dependencies": { "react": "^18.2.0" },
+                  "devDependencies": { "typescript": "^5.0.0" } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("pnpm-lock.yaml"),
+            r#"lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      react:
+        specifier: ^18.2.0
+        version: 18.2.0
+    devDependencies:
+      typescript:
+        specifier: ^5.0.0
+        version: 5.4.5
+"#,
+        )
+        .unwrap();
+
+        let project = parse(root).unwrap().unwrap();
+        let by: BTreeMap<_, _> = project
+            .dependencies
+            .iter()
+            .map(|d| (d.name.clone(), d))
+            .collect();
+        assert_eq!(by["react"].installed.as_deref(), Some("18.2.0"));
+        assert_eq!(by["typescript"].installed.as_deref(), Some("5.4.5"));
+        assert_eq!(
+            by["react"].source_lockfile.as_deref(),
+            Some("pnpm-lock.yaml")
+        );
+    }
+
+    #[test]
+    fn pnpm_strip_peer_decoration() {
+        assert_eq!(strip_pnpm_peer_decoration("18.2.0(react@18.2.0)"), "18.2.0");
+        assert_eq!(strip_pnpm_peer_decoration("1.2.3"), "1.2.3");
     }
 
     #[test]

@@ -15,8 +15,11 @@ const USER_AGENT: &str = concat!("packguard/", env!("CARGO_PKG_VERSION"));
 struct RegistryResponse {
     #[serde(default, rename = "dist-tags")]
     dist_tags: BTreeMap<String, String>,
+    // `time` map mixes per-version strings with objects like
+    // `unpublished: { time: ... }`. Use `Value` and filter to strings at
+    // lookup time so one weird entry doesn't blow up the whole response.
     #[serde(default)]
-    time: BTreeMap<String, String>,
+    time: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,7 +69,10 @@ impl NpmClient {
             .await
             .with_context(|| format!("decoding {}", url))?;
         let latest = body.dist_tags.get("latest").cloned();
-        let latest_published_at = latest.as_ref().and_then(|v| body.time.get(v).cloned());
+        let latest_published_at = latest
+            .as_ref()
+            .and_then(|v| body.time.get(v))
+            .and_then(|value| value.as_str().map(str::to_string));
         Ok(RemotePackage {
             name: name.to_string(),
             latest,
