@@ -13,11 +13,12 @@ mod resolve;
 pub use dialect::{Dialect, VersionMeta};
 pub use model::{
     BlockRule, Compliance, GroupRule, OverrideRule, Policy, PolicyDefaults, ReleaseInfo,
-    ResolvedPolicy, Stability,
+    ResolvedPolicy, Stability, TyposquatPolicy,
 };
 pub use parse::{load_policy, parse_policy, CONSERVATIVE_DEFAULTS_YAML};
 pub use resolve::{
-    compute_recommended_version, compute_recommended_version_with_vulns, evaluate_dependency,
+    compute_recommended_version, compute_recommended_version_full,
+    compute_recommended_version_with_vulns, evaluate_dependency, evaluate_dependency_full,
     evaluate_dependency_with_vulns, VulnsByVersion,
 };
 

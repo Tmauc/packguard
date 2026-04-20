@@ -21,6 +21,22 @@ pub struct BlockRule {
     pub deprecated: bool,
     #[serde(default)]
     pub yanked: bool,
+    #[serde(default)]
+    pub typosquat: TyposquatPolicy,
+}
+
+/// How aggressively to react to typosquat heuristic hits.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TyposquatPolicy {
+    /// Suspects become blocking violations. Use only when the false-positive
+    /// rate is acceptable for your organisation.
+    Strict,
+    /// Default: surface as warnings, don't fail builds.
+    #[default]
+    Warn,
+    /// Don't even surface them.
+    Off,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +148,15 @@ pub enum Compliance {
     /// `--fail-on-violation`), with the raw match records attached so the
     /// CLI can render CVE ids, urls, fix versions, etc.
     VulnerabilityViolation(Vec<packguard_intel::MatchedVuln>),
+    /// The installed version (or the package overall) was flagged as
+    /// malicious by OSV-MAL, GHSA, or a scanner (Socket/Phylum). Blocking
+    /// when `block.malware: true` (default off).
+    MalwareViolation(Vec<packguard_core::MalwareReport>),
+    /// The package name resembles a top-N legitimate package per the
+    /// typosquat heuristic. Non-blocking by default
+    /// (`block.typosquat: warn`); promoted to MalwareViolation when
+    /// `strict`; suppressed when `off`.
+    TyposquatWarning(Vec<packguard_core::MalwareReport>),
     /// The resolver couldn't pick a recommended version because filters
     /// (stability / min_age_days / offset / vulnerability remediation)
     /// dropped every candidate. Neither compliant nor blocking — surfaced

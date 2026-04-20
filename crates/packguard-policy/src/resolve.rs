@@ -1,14 +1,15 @@
 //! Rule resolution + recommended-version + compliance evaluation.
 
 use crate::dialect::{Dialect, VersionMeta};
+use crate::model::TyposquatPolicy;
 use crate::model::{
     Compliance, GroupRule, OverrideRule, Policy, PolicyDefaults, ReleaseInfo, ResolvedPolicy,
 };
 use chrono::{DateTime, Utc};
 use globset::{Glob, GlobMatcher};
-use packguard_core::Severity;
+use packguard_core::{MalwareKind, MalwareReport, Severity};
 use packguard_intel::MatchedVuln;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Convenience alias — the resolver only ever looks at the installed version
 /// and the candidate pool, so a per-version map is the cheapest shape.
@@ -204,6 +205,45 @@ pub fn compute_recommended_version_with_vulns(
     None
 }
 
+/// Phase 2.5 remediation extension — also skip versions a malware-flagged
+/// MAL/GHSA/scanner record matches when `block.malware` is on. Wraps
+/// [`compute_recommended_version_with_vulns`] with an extra filter pass.
+pub fn compute_recommended_version_full(
+    resolved: &ResolvedPolicy,
+    releases: &[ReleaseInfo],
+    vulns_by_version: &VulnsByVersion,
+    malware_reports: &[MalwareReport],
+    dialect: Dialect,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    if !resolved.block.malware
+        || !malware_reports
+            .iter()
+            .any(|r| matches!(r.kind, MalwareKind::Malware))
+    {
+        // No additional filtering needed.
+        return compute_recommended_version_with_vulns(
+            resolved,
+            releases,
+            vulns_by_version,
+            dialect,
+            now,
+        );
+    }
+    let bad_versions: BTreeSet<&str> = malware_reports
+        .iter()
+        .filter(|r| matches!(r.kind, MalwareKind::Malware))
+        .filter(|r| !r.version.is_empty())
+        .map(|r| r.version.as_str())
+        .collect();
+    let filtered: Vec<ReleaseInfo> = releases
+        .iter()
+        .filter(|r| !bad_versions.contains(r.version.as_str()))
+        .cloned()
+        .collect();
+    compute_recommended_version_with_vulns(resolved, &filtered, vulns_by_version, dialect, now)
+}
+
 /// `block.cve_severity` values expressed as the strongly-typed enum. Skipped
 /// values (typos, empty strings) become `Severity::Unknown` and therefore
 /// never block anything they weren't already pointing at.
@@ -232,8 +272,7 @@ fn is_blocking_version(
         .unwrap_or(false)
 }
 
-/// Phase 1.5 entry point — kept for callers with no vuln data. Delegates to
-/// [`evaluate_dependency_with_vulns`] with an empty vuln map.
+/// Phase 1.5 entry point — kept for callers with no vuln/malware data.
 pub fn evaluate_dependency(
     name: &str,
     installed: Option<&str>,
@@ -270,6 +309,43 @@ pub fn evaluate_dependency_with_vulns(
     resolved: &ResolvedPolicy,
     releases: &[ReleaseInfo],
     vulns_by_version: &VulnsByVersion,
+    dialect: Dialect,
+    now: DateTime<Utc>,
+) -> Compliance {
+    evaluate_dependency_full(
+        name,
+        installed,
+        resolved,
+        releases,
+        vulns_by_version,
+        &[],
+        dialect,
+        now,
+    )
+}
+
+/// Phase 2.5 entry point — accepts both vulnerabilities and malware
+/// reports. Order of checks (each may short-circuit):
+///
+/// 1. `pin` mismatch (Violation).
+/// 2. Missing installed version (Warning).
+/// 3. `block.yanked` / `block.deprecated` against installed (Violation).
+/// 4. `block.cve_severity` against installed (VulnerabilityViolation).
+/// 5. **`block.malware`** — any `Malware`/`ScannerSignal` report tagged as
+///    malware whose version matches installed (or whole-package, version
+///    empty) → MalwareViolation.
+/// 6. **`block.typosquat`** — any `Typosquat` report for this package:
+///    `strict` → MalwareViolation; `warn` → TyposquatWarning; `off` →
+///    suppressed.
+/// 7. Recommendation vs installed (Compliant / Warning / InsufficientCandidates).
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_dependency_full(
+    name: &str,
+    installed: Option<&str>,
+    resolved: &ResolvedPolicy,
+    releases: &[ReleaseInfo],
+    vulns_by_version: &VulnsByVersion,
+    malware_reports: &[MalwareReport],
     dialect: Dialect,
     now: DateTime<Utc>,
 ) -> Compliance {
@@ -321,8 +397,41 @@ pub fn evaluate_dependency_with_vulns(
         }
     }
 
-    match compute_recommended_version_with_vulns(resolved, releases, vulns_by_version, dialect, now)
-    {
+    // Phase 2.5 — block.malware on the installed version.
+    if resolved.block.malware {
+        let mal: Vec<MalwareReport> = malware_reports
+            .iter()
+            .filter(|r| matches!(r.kind, MalwareKind::Malware))
+            .filter(|r| r.version.is_empty() || r.version == installed)
+            .cloned()
+            .collect();
+        if !mal.is_empty() {
+            return Compliance::MalwareViolation(mal);
+        }
+    }
+
+    // Phase 2.5 — typosquat: warn / strict / off (default warn).
+    let typo: Vec<MalwareReport> = malware_reports
+        .iter()
+        .filter(|r| matches!(r.kind, MalwareKind::Typosquat))
+        .cloned()
+        .collect();
+    if !typo.is_empty() {
+        match resolved.block.typosquat {
+            TyposquatPolicy::Strict => return Compliance::MalwareViolation(typo),
+            TyposquatPolicy::Warn => return Compliance::TyposquatWarning(typo),
+            TyposquatPolicy::Off => {}
+        }
+    }
+
+    match compute_recommended_version_full(
+        resolved,
+        releases,
+        vulns_by_version,
+        malware_reports,
+        dialect,
+        now,
+    ) {
         Some(recommended) => {
             compare_installed_to_recommended(name, installed, &recommended, dialect)
         }
@@ -331,7 +440,7 @@ pub fn evaluate_dependency_with_vulns(
             name
         )),
         None => Compliance::InsufficientCandidates(format!(
-            "{}: policy filters (stability / min_age_days / offset / cve remediation) \
+            "{}: policy filters (stability / min_age_days / offset / cve / malware) \
              dropped all {} known versions",
             name,
             releases.len()

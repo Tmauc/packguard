@@ -12,6 +12,7 @@ defaults:
     malware: true
     deprecated: true
     yanked: true
+    typosquat: warn          # warn | strict | off
 
 # Examples (uncomment and adapt):
 #

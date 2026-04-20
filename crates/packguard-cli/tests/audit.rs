@@ -128,8 +128,9 @@ fn audit_json_has_summary_and_matches() {
         .unwrap();
     assert!(out.status.success());
     let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(parsed["summary"]["high"], 1);
-    let matches = parsed["matches"].as_array().unwrap();
+    // Phase 2.5: audit JSON splits into cve / malware / typosquat sections.
+    assert_eq!(parsed["cve"]["summary"]["high"], 1);
+    let matches = parsed["cve"]["matches"].as_array().unwrap();
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0]["cve_id"], "CVE-2021-23337");
     assert_eq!(matches[0]["fixed_versions"][0], "4.17.21");
@@ -218,8 +219,9 @@ fn report_includes_cve_column_and_footer() {
         .unwrap();
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
-    // CVE badge column present in header + a non-empty cell.
-    assert!(s.contains("CVE"), "CVE column missing: {s}");
+    // Phase 2.5 renamed the column from "CVE" to "Risk" so the same cell
+    // can carry malware / typosquat icons too.
+    assert!(s.contains("Risk"), "Risk column missing: {s}");
     // Footer surfaces vuln counts.
     assert!(s.contains("Vulnerabilities:"), "vuln footer missing: {s}");
     // Compliance column = cve-violation.

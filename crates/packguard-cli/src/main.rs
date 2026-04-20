@@ -9,7 +9,7 @@ use packguard_core::Severity;
 use packguard_core::{default_ecosystems, Ecosystem};
 use packguard_intel::{match_vulnerabilities, MatchedVuln};
 use packguard_policy::{
-    evaluate_dependency_with_vulns, parse_policy, Compliance, Dialect, Policy, ReleaseInfo,
+    evaluate_dependency_full, parse_policy, Compliance, Dialect, Policy, ReleaseInfo,
     VulnsByVersion,
 };
 use packguard_store::Store;
@@ -64,9 +64,15 @@ enum Cmd {
         /// Comma-separated; accepts `critical|high|medium|low`.
         #[arg(long, value_delimiter = ',')]
         severity: Vec<String>,
-        /// Exit 1 if at least one match reaches this severity.
+        /// Exit 1 if at least one CVE match reaches this severity.
         #[arg(long)]
         fail_on: Option<String>,
+        /// Exit 1 if at least one matched malware record exists.
+        #[arg(long)]
+        fail_on_malware: bool,
+        /// Restrict the output to one risk category.
+        #[arg(long, value_enum, default_value_t = AuditFocus::All)]
+        focus: AuditFocus,
         /// Output format.
         #[arg(long, value_enum, default_value_t = ReportFormat::Table)]
         format: ReportFormat,
@@ -126,6 +132,8 @@ async fn main() -> Result<()> {
             path,
             severity,
             fail_on,
+            fail_on_malware,
+            focus,
             format,
             no_live_fallback,
         } => {
@@ -133,6 +141,8 @@ async fn main() -> Result<()> {
                 path,
                 severity,
                 fail_on,
+                fail_on_malware,
+                focus,
                 format,
                 no_live_fallback,
                 &store_path,
@@ -360,6 +370,14 @@ enum ReportFormat {
     Table,
     Json,
     Sarif,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
+enum AuditFocus {
+    All,
+    Cve,
+    Malware,
+    Typosquat,
 }
 
 fn init(path: PathBuf, force: bool) -> Result<()> {
@@ -618,6 +636,8 @@ struct ReportRow {
     /// CVE counts on the installed version — surfaces in the report table
     /// and footer even when the policy doesn't block them.
     cve_counts: SeverityCounts,
+    malware_confirmed: usize,
+    typosquat_suspects: usize,
 }
 
 struct ReportSummary {
@@ -626,6 +646,8 @@ struct ReportSummary {
     violations: usize,
     insufficient: usize,
     cve_counts: SeverityCounts,
+    malware_confirmed: usize,
+    typosquat_suspects: usize,
 }
 
 fn report(
@@ -682,12 +704,31 @@ fn report(
                 dep.installed.as_deref(),
                 &releases,
             );
-            let compliance = evaluate_dependency_with_vulns(
+            let malware = store
+                .load_malware_reports(&dep.ecosystem, &dep.name)
+                .unwrap_or_default();
+            let malware_core: Vec<packguard_core::MalwareReport> = malware
+                .iter()
+                .map(|m| packguard_core::MalwareReport {
+                    source: m.source.clone(),
+                    ref_id: m.ref_id.clone(),
+                    ecosystem: m.ecosystem.clone(),
+                    package_name: m.package_name.clone(),
+                    version: m.version.clone().unwrap_or_default(),
+                    kind: m.kind,
+                    summary: m.summary.clone(),
+                    url: m.url.clone(),
+                    evidence: m.evidence.clone(),
+                    reported_at: m.reported_at.clone(),
+                })
+                .collect();
+            let compliance = evaluate_dependency_full(
                 &dep.name,
                 dep.installed.as_deref(),
                 &resolved,
                 &releases,
                 &vulns_by_version,
+                &malware_core,
                 dialect,
                 now,
             );
@@ -700,6 +741,18 @@ fn report(
                 ),
                 None => SeverityCounts::default(),
             };
+            let installed_str = dep.installed.clone().unwrap_or_default();
+            let malware_confirmed = malware
+                .iter()
+                .filter(|m| matches!(m.kind, packguard_core::MalwareKind::Malware))
+                .filter(|m| {
+                    m.version.as_deref() == Some(installed_str.as_str()) || m.version.is_none()
+                })
+                .count();
+            let typosquat_suspects = malware
+                .iter()
+                .filter(|m| matches!(m.kind, packguard_core::MalwareKind::Typosquat))
+                .count();
             ReportRow {
                 ecosystem: dep.ecosystem,
                 workspace: dep.workspace_name,
@@ -710,6 +763,8 @@ fn report(
                 latest_published_at: dep.latest_published_at,
                 compliance,
                 cve_counts,
+                malware_confirmed,
+                typosquat_suspects,
             }
         })
         .collect();
@@ -803,10 +858,13 @@ struct AuditRow {
     vuln: MatchedVuln,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn audit(
     path: PathBuf,
     severity_filter: Vec<String>,
     fail_on: Option<String>,
+    fail_on_malware: bool,
+    focus: AuditFocus,
     format: ReportFormat,
     no_live_fallback: bool,
     store_path: &Path,
@@ -1018,12 +1076,67 @@ async fn audit(
 
     let counts = severity_counts(rows.iter().map(|r| r.vuln.severity));
 
-    match format {
-        ReportFormat::Table => render_audit_table(&rows, &counts, &path),
-        ReportFormat::Json => render_audit_json(&rows, &counts)?,
-        ReportFormat::Sarif => render_audit_sarif(&rows)?,
+    // Collect malware + typosquat rows from the store. We re-walk the deps
+    // already loaded above so the store query stays cheap.
+    let mut malware_rows: Vec<MalwareAuditRow> = Vec::new();
+    let mut typosquat_rows: Vec<MalwareAuditRow> = Vec::new();
+    for (eco, name, installed) in dep_keys_for_audit(&store, &path)? {
+        for r in store.load_malware_reports(&eco, &name)? {
+            // Match malware records by version (or whole-package empty).
+            let version_matches = r.version.is_none()
+                || r.version.as_deref() == Some(installed.as_deref().unwrap_or(""));
+            if !version_matches {
+                continue;
+            }
+            let row = MalwareAuditRow {
+                ecosystem: eco.clone(),
+                package: name.clone(),
+                installed: installed.clone(),
+                report: r.clone(),
+            };
+            match r.kind {
+                packguard_core::MalwareKind::Malware
+                | packguard_core::MalwareKind::ScannerSignal => malware_rows.push(row),
+                packguard_core::MalwareKind::Typosquat => typosquat_rows.push(row),
+            }
+        }
     }
 
+    let show_cve = matches!(focus, AuditFocus::All | AuditFocus::Cve);
+    let show_mal = matches!(focus, AuditFocus::All | AuditFocus::Malware);
+    let show_typo = matches!(focus, AuditFocus::All | AuditFocus::Typosquat);
+
+    match format {
+        ReportFormat::Table => {
+            if show_cve {
+                render_audit_table(&rows, &counts, &path);
+            }
+            if show_mal && !malware_rows.is_empty() {
+                render_malware_section(&malware_rows);
+            }
+            if show_typo && !typosquat_rows.is_empty() {
+                render_typosquat_section(&typosquat_rows);
+            }
+            if rows.is_empty() && malware_rows.is_empty() && typosquat_rows.is_empty() {
+                println!(
+                    "{} {}",
+                    "✓".green(),
+                    "no risks detected for the requested focus".bold()
+                );
+            }
+        }
+        ReportFormat::Json => render_audit_json_full(
+            show_cve.then_some((&rows[..], &counts)),
+            show_mal.then_some(&malware_rows[..]),
+            show_typo.then_some(&typosquat_rows[..]),
+        )?,
+        ReportFormat::Sarif => render_audit_sarif_full(
+            show_cve.then_some(&rows[..]),
+            show_mal.then_some(&malware_rows[..]),
+        )?,
+    }
+
+    // Exit gates.
     if let Some(threshold_raw) = fail_on {
         let threshold = Severity::parse(&threshold_raw);
         if matches!(threshold, Severity::Unknown) {
@@ -1032,12 +1145,36 @@ async fn audit(
                 threshold_raw
             );
         }
-        let triggered = rows.iter().any(|r| r.vuln.severity >= threshold);
-        if triggered {
+        if rows.iter().any(|r| r.vuln.severity >= threshold) {
             std::process::exit(1);
         }
     }
+    if fail_on_malware
+        && malware_rows
+            .iter()
+            .any(|r| matches!(r.report.kind, packguard_core::MalwareKind::Malware))
+    {
+        std::process::exit(1);
+    }
     Ok(())
+}
+
+/// Re-fetch (eco, name, installed) tuples for the audit's malware pass.
+/// Cheaper than threading them through from the CVE loop.
+fn dep_keys_for_audit(store: &Store, path: &Path) -> Result<Vec<(String, String, Option<String>)>> {
+    Ok(store
+        .load_repo_dependencies(path)?
+        .into_iter()
+        .map(|d| (d.ecosystem, d.name, d.installed))
+        .collect())
+}
+
+#[derive(Debug, Clone)]
+struct MalwareAuditRow {
+    ecosystem: String,
+    package: String,
+    installed: Option<String>,
+    report: packguard_store::StoredMalware,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1150,6 +1287,233 @@ fn render_audit_table(rows: &[AuditRow], counts: &SeverityCounts, path: &Path) {
     );
 }
 
+fn render_malware_section(rows: &[MalwareAuditRow]) {
+    println!("\n{} {}", "🏴‍☠️".dimmed(), "Malware".bold().red());
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL_CONDENSED)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec![
+            header("Package"),
+            header("Installed"),
+            header("Source"),
+            header("Ref"),
+            header("Evidence"),
+        ]);
+    for r in rows {
+        table.add_row(vec![
+            Cell::new(format!("[{}] {}", r.ecosystem, r.package)),
+            Cell::new(r.installed.as_deref().unwrap_or("-")),
+            Cell::new(&r.report.source).fg(Color::DarkGrey),
+            Cell::new(&r.report.ref_id),
+            Cell::new(r.report.summary.as_deref().unwrap_or("(no summary)")),
+        ]);
+    }
+    println!("{table}");
+}
+
+fn render_typosquat_section(rows: &[MalwareAuditRow]) {
+    println!(
+        "\n{} {}",
+        "⚠️".dimmed(),
+        "Typosquat suspects".bold().yellow()
+    );
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL_CONDENSED)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec![
+            header("Package"),
+            header("Resembles"),
+            header("Distance"),
+            header("Score"),
+            header("Reason"),
+        ]);
+    for r in rows {
+        let resembles = r
+            .report
+            .evidence
+            .get("resembles")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let distance = r
+            .report
+            .evidence
+            .get("distance")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "-".into());
+        let score = r
+            .report
+            .evidence
+            .get("score")
+            .and_then(|v| v.as_f64())
+            .map(|n| format!("{:.2}", n))
+            .unwrap_or_else(|| "-".into());
+        let reason = r
+            .report
+            .evidence
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        table.add_row(vec![
+            Cell::new(format!("[{}] {}", r.ecosystem, r.package)),
+            Cell::new(resembles).fg(Color::Cyan),
+            Cell::new(distance),
+            Cell::new(score),
+            Cell::new(reason).fg(Color::DarkGrey),
+        ]);
+    }
+    println!("{table}");
+}
+
+fn render_audit_json_full(
+    cve: Option<(&[AuditRow], &SeverityCounts)>,
+    malware: Option<&[MalwareAuditRow]>,
+    typosquat: Option<&[MalwareAuditRow]>,
+) -> Result<()> {
+    use serde_json::json;
+    let mut out = serde_json::Map::new();
+    if let Some((rows, counts)) = cve {
+        out.insert(
+            "cve".into(),
+            json!({
+                "summary": {
+                    "critical": counts.critical,
+                    "high": counts.high,
+                    "medium": counts.medium,
+                    "low": counts.low,
+                    "unknown": counts.unknown,
+                },
+                "matches": rows.iter().map(|r| json!({
+                    "ecosystem": r.ecosystem,
+                    "workspace": r.workspace,
+                    "package": r.package,
+                    "installed": r.installed,
+                    "advisory_id": r.vuln.advisory_id,
+                    "cve_id": r.vuln.cve_id,
+                    "source": r.vuln.source,
+                    "severity": r.vuln.severity.as_str(),
+                    "summary": r.vuln.summary,
+                    "url": r.vuln.url,
+                    "fixed_versions": r.vuln.fixed_versions,
+                    "aliases": r.vuln.aliases,
+                    "published_at": r.vuln.published_at,
+                })).collect::<Vec<_>>(),
+            }),
+        );
+    }
+    if let Some(m) = malware {
+        out.insert(
+            "malware".into(),
+            json!(m
+                .iter()
+                .map(|r| json!({
+                    "ecosystem": r.ecosystem,
+                    "package": r.package,
+                    "installed": r.installed,
+                    "source": r.report.source,
+                    "ref_id": r.report.ref_id,
+                    "kind": r.report.kind.as_str(),
+                    "summary": r.report.summary,
+                    "url": r.report.url,
+                    "evidence": r.report.evidence,
+                }))
+                .collect::<Vec<_>>()),
+        );
+    }
+    if let Some(t) = typosquat {
+        out.insert(
+            "typosquat".into(),
+            json!(t
+                .iter()
+                .map(|r| json!({
+                    "ecosystem": r.ecosystem,
+                    "package": r.package,
+                    "evidence": r.report.evidence,
+                    "summary": r.report.summary,
+                }))
+                .collect::<Vec<_>>()),
+        );
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::Value::Object(out))?
+    );
+    Ok(())
+}
+
+fn render_audit_sarif_full(
+    cve: Option<&[AuditRow]>,
+    malware: Option<&[MalwareAuditRow]>,
+) -> Result<()> {
+    use serde_json::json;
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    if let Some(rows) = cve {
+        for r in rows {
+            results.push(json!({
+                "ruleId": "packguard.cve",
+                "level": match r.vuln.severity {
+                    Severity::Critical | Severity::High => "error",
+                    Severity::Medium => "warning",
+                    _ => "note",
+                },
+                "message": { "text": r.vuln.summary.clone().unwrap_or_else(|| advisory_label(&r.vuln)) },
+                "properties": {
+                    "ecosystem": r.ecosystem,
+                    "package": r.package,
+                    "installed": r.installed,
+                    "advisory_id": r.vuln.advisory_id,
+                    "cve_id": r.vuln.cve_id,
+                    "severity": r.vuln.severity.as_str(),
+                    "fixed_versions": r.vuln.fixed_versions,
+                    "url": r.vuln.url,
+                },
+            }));
+        }
+    }
+    if let Some(rows) = malware {
+        for r in rows {
+            let level = match r.report.kind {
+                packguard_core::MalwareKind::Malware => "error",
+                _ => "warning",
+            };
+            results.push(json!({
+                "ruleId": "packguard.malware",
+                "level": level,
+                "message": { "text": r.report.summary.clone().unwrap_or_else(|| r.report.ref_id.clone()) },
+                "properties": {
+                    "ecosystem": r.ecosystem,
+                    "package": r.package,
+                    "installed": r.installed,
+                    "source": r.report.source,
+                    "ref_id": r.report.ref_id,
+                    "kind": r.report.kind.as_str(),
+                    "url": r.report.url,
+                },
+            }));
+        }
+    }
+    let sarif = json!({
+        "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": { "driver": {
+                "name": "packguard",
+                "version": env!("CARGO_PKG_VERSION"),
+                "informationUri": "https://github.com/nalo/packguard",
+                "rules": [
+                    { "id": "packguard.cve", "shortDescription": { "text": "Installed dependency has a known CVE" } },
+                    { "id": "packguard.malware", "shortDescription": { "text": "Installed dependency was flagged by a supply-chain scanner" } },
+                ],
+            }},
+            "results": results,
+        }],
+    });
+    println!("{}", serde_json::to_string_pretty(&sarif)?);
+    Ok(())
+}
+
 fn new_audit_table() -> Table {
     let mut table = Table::new();
     table
@@ -1166,89 +1530,8 @@ fn new_audit_table() -> Table {
     table
 }
 
-fn render_audit_json(rows: &[AuditRow], counts: &SeverityCounts) -> Result<()> {
-    use serde_json::json;
-    let out = json!({
-        "summary": {
-            "critical": counts.critical,
-            "high": counts.high,
-            "medium": counts.medium,
-            "low": counts.low,
-            "unknown": counts.unknown,
-        },
-        "matches": rows.iter().map(|r| json!({
-            "ecosystem": r.ecosystem,
-            "workspace": r.workspace,
-            "package": r.package,
-            "installed": r.installed,
-            "advisory_id": r.vuln.advisory_id,
-            "cve_id": r.vuln.cve_id,
-            "source": r.vuln.source,
-            "severity": r.vuln.severity.as_str(),
-            "summary": r.vuln.summary,
-            "url": r.vuln.url,
-            "fixed_versions": r.vuln.fixed_versions,
-            "aliases": r.vuln.aliases,
-            "published_at": r.vuln.published_at,
-        })).collect::<Vec<_>>(),
-    });
-    println!("{}", serde_json::to_string_pretty(&out)?);
-    Ok(())
-}
-
-/// Emit SARIF 2.1.0 shaped for GitHub code-scanning. Each match is one
-/// result under the `packguard.cve` rule.
-fn render_audit_sarif(rows: &[AuditRow]) -> Result<()> {
-    use serde_json::json;
-    let results: Vec<_> = rows
-        .iter()
-        .map(|r| {
-            json!({
-                "ruleId": "packguard.cve",
-                "level": match r.vuln.severity {
-                    Severity::Critical | Severity::High => "error",
-                    Severity::Medium => "warning",
-                    _ => "note",
-                },
-                "message": {
-                    "text": r.vuln.summary.clone().unwrap_or_else(|| advisory_label(&r.vuln))
-                },
-                "properties": {
-                    "ecosystem": r.ecosystem,
-                    "package": r.package,
-                    "installed": r.installed,
-                    "advisory_id": r.vuln.advisory_id,
-                    "cve_id": r.vuln.cve_id,
-                    "severity": r.vuln.severity.as_str(),
-                    "fixed_versions": r.vuln.fixed_versions,
-                    "url": r.vuln.url,
-                },
-            })
-        })
-        .collect();
-    let sarif = json!({
-        "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json",
-        "version": "2.1.0",
-        "runs": [{
-            "tool": {
-                "driver": {
-                    "name": "packguard",
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "informationUri": "https://github.com/nalo/packguard",
-                    "rules": [{
-                        "id": "packguard.cve",
-                        "shortDescription": {
-                            "text": "Installed dependency has a known CVE"
-                        },
-                    }],
-                }
-            },
-            "results": results,
-        }],
-    });
-    println!("{}", serde_json::to_string_pretty(&sarif)?);
-    Ok(())
-}
+// (Phase 2 single-section json/sarif renderers replaced by
+// `render_audit_json_full` / `render_audit_sarif_full` in 2.5.4.)
 
 fn load_project_policy(path: &Path) -> Result<Policy> {
     let candidate = path.join(".packguard.yml");
@@ -1271,16 +1554,20 @@ fn summarize(rows: &[ReportRow]) -> ReportSummary {
         violations: 0,
         insufficient: 0,
         cve_counts: SeverityCounts::default(),
+        malware_confirmed: 0,
+        typosquat_suspects: 0,
     };
     for r in rows {
         match &r.compliance {
             Compliance::Compliant => s.compliant += 1,
             Compliance::Warning(_) => s.warnings += 1,
             Compliance::Violation(_) => s.violations += 1,
-            // A VulnerabilityViolation is semantically a blocking
-            // violation — fold it into the violation counter so
-            // --fail-on-violation keeps working.
+            // VulnerabilityViolation + MalwareViolation fold into the
+            // violation counter so --fail-on-violation catches them too.
             Compliance::VulnerabilityViolation(_) => s.violations += 1,
+            Compliance::MalwareViolation(_) => s.violations += 1,
+            // TyposquatWarning is non-blocking — surfaced in warnings.
+            Compliance::TyposquatWarning(_) => s.warnings += 1,
             Compliance::InsufficientCandidates(_) => s.insufficient += 1,
         }
         s.cve_counts.critical += r.cve_counts.critical;
@@ -1288,6 +1575,8 @@ fn summarize(rows: &[ReportRow]) -> ReportSummary {
         s.cve_counts.medium += r.cve_counts.medium;
         s.cve_counts.low += r.cve_counts.low;
         s.cve_counts.unknown += r.cve_counts.unknown;
+        s.malware_confirmed += r.malware_confirmed;
+        s.typosquat_suspects += r.typosquat_suspects;
     }
     s
 }
@@ -1312,7 +1601,7 @@ fn render_table(rows: &[ReportRow], summary: &ReportSummary, path: &Path) {
             header("Installed"),
             header("Latest"),
             header("Policy"),
-            header("CVE"),
+            header("Risk"),
         ]);
 
     for row in rows {
@@ -1352,7 +1641,11 @@ fn render_table(rows: &[ReportRow], summary: &ReportSummary, path: &Path) {
             Cell::new(row.installed.as_deref().unwrap_or("-")),
             Cell::new(row.latest.as_deref().unwrap_or("-")),
             Cell::new(badge).fg(badge_color),
-            Cell::new(cve_badge(&row.cve_counts)),
+            Cell::new(risk_badge(
+                &row.cve_counts,
+                row.malware_confirmed,
+                row.typosquat_suspects,
+            )),
         ]);
     }
     if !table.is_empty() {
@@ -1378,6 +1671,14 @@ fn render_table(rows: &[ReportRow], summary: &ReportSummary, path: &Path) {
             format!("🟢 {} low", c.low).green(),
         );
     }
+    if summary.malware_confirmed + summary.typosquat_suspects > 0 {
+        println!(
+            "{} {}  {}",
+            "Supply-chain:".bold(),
+            format!("🏴‍☠️ {} malware confirmed", summary.malware_confirmed).red(),
+            format!("⚠️  {} typosquat suspect(s)", summary.typosquat_suspects).yellow(),
+        );
+    }
     let _ = path;
 }
 
@@ -1399,6 +1700,22 @@ fn json_row_for(r: &ReportRow) -> serde_json::Value {
         Compliance::VulnerabilityViolation(vulns) => (
             "cve-violation",
             Some(vuln_violation_message(&r.package, vulns)),
+        ),
+        Compliance::MalwareViolation(reports) => (
+            "malware",
+            Some(format!(
+                "{}: {} malware report(s) match installed",
+                r.package,
+                reports.len()
+            )),
+        ),
+        Compliance::TyposquatWarning(reports) => (
+            "typosquat",
+            Some(format!(
+                "{}: {} typosquat suspicion(s)",
+                r.package,
+                reports.len()
+            )),
         ),
         Compliance::InsufficientCandidates(m) => ("insufficient", Some(m.clone())),
     };
@@ -1423,7 +1740,7 @@ fn json_row_for(r: &ReportRow) -> serde_json::Value {
     })
 }
 
-fn cve_badge(counts: &SeverityCounts) -> String {
+fn risk_badge(counts: &SeverityCounts, malware: usize, typosquat: usize) -> String {
     let mut parts = Vec::new();
     if counts.critical > 0 {
         parts.push(format!("{}🔴", counts.critical));
@@ -1436,6 +1753,12 @@ fn cve_badge(counts: &SeverityCounts) -> String {
     }
     if counts.low > 0 {
         parts.push(format!("{}🟢", counts.low));
+    }
+    if malware > 0 {
+        parts.push(format!("{}🏴‍☠️", malware));
+    }
+    if typosquat > 0 {
+        parts.push(format!("{}⚠", typosquat));
     }
     if parts.is_empty() {
         "—".into()
@@ -1450,6 +1773,8 @@ fn compliance_badge(c: &Compliance) -> (&'static str, Color) {
         Compliance::Warning(_) => ("warning", Color::Yellow),
         Compliance::Violation(_) => ("violation", Color::Red),
         Compliance::VulnerabilityViolation(_) => ("cve-violation", Color::Red),
+        Compliance::MalwareViolation(_) => ("malware", Color::Red),
+        Compliance::TyposquatWarning(_) => ("typosquat", Color::Yellow),
         Compliance::InsufficientCandidates(_) => ("insufficient", Color::Magenta),
     }
 }
@@ -1468,6 +1793,10 @@ fn render_json(rows: &[ReportRow], summary: &ReportSummary) -> Result<()> {
                 "medium": summary.cve_counts.medium,
                 "low": summary.cve_counts.low,
                 "unknown": summary.cve_counts.unknown,
+            },
+            "malware": {
+                "confirmed": summary.malware_confirmed,
+                "suspected_typosquat": summary.typosquat_suspects,
             },
         },
         "rows": rows.iter().map(json_row_for).collect::<Vec<_>>(),
@@ -1488,6 +1817,14 @@ fn render_sarif(rows: &[ReportRow]) -> Result<()> {
             Compliance::VulnerabilityViolation(vulns) => {
                 Some((r, vuln_violation_message(&r.package, vulns)))
             }
+            Compliance::MalwareViolation(reports) => Some((
+                r,
+                format!(
+                    "{}: {} malware report(s) match installed",
+                    r.package,
+                    reports.len()
+                ),
+            )),
             _ => None,
         })
         .map(|(r, msg)| {
