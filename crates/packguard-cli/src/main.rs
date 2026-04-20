@@ -261,6 +261,17 @@ async fn sync(
     }
 
     let total = store.count_vulnerabilities()?;
+    // ---- typosquat refresh + scoring ----
+    refresh_typosquat_lists(&mut store).await;
+    let typosquat_persisted = score_typosquat_against_watched(&mut store)?;
+    if typosquat_persisted > 0 {
+        println!(
+            "{} typosquat — {} suspect package(s) flagged",
+            "✓".green(),
+            typosquat_persisted
+        );
+    }
+
     let mal_total = store.count_malware_reports()?;
     println!(
         "{} store holds {} advisories + {} malware reports",
@@ -269,6 +280,79 @@ async fn sync(
         mal_total,
     );
     Ok(())
+}
+
+/// Refresh the PyPI top-N reference list when the cache is older than 7
+/// days. Failures are non-fatal — typosquat scoring will fall back to the
+/// embedded npm baseline + whatever the cache already holds.
+async fn refresh_typosquat_lists(store: &mut Store) {
+    const KIND: &str = "typosquat-pypi-top";
+    let prior = match store.get_sync_state(KIND) {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::warn!(?err, "typosquat sync_log read failed");
+            None
+        }
+    };
+    let cached_at = prior.as_ref().and_then(|s| s.synced_at.clone());
+    match packguard_intel::typosquat::refresh::refresh_pypi(
+        std::time::Duration::from_secs(7 * 24 * 3600),
+        cached_at.as_deref(),
+    )
+    .await
+    {
+        Ok(0) => {
+            // Cache hit (no refresh needed) → no output.
+        }
+        Ok(n) => {
+            let mut state = prior.unwrap_or_default();
+            state.synced_at = Some(Utc::now().to_rfc3339());
+            state.record_count = n as i64;
+            if let Err(err) = store.put_sync_state(KIND, &state) {
+                tracing::warn!(?err, "typosquat sync_log write failed");
+            }
+            println!(
+                "{} typosquat-pypi-top — refreshed ({} entries cached)",
+                "✓".green(),
+                n
+            );
+        }
+        Err(err) => {
+            eprintln!(
+                "{} typosquat PyPI list refresh failed: {:#}",
+                "warn".yellow(),
+                err
+            );
+        }
+    }
+}
+
+/// Score every watched package and persist the suspects.
+fn score_typosquat_against_watched(store: &mut Store) -> Result<usize> {
+    let watched = store.watched_packages()?;
+    if watched.is_empty() {
+        return Ok(0);
+    }
+    let npm = packguard_intel::typosquat::refresh::load_npm_top()?;
+    let pypi = packguard_intel::typosquat::refresh::load_pypi_top()?;
+    let scorer_npm = packguard_intel::typosquat::Scorer::new(npm);
+    let scorer_pypi = packguard_intel::typosquat::Scorer::new(pypi);
+    let mut reports: Vec<packguard_core::MalwareReport> = Vec::new();
+    for (eco, name) in &watched {
+        let hit = match eco.as_str() {
+            "npm" => scorer_npm.score(name),
+            "pypi" => scorer_pypi.score(name),
+            _ => None,
+        };
+        if let Some(h) = hit {
+            reports.push(h.into_malware_report(eco));
+        }
+    }
+    if reports.is_empty() {
+        return Ok(0);
+    }
+    store.persist_malware_reports(&reports)?;
+    Ok(reports.len())
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
