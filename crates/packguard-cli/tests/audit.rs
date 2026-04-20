@@ -99,7 +99,7 @@ fn audit_table_lists_the_match_with_severity_badge() {
     let out = Command::new(bin())
         .arg("--store")
         .arg(&env.store)
-        .args(["audit"])
+        .args(["audit", "--no-live-fallback"])
         .arg(&env.repo)
         .output()
         .unwrap();
@@ -122,7 +122,7 @@ fn audit_json_has_summary_and_matches() {
     let out = Command::new(bin())
         .arg("--store")
         .arg(&env.store)
-        .args(["audit", "--format", "json"])
+        .args(["audit", "--no-live-fallback", "--format", "json"])
         .arg(&env.repo)
         .output()
         .unwrap();
@@ -142,7 +142,7 @@ fn audit_severity_filter_excludes_low() {
     let out = Command::new(bin())
         .arg("--store")
         .arg(&env.store)
-        .args(["audit", "--severity", "critical"])
+        .args(["audit", "--no-live-fallback", "--severity", "critical"])
         .arg(&env.repo)
         .output()
         .unwrap();
@@ -160,7 +160,7 @@ fn audit_fail_on_high_exits_nonzero() {
     let out = Command::new(bin())
         .arg("--store")
         .arg(&env.store)
-        .args(["audit", "--fail-on", "high"])
+        .args(["audit", "--no-live-fallback", "--fail-on", "high"])
         .arg(&env.repo)
         .output()
         .unwrap();
@@ -174,7 +174,7 @@ fn audit_fail_on_critical_exits_zero_when_only_high_present() {
     let out = Command::new(bin())
         .arg("--store")
         .arg(&env.store)
-        .args(["audit", "--fail-on", "critical"])
+        .args(["audit", "--no-live-fallback", "--fail-on", "critical"])
         .arg(&env.repo)
         .output()
         .unwrap();
@@ -191,7 +191,7 @@ fn audit_sarif_emits_results() {
     let out = Command::new(bin())
         .arg("--store")
         .arg(&env.store)
-        .args(["audit", "--format", "sarif"])
+        .args(["audit", "--no-live-fallback", "--format", "sarif"])
         .arg(&env.repo)
         .output()
         .unwrap();

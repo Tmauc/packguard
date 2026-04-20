@@ -70,6 +70,11 @@ enum Cmd {
         /// Output format.
         #[arg(long, value_enum, default_value_t = ReportFormat::Table)]
         format: ReportFormat,
+        /// Disable the live OSV API fallback. By default, packages with no
+        /// cached advisories (or a >24h-old lookup) are queried against
+        /// api.osv.dev on the fly.
+        #[arg(long)]
+        no_live_fallback: bool,
     },
     /// Refresh vulnerability intel (OSV dumps + GHSA git repo) into the store.
     Sync {
@@ -122,7 +127,18 @@ async fn main() -> Result<()> {
             severity,
             fail_on,
             format,
-        } => audit(path, severity, fail_on, format, &store_path),
+            no_live_fallback,
+        } => {
+            audit(
+                path,
+                severity,
+                fail_on,
+                format,
+                no_live_fallback,
+                &store_path,
+            )
+            .await
+        }
         Cmd::Report {
             path,
             format,
@@ -689,14 +705,15 @@ struct AuditRow {
     vuln: MatchedVuln,
 }
 
-fn audit(
+async fn audit(
     path: PathBuf,
     severity_filter: Vec<String>,
     fail_on: Option<String>,
     format: ReportFormat,
+    no_live_fallback: bool,
     store_path: &Path,
 ) -> Result<()> {
-    let store = Store::open(store_path)
+    let mut store = Store::open(store_path)
         .with_context(|| format!("opening store at {}", store_path.display()))?;
     let dependencies = store.load_repo_dependencies(&path)?;
     if dependencies.is_empty() {
@@ -713,12 +730,87 @@ fn audit(
         .filter(|s| !matches!(s, Severity::Unknown))
         .collect();
 
+    // Opt-in live fallback: hit api.osv.dev for packages we don't have
+    // cached advisories on (or haven't queried in 24h). Single client is
+    // cheap; we'll consult it per-dep below.
+    let live_client = if no_live_fallback {
+        None
+    } else {
+        match packguard_intel::OsvApiClient::new() {
+            Ok(c) => Some(c),
+            Err(err) => {
+                eprintln!(
+                    "{} OSV API client init failed ({:#}) — disabling fallback",
+                    "warn".yellow(),
+                    err
+                );
+                None
+            }
+        }
+    };
+
     let mut rows: Vec<AuditRow> = Vec::new();
     for dep in dependencies {
         let Some(installed) = dep.installed.as_deref() else {
             continue;
         };
         let stored = store.load_vulnerabilities(&dep.ecosystem, &dep.name)?;
+
+        // Live fallback: empty cache OR stale lookup (>24h) → POST /v1/query.
+        // Results are persisted with source="osv-api-live"; a sync_log entry
+        // keyed `osv-api:{eco}:{name}` tracks the last successful query time.
+        let stored = if let Some(client) = &live_client {
+            let key = format!("osv-api:{}:{}", dep.ecosystem, dep.name);
+            let stale = store
+                .get_sync_state(&key)?
+                .and_then(|s| s.synced_at)
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+                .map(|ts| Utc::now().signed_duration_since(ts.to_utc()).num_hours() >= 24)
+                .unwrap_or(true);
+            if stored.is_empty() || stale {
+                if let Some(ecosystem_osv) = packguard_intel::osv_ecosystem(&dep.ecosystem) {
+                    match client.query(ecosystem_osv, &dep.name, installed).await {
+                        Ok(vulns) => {
+                            if !vulns.is_empty() {
+                                let n = store.persist_vulnerabilities(&vulns)?;
+                                tracing::info!(
+                                    %dep.ecosystem, %dep.name, %installed, added = n,
+                                    "live OSV fallback returned advisories"
+                                );
+                            }
+                            let mut state = packguard_store::SyncState {
+                                synced_at: Some(Utc::now().to_rfc3339()),
+                                record_count: vulns.len() as i64,
+                                ..Default::default()
+                            };
+                            // Preserve any prior record_count / commit.
+                            if let Some(prior) = store.get_sync_state(&key)? {
+                                state.record_count = prior.record_count + vulns.len() as i64;
+                            }
+                            store.put_sync_state(&key, &state)?;
+                            // Re-read combined (cached + live) set for the matcher.
+                            store.load_vulnerabilities(&dep.ecosystem, &dep.name)?
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "{} OSV live query failed for {}: {:#}",
+                                "warn".yellow(),
+                                dep.name,
+                                err
+                            );
+                            stored
+                        }
+                    }
+                } else {
+                    stored
+                }
+            } else {
+                stored
+            }
+        } else {
+            stored
+        };
+
         if stored.is_empty() {
             continue;
         }

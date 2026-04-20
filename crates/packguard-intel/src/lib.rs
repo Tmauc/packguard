@@ -10,8 +10,10 @@ pub mod ghsa;
 pub mod matcher;
 pub mod normalize;
 pub mod osv;
+pub mod osv_api;
 
 pub use matcher::{match_vulnerabilities, version_matches_spec, MatchedVuln};
+pub use osv_api::{osv_ecosystem, OsvApiClient};
 
 use packguard_core::Vulnerability;
 use std::collections::HashSet;
