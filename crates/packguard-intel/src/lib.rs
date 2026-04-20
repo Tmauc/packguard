@@ -7,8 +7,11 @@
 //! store keeps one row per `(source, advisory_id, pkg_id)`.
 
 pub mod ghsa;
+pub mod matcher;
 pub mod normalize;
 pub mod osv;
+
+pub use matcher::{match_vulnerabilities, version_matches_spec, MatchedVuln};
 
 use packguard_core::Vulnerability;
 use std::collections::HashSet;
