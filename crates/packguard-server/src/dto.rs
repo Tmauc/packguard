@@ -521,6 +521,10 @@ pub struct CompatDependent {
     pub version: String,
     pub range: String,
     pub kind: String,
+    /// Phase 7b: repo path the dependent was observed in. Canonicalized
+    /// exactly like `WorkspaceInfo.path` so the UI can group the "Used
+    /// by" list per workspace and cross-reference the header selector.
+    pub workspace: String,
 }
 
 // ---- Phase 7: workspaces ---------------------------------------------------

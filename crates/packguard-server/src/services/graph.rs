@@ -584,12 +584,15 @@ pub fn compat(
 
     // Phase 7a: aggregate across every scanned repo when `project = None`
     // so the Compat tab's "Used by" list shows every workspace that
-    // depends on this package. Phase 7b adds the per-workspace drill-down
-    // view on top; the DTO shape stays unchanged.
+    // depends on this package. Phase 7b tags each dependent with the repo
+    // path it came from so the UI can group per-workspace without a
+    // second round-trip (the header selector cross-references these
+    // values against `/api/workspaces`).
     let paths = scope_paths(store, project)?;
     let mut installed: Option<String> = None;
     let mut dependents: Vec<CompatDependent> = Vec::new();
     for p in &paths {
+        let workspace_key = p.display().to_string();
         if installed.is_none() {
             installed = store
                 .load_repo_dependencies(p)?
@@ -609,11 +612,19 @@ pub fn compat(
                 version: e.source_version,
                 range: e.target_range,
                 kind: kind_label(e.kind).to_string(),
+                workspace: workspace_key.clone(),
             });
         }
     }
-    dependents.sort_by(|a, b| a.name.cmp(&b.name).then(a.version.cmp(&b.version)));
-    dependents.dedup_by(|a, b| a.name == b.name && a.version == b.version);
+    dependents.sort_by(|a, b| {
+        a.workspace
+            .cmp(&b.workspace)
+            .then(a.name.cmp(&b.name))
+            .then(a.version.cmp(&b.version))
+    });
+    dependents.dedup_by(|a, b| {
+        a.workspace == b.workspace && a.name == b.name && a.version == b.version
+    });
 
     Ok(CompatResponse {
         ecosystem: ecosystem.to_string(),
