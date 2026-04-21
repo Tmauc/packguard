@@ -12,7 +12,13 @@ import type { MalwareEntry } from "@/api/types/MalwareEntry";
 import type { PackageDetail } from "@/api/types/PackageDetail";
 import type { VulnerabilityEntry } from "@/api/types/VulnerabilityEntry";
 
-type TabKey = "versions" | "vulnerabilities" | "malware" | "policy" | "changelog";
+type TabKey =
+  | "versions"
+  | "vulnerabilities"
+  | "malware"
+  | "policy"
+  | "compatibility"
+  | "changelog";
 
 export function PackageDetailPage() {
   const { ecosystem = "", name = "" } = useParams();
@@ -84,6 +90,11 @@ export function PackageDetailPage() {
           onClick={() => setTab("policy")}
         />
         <TabButton
+          label="Compatibility"
+          active={tab === "compatibility"}
+          onClick={() => setTab("compatibility")}
+        />
+        <TabButton
           label="Changelog"
           active={tab === "changelog"}
           onClick={() => setTab("changelog")}
@@ -96,6 +107,13 @@ export function PackageDetailPage() {
           {tab === "vulnerabilities" && <VulnerabilitiesTab vulns={data.vulnerabilities} />}
           {tab === "malware" && <MalwareTab reports={data.malware} />}
           {tab === "policy" && <PolicyTab detail={data} />}
+          {tab === "compatibility" && (
+            <CompatibilityTab
+              ecosystem={data.ecosystem}
+              name={data.name}
+              installed={data.installed ?? undefined}
+            />
+          )}
           {tab === "changelog" && <ChangelogTab />}
         </CardContent>
       </Card>
@@ -407,8 +425,217 @@ function PolicyTab({ detail }: { detail: PackageDetail }) {
 function ChangelogTab() {
   return (
     <div className="py-8 text-center text-sm text-zinc-500">
-      Inline changelog lazy-fetch lands in Phase 5. For now, inspect releases
+      Inline changelog lazy-fetch lands in Phase 6. For now, inspect releases
       directly on the upstream registry (npm / PyPI / GitHub).
+    </div>
+  );
+}
+
+function CompatibilityTab({
+  ecosystem,
+  name,
+  installed,
+}: {
+  ecosystem: string;
+  name: string;
+  installed?: string;
+}) {
+  const compat = useQuery({
+    queryKey: ["compat", ecosystem, name],
+    queryFn: () => api.packageCompat(ecosystem, name),
+  });
+  if (compat.isLoading) {
+    return <div className="py-8 text-center text-sm text-zinc-500">Loading…</div>;
+  }
+  if (compat.error) {
+    return (
+      <div className="py-8 text-center text-sm text-red-600">
+        Failed to load compatibility: {String(compat.error)}
+      </div>
+    );
+  }
+  if (!compat.data) return null;
+
+  const installedRow = compat.data.rows.find((r) => r.version === installed);
+  const peerRows: PeerDepRow[] = installedRow
+    ? Object.entries(installedRow.peer_deps)
+        .filter((entry): entry is [string, NonNullable<typeof entry[1]>] => entry[1] !== undefined)
+        .map(([depName, spec]) => ({
+          name: depName,
+          range: spec.range,
+          optional: spec.optional,
+        }))
+    : [];
+  const engines: EngineRow[] = installedRow
+    ? Object.entries(installedRow.engines)
+        .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+        .map(([runtime, range]) => ({ runtime, range }))
+    : [];
+
+  const graphHref = `/graph?focus=${encodeURIComponent(
+    `${ecosystem}:${name}@${installed ?? ""}`,
+  )}`;
+
+  return (
+    <div className="space-y-4">
+      {!installedRow && (
+        <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+          No compatibility metadata on file for the installed version. Peer
+          deps + engines become available after a scan with a populated
+          lockfile (pnpm-lock snapshots or npm full `packages:` tree).
+        </div>
+      )}
+
+      <section>
+        <SectionHeader title="Peer dependencies" count={peerRows.length} />
+        {peerRows.length === 0 ? (
+          <EmptyRow>No peer dependencies declared for this version.</EmptyRow>
+        ) : (
+          <div className="overflow-hidden rounded-md border border-zinc-200 bg-white">
+            <table className="w-full text-sm">
+              <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Peer</th>
+                  <th className="px-3 py-2 text-left font-medium">Required</th>
+                  <th className="px-3 py-2 text-left font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {peerRows.map((p) => (
+                  <tr key={p.name} className="border-b border-zinc-100">
+                    <td className="px-3 py-1.5 font-mono text-xs">{p.name}</td>
+                    <td className="px-3 py-1.5 font-mono text-xs text-zinc-700">
+                      {p.range}
+                    </td>
+                    <td className="px-3 py-1.5">
+                      {p.optional ? (
+                        <Badge tone="muted">optional</Badge>
+                      ) : (
+                        <Badge tone="warn">required · see graph</Badge>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section>
+        <SectionHeader title="Engines" count={engines.length} />
+        {engines.length === 0 ? (
+          <EmptyRow>No engine constraints declared.</EmptyRow>
+        ) : (
+          <div className="overflow-hidden rounded-md border border-zinc-200 bg-white">
+            <table className="w-full text-sm">
+              <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Runtime</th>
+                  <th className="px-3 py-2 text-left font-medium">Required</th>
+                </tr>
+              </thead>
+              <tbody>
+                {engines.map((e) => (
+                  <tr key={e.runtime} className="border-b border-zinc-100">
+                    <td className="px-3 py-1.5 font-mono text-xs">{e.runtime}</td>
+                    <td className="px-3 py-1.5 font-mono text-xs text-zinc-700">
+                      {e.range}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section>
+        <SectionHeader
+          title="Used by"
+          count={compat.data.dependents.length}
+        />
+        {compat.data.dependents.length === 0 ? (
+          <EmptyRow>
+            Nothing in the scanned repos depends on this package.
+          </EmptyRow>
+        ) : (
+          <div className="overflow-hidden rounded-md border border-zinc-200 bg-white">
+            <table className="w-full text-sm">
+              <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Parent</th>
+                  <th className="px-3 py-2 text-left font-medium">Version</th>
+                  <th className="px-3 py-2 text-left font-medium">Range asked</th>
+                  <th className="px-3 py-2 text-left font-medium">Kind</th>
+                </tr>
+              </thead>
+              <tbody>
+                {compat.data.dependents.slice(0, 50).map((d, i) => (
+                  <tr
+                    key={`${d.name}@${d.version}-${i}`}
+                    className="border-b border-zinc-100"
+                  >
+                    <td className="px-3 py-1.5">
+                      <Link
+                        to={`/packages/${encodeURIComponent(d.ecosystem)}/${encodeURIComponent(d.name)}`}
+                        className="font-mono text-xs text-zinc-900 hover:underline"
+                      >
+                        {d.name}
+                      </Link>
+                    </td>
+                    <td className="px-3 py-1.5 font-mono text-xs text-zinc-700">
+                      {d.version}
+                    </td>
+                    <td className="px-3 py-1.5 font-mono text-xs text-zinc-700">
+                      {d.range}
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <Badge tone="muted">{d.kind}</Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {compat.data.dependents.length > 50 && (
+              <div className="border-t border-zinc-200 p-2 text-xs text-zinc-500">
+                Showing 50 of {compat.data.dependents.length} dependents.
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      <div className="flex items-center justify-between rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+        <span>
+          Inspect upstream + transitive chains visually in the dependency graph.
+        </span>
+        <Link
+          to={graphHref}
+          className="inline-flex items-center gap-1 rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-700 hover:bg-white"
+        >
+          Open in graph <ExternalLinkIcon className="h-3 w-3" />
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+type PeerDepRow = { name: string; range: string; optional: boolean };
+type EngineRow = { runtime: string; range: string };
+
+function SectionHeader({ title, count }: { title: string; count: number }) {
+  return (
+    <h3 className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
+      {title} <span className="text-zinc-400">({count})</span>
+    </h3>
+  );
+}
+
+function EmptyRow({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-md border border-dashed border-zinc-200 bg-white px-3 py-3 text-xs text-zinc-500">
+      {children}
     </div>
   );
 }

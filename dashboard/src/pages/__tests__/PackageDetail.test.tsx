@@ -6,7 +6,12 @@ import { vi } from "vitest";
 import { PackageDetailPage } from "@/pages/PackageDetail";
 import type { PackageDetail } from "@/api/types/PackageDetail";
 
-vi.mock("@/lib/api", () => ({ api: { packageDetail: vi.fn() } }));
+vi.mock("@/lib/api", () => ({
+  api: {
+    packageDetail: vi.fn(),
+    packageCompat: vi.fn(),
+  },
+}));
 
 import { api } from "@/lib/api";
 
@@ -76,6 +81,7 @@ function fixture(overrides: Partial<PackageDetail> = {}): PackageDetail {
 
 beforeEach(() => {
   (api.packageDetail as ReturnType<typeof vi.fn>).mockReset();
+  (api.packageCompat as ReturnType<typeof vi.fn>).mockReset();
 });
 
 describe("PackageDetailPage", () => {
@@ -127,7 +133,67 @@ describe("PackageDetailPage", () => {
     await screen.findByText("lodash");
     await user.click(screen.getByRole("button", { name: /Changelog/i }));
     expect(
-      screen.getByText(/Inline changelog lazy-fetch lands in Phase 5/i),
+      screen.getByText(/Inline changelog lazy-fetch lands in Phase 6/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders peer deps + engines + dependents on the Compatibility tab", async () => {
+    (api.packageCompat as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ecosystem: "npm",
+      name: "lodash",
+      installed: "4.17.20",
+      rows: [
+        {
+          version: "4.17.20",
+          engines: { node: ">=14" },
+          peer_deps: {
+            react: { range: "^18", optional: false },
+            tslib: { range: "*", optional: true },
+          },
+        },
+      ],
+      dependents: [
+        {
+          ecosystem: "npm",
+          name: "@nalo/phoebus",
+          version: "2026.4.16",
+          range: "4.17.23",
+          kind: "runtime",
+        },
+      ],
+    });
+    wrap(fixture());
+    const user = userEvent.setup();
+    await screen.findByText("lodash");
+    await user.click(screen.getByRole("button", { name: /Compatibility/i }));
+    // peer deps with status glyphs
+    expect(await screen.findByText(/react/)).toBeInTheDocument();
+    expect(screen.getByText(/required · see graph/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/optional/i).length).toBeGreaterThan(0);
+    // engines
+    expect(screen.getByText("node")).toBeInTheDocument();
+    expect(screen.getByText(">=14")).toBeInTheDocument();
+    // dependents
+    expect(screen.getByText("@nalo/phoebus")).toBeInTheDocument();
+    // deep link to graph
+    const graphLink = screen.getByRole("link", { name: /Open in graph/i });
+    expect(graphLink.getAttribute("href")).toContain("/graph?focus=");
+  });
+
+  it("shows a graceful notice when no compat row matches the installed version", async () => {
+    (api.packageCompat as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ecosystem: "npm",
+      name: "lodash",
+      installed: "4.17.20",
+      rows: [],
+      dependents: [],
+    });
+    wrap(fixture());
+    const user = userEvent.setup();
+    await screen.findByText("lodash");
+    await user.click(screen.getByRole("button", { name: /Compatibility/i }));
+    expect(
+      await screen.findByText(/No compatibility metadata on file/i),
     ).toBeInTheDocument();
   });
 });
