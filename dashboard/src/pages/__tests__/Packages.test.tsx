@@ -71,6 +71,7 @@ describe("PackagesPage", () => {
     await waitFor(() => {
       expect(api.packages).toHaveBeenLastCalledWith(
         expect.objectContaining({ ecosystem: "npm", page: 1 }),
+        undefined,
       );
     });
   });
@@ -84,6 +85,7 @@ describe("PackagesPage", () => {
     await waitFor(() => {
       expect(api.packages).toHaveBeenLastCalledWith(
         expect.objectContaining({ has_malware: true }),
+        undefined,
       );
     });
   });
@@ -98,6 +100,18 @@ describe("PackagesPage", () => {
           status: "cve-violation",
           page: 2,
         }),
+        undefined,
+      );
+    });
+  });
+
+  it("threads the workspace scope into the API call", async () => {
+    (api.packages as ReturnType<typeof vi.fn>).mockResolvedValue(fixture([]));
+    wrap(["/packages?project=/tmp/repo-a"]);
+    await waitFor(() => {
+      expect(api.packages).toHaveBeenLastCalledWith(
+        expect.any(Object),
+        "/tmp/repo-a",
       );
     });
   });

@@ -3,29 +3,40 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import CodeMirror from "@uiw/react-codemirror";
 import { yaml as yamlLang } from "@codemirror/lang-yaml";
 import { toast } from "sonner";
+import { FolderTreeIcon } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api, ApiError } from "@/lib/api";
+import { ScopeBadge } from "@/components/layout/ScopeBadge";
+import { scopeLabel, useScope } from "@/components/layout/workspace-scope";
 import type { PolicyDryRunResult } from "@/api/types/PolicyDryRunResult";
 
 export function PoliciesPage() {
   const qc = useQueryClient();
-  const policy = useQuery({ queryKey: ["policies"], queryFn: api.policies });
+  const scope = useScope();
+  const policy = useQuery({
+    queryKey: ["policies", scope ?? null],
+    queryFn: () => api.policies(scope),
+    enabled: Boolean(scope),
+  });
 
   const [draft, setDraft] = useState<string>("");
   const [lastLoadedFromFile, setLastLoadedFromFile] = useState<boolean>(false);
 
-  // Hydrate the editor from the server once the first read lands.
+  // Hydrate the editor from the server once the first read lands — and
+  // reset whenever the active workspace changes, so the editor never
+  // shows the previous workspace's YAML when the user flips the selector.
   useEffect(() => {
-    if (policy.data && draft === "") {
+    if (policy.data) {
       setDraft(policy.data.yaml);
       setLastLoadedFromFile(policy.data.from_file);
+    } else {
+      setDraft("");
+      setLastLoadedFromFile(false);
     }
-    // Deliberate: we only hydrate on first load; afterwards the user's edits
-    // are the source of truth until they Save / Revert.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [policy.data?.yaml]);
+  }, [policy.data?.yaml, scope]);
 
   const dirty = policy.data && draft !== policy.data.yaml;
 
@@ -33,7 +44,7 @@ export function PoliciesPage() {
   const [yamlError, setYamlError] = useState<string | null>(null);
 
   const runDryRun = useMutation({
-    mutationFn: () => api.dryRunPolicy(draft),
+    mutationFn: () => api.dryRunPolicy(draft, scope),
     onSuccess: (r) => {
       setDryRun(r);
       setYamlError(null);
@@ -49,15 +60,16 @@ export function PoliciesPage() {
   });
 
   const save = useMutation({
-    mutationFn: () => api.savePolicy(draft),
+    mutationFn: () => api.savePolicy(draft, scope),
     onSuccess: (doc) => {
       setYamlError(null);
       setLastLoadedFromFile(true);
       toast.success("Policy saved", {
-        description: ".packguard.yml updated on disk.",
+        description: `.packguard.yml updated on disk${scope ? ` (${scopeLabel(scope)})` : ""}.`,
       });
-      qc.setQueryData(["policies"], doc);
-      // Packages table + overview both depend on the policy — invalidate.
+      qc.setQueryData(["policies", scope ?? null], doc);
+      // Packages table + overview both depend on the policy — invalidate
+      // the whole namespace since the scoped query key includes project.
       qc.invalidateQueries({ queryKey: ["packages"] });
       qc.invalidateQueries({ queryKey: ["overview"] });
     },
@@ -79,12 +91,17 @@ export function PoliciesPage() {
     }
   };
 
+  if (!scope) {
+    return <SelectWorkspaceState />;
+  }
+
   return (
     <div className="space-y-4">
       <header className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
           Policy
         </h1>
+        <ScopeBadge />
         {lastLoadedFromFile ? (
           <Badge tone="good">on disk</Badge>
         ) : (
@@ -255,6 +272,42 @@ function DryRunCard({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function SelectWorkspaceState() {
+  return (
+    <div className="space-y-4">
+      <header className="flex flex-wrap items-center gap-3">
+        <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
+          Policy
+        </h1>
+        <ScopeBadge />
+      </header>
+      <Card>
+        <CardHeader>
+          <CardTitle>Select a workspace</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm text-zinc-600">
+          <div className="flex items-start gap-3">
+            <FolderTreeIcon className="mt-0.5 h-5 w-5 flex-shrink-0 text-zinc-400" />
+            <div className="space-y-2">
+              <p>
+                Each workspace owns its own{" "}
+                <span className="font-mono">.packguard.yml</span>. Pick one from
+                the <span className="font-medium">Workspace</span> dropdown in
+                the header to load its policy.
+              </p>
+              <p className="text-xs text-zinc-500">
+                If you haven&apos;t scanned anything yet, run{" "}
+                <span className="font-mono">packguard scan &lt;path&gt;</span>{" "}
+                first — the workspace will appear automatically.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

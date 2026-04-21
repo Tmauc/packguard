@@ -11,12 +11,15 @@ import type { HighlightMode } from "@/components/graph/GraphCanvas";
 import { NodePanel } from "@/components/graph/NodePanel";
 import type { LayoutName } from "@/components/graph/register-layouts";
 import { LAYOUTS } from "@/components/graph/register-layouts";
+import { ScopeBadge } from "@/components/layout/ScopeBadge";
+import { useScope } from "@/components/layout/workspace-scope";
 
 const KINDS = ["runtime", "dev", "peer", "optional"] as const;
 type Kind = (typeof KINDS)[number];
 
 export function GraphPage() {
   const [params, setParams] = useSearchParams();
+  const scope = useScope();
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   // URL-driven filters so the view is refreshable + linkable (the Compat
@@ -40,17 +43,20 @@ export function GraphPage() {
   }, [focusCve]);
 
   const graphQuery = useQuery({
-    queryKey: ["graph", { kinds, maxDepth }],
+    queryKey: ["graph", { kinds, maxDepth }, scope ?? null],
     queryFn: () =>
-      api.graph({
-        kind: kinds.join(","),
-        max_depth: maxDepth,
-      }),
+      api.graph(
+        {
+          kind: kinds.join(","),
+          max_depth: maxDepth,
+        },
+        scope,
+      ),
   });
 
   const contamination = useQuery({
-    queryKey: ["graph-contaminated", focusCve],
-    queryFn: () => api.contaminated(focusCve),
+    queryKey: ["graph-contaminated", focusCve, scope ?? null],
+    queryFn: () => api.contaminated(focusCve, scope),
     enabled: Boolean(focusCve),
   });
 
@@ -161,7 +167,10 @@ export function GraphPage() {
             scan to refresh.
           </p>
         </div>
-        <Legend />
+        <div className="flex items-start gap-3">
+          <ScopeBadge className="mt-0.5" />
+          <Legend />
+        </div>
       </header>
 
       <Card>

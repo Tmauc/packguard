@@ -7,11 +7,14 @@ import { api } from "@/lib/api";
 import type { Overview } from "@/api/types/Overview";
 import { StatCard } from "@/components/overview/StatCard";
 import { Donut } from "@/components/overview/Donut";
+import { ScopeBadge } from "@/components/layout/ScopeBadge";
+import { useScope } from "@/components/layout/workspace-scope";
 
 export function OverviewPage() {
+  const scope = useScope();
   const { data, isLoading, error } = useQuery({
-    queryKey: ["overview"],
-    queryFn: api.overview,
+    queryKey: ["overview", scope ?? null],
+    queryFn: () => api.overview(scope),
     refetchInterval: 5_000,
   });
 
@@ -87,20 +90,23 @@ function Loaded({ data }: { data: Overview }) {
 
   return (
     <div className="space-y-6">
-      <header>
-        <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
-          Overview
-        </h1>
-        <p className="text-sm text-zinc-500">
-          {data.last_scan_at ? (
-            <>
-              Last scan: {fmtTime(data.last_scan_at)} · Last sync:{" "}
-              {data.last_sync_at ? fmtTime(data.last_sync_at) : "never"}
-            </>
-          ) : (
-            <>No scan recorded — run one from the header.</>
-          )}
-        </p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
+            Overview
+          </h1>
+          <p className="text-sm text-zinc-500">
+            {data.last_scan_at ? (
+              <>
+                Last scan: {fmtTime(data.last_scan_at)} · Last sync:{" "}
+                {data.last_sync_at ? fmtTime(data.last_sync_at) : "never"}
+              </>
+            ) : (
+              <>No scan recorded — run one from the header.</>
+            )}
+          </p>
+        </div>
+        <ScopeBadge />
       </header>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

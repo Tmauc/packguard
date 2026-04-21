@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { ScopeBadge } from "@/components/layout/ScopeBadge";
+import { useScope } from "@/components/layout/workspace-scope";
 import type { ComplianceTag } from "@/api/types/ComplianceTag";
 import type { PackageRow } from "@/api/types/PackageRow";
 import type { PackageRisk } from "@/api/types/PackageRisk";
@@ -27,6 +29,7 @@ const ECOSYSTEMS = ["npm", "pypi"] as const;
 
 export function PackagesPage() {
   const [params, setParams] = useSearchParams();
+  const scope = useScope();
   const queryFromUrl = useMemo<Partial<PackagesQuery>>(
     () => ({
       ecosystem: params.get("ecosystem") ?? undefined,
@@ -61,8 +64,8 @@ export function PackagesPage() {
   }, [search]);
 
   const list = useQuery({
-    queryKey: ["packages", queryFromUrl],
-    queryFn: () => api.packages(queryFromUrl),
+    queryKey: ["packages", queryFromUrl, scope ?? null],
+    queryFn: () => api.packages(queryFromUrl, scope),
   });
 
   const setFilter = (key: string, value: string | undefined) => {
@@ -113,14 +116,17 @@ export function PackagesPage() {
 
   return (
     <div className="space-y-4">
-      <header>
-        <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
-          Packages
-        </h1>
-        <p className="text-sm text-zinc-500">
-          Every dependency the latest scan persisted, evaluated against the
-          active policy.
-        </p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
+            Packages
+          </h1>
+          <p className="text-sm text-zinc-500">
+            Every dependency the latest scan persisted, evaluated against the
+            active policy.
+          </p>
+        </div>
+        <ScopeBadge />
       </header>
 
       <Card>

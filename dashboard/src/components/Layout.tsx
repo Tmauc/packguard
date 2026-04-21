@@ -11,6 +11,7 @@ import {
   ShieldCheckIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WorkspaceSelector } from "@/components/layout/WorkspaceSelector";
 import { api } from "@/lib/api";
 import { useJobStatus } from "@/lib/useJobStatus";
 import { cn } from "@/lib/cn";
@@ -75,11 +76,15 @@ export function Layout() {
         </nav>
       </aside>
       <main className="flex flex-col">
-        <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-6 py-4">
-          <div className="text-sm text-zinc-500">
-            {activeJobs.length === 0
-              ? "No active jobs"
-              : `${activeJobs.length} job${activeJobs.length > 1 ? "s" : ""} running…`}
+        <header className="flex items-center justify-between gap-4 border-b border-zinc-200 bg-white px-6 py-4">
+          <div className="flex items-center gap-4">
+            <WorkspaceSelector />
+            <span className="text-sm text-zinc-400">·</span>
+            <div className="text-sm text-zinc-500">
+              {activeJobs.length === 0
+                ? "No active jobs"
+                : `${activeJobs.length} job${activeJobs.length > 1 ? "s" : ""} running…`}
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <Button

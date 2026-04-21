@@ -40,13 +40,15 @@ vi.mock("@uiw/react-codemirror", () => ({
 
 import { api } from "@/lib/api";
 
-function wrap() {
+const SCOPED_URL = "/policies?project=/tmp/ws-a";
+
+function wrap(initialEntries: string[] = [SCOPED_URL]) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={initialEntries}>
         <PoliciesPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -143,7 +145,33 @@ describe("PoliciesPage", () => {
     await waitFor(() => {
       expect(api.savePolicy).toHaveBeenCalledWith(
         expect.stringContaining("offset: 0"),
+        "/tmp/ws-a",
       );
     });
+  });
+
+  it("shows the 'select a workspace' empty state when no scope is set", async () => {
+    wrap(["/policies"]);
+    expect(
+      await screen.findByText(/Select a workspace/i),
+    ).toBeInTheDocument();
+    // `api.policies` must not fire without a scope — the page short-circuits
+    // before the query is even enabled.
+    expect(api.policies).not.toHaveBeenCalled();
+  });
+
+  it("reloads the editor when the scope flips to a different workspace", async () => {
+    (api.policies as ReturnType<typeof vi.fn>).mockImplementation((project?: string) =>
+      Promise.resolve({
+        yaml: `# ${project ?? "none"}\ndefaults:\n  offset: -1\n`,
+        from_file: true,
+      } satisfies PolicyDocument),
+    );
+    wrap(["/policies?project=/tmp/ws-b"]);
+    await waitFor(() => {
+      expect(api.policies).toHaveBeenLastCalledWith("/tmp/ws-b");
+    });
+    const editor = (await screen.findByTestId("policy-editor")) as HTMLTextAreaElement;
+    await waitFor(() => expect(editor.value).toContain("# /tmp/ws-b"));
   });
 });

@@ -129,7 +129,20 @@ describe("GraphPage", () => {
     await waitFor(() => {
       expect(api.graph).toHaveBeenLastCalledWith(
         expect.objectContaining({ kind: "runtime,peer,optional" }),
+        undefined,
       );
+    });
+  });
+
+  it("scopes graph + contamination fetches to the URL workspace", async () => {
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    (api.contaminated as ReturnType<typeof vi.fn>).mockResolvedValue(CONTAMINATION);
+    wrap(["/graph?project=/tmp/alpha&focus_cve=CVE-X"]);
+    await waitFor(() => {
+      expect(api.graph).toHaveBeenLastCalledWith(expect.any(Object), "/tmp/alpha");
+    });
+    await waitFor(() => {
+      expect(api.contaminated).toHaveBeenLastCalledWith("CVE-X", "/tmp/alpha");
     });
   });
 
@@ -145,7 +158,7 @@ describe("GraphPage", () => {
     );
     await user.click(screen.getByRole("button", { name: /^Trace$/i }));
     await waitFor(() => {
-      expect(api.contaminated).toHaveBeenCalledWith("CVE-2026-4800");
+      expect(api.contaminated).toHaveBeenCalledWith("CVE-2026-4800", undefined);
     });
     const canvas = await screen.findByTestId("graph-canvas");
     expect(canvas.getAttribute("data-mode")).toBe("contamination");

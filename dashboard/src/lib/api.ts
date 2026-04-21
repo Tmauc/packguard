@@ -12,6 +12,25 @@ import type { JobView } from "@/api/types/JobView";
 import type { GraphResponse } from "@/api/types/GraphResponse";
 import type { ContaminationResult } from "@/api/types/ContaminationResult";
 import type { CompatResponse } from "@/api/types/CompatResponse";
+import type { WorkspacesResponse } from "@/api/types/WorkspacesResponse";
+
+/**
+ * Phase 7b scope hint. `undefined` (or empty) = aggregate view across
+ * every scanned repo. Any non-empty string is forwarded as-is to the
+ * backend's `?project=<path>` filter, which canonicalizes + validates
+ * it (404 with the known-workspace list on a miss).
+ */
+export type ProjectScope = string | undefined;
+
+function withProject(
+  params: URLSearchParams,
+  project: ProjectScope,
+): URLSearchParams {
+  if (project && project.length > 0) {
+    params.set("project", project);
+  }
+  return params;
+}
 
 export class ApiError extends Error {
   constructor(
@@ -41,15 +60,20 @@ async function handle<T>(res: Response): Promise<T> {
 }
 
 export const api = {
-  overview: () => fetch("/api/overview").then(handle<Overview>),
+  overview: (project?: ProjectScope) => {
+    const qs = withProject(new URLSearchParams(), project).toString();
+    return fetch(`/api/overview${qs ? `?${qs}` : ""}`).then(handle<Overview>);
+  },
 
-  packages: (q: Partial<PackagesQuery> = {}) => {
+  packages: (q: Partial<PackagesQuery> = {}, project?: ProjectScope) => {
     const params = new URLSearchParams();
     for (const [k, v] of Object.entries(q)) {
+      if (k === "project") continue;
       if (v !== undefined && v !== null && v !== "") {
         params.set(k, String(v));
       }
     }
+    withProject(params, project);
     const qs = params.toString();
     return fetch(`/api/packages${qs ? `?${qs}` : ""}`).then(handle<PackagesPage>);
   },
@@ -59,21 +83,28 @@ export const api = {
       handle<PackageDetail>,
     ),
 
-  policies: () => fetch("/api/policies").then(handle<PolicyDocument>),
+  policies: (project?: ProjectScope) => {
+    const qs = withProject(new URLSearchParams(), project).toString();
+    return fetch(`/api/policies${qs ? `?${qs}` : ""}`).then(handle<PolicyDocument>);
+  },
 
-  savePolicy: (yaml: string) =>
-    fetch("/api/policies", {
+  savePolicy: (yaml: string, project?: ProjectScope) => {
+    const qs = withProject(new URLSearchParams(), project).toString();
+    return fetch(`/api/policies${qs ? `?${qs}` : ""}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ yaml }),
-    }).then(handle<PolicyDocument>),
+    }).then(handle<PolicyDocument>);
+  },
 
-  dryRunPolicy: (yaml: string) =>
-    fetch("/api/policies/dry-run", {
+  dryRunPolicy: (yaml: string, project?: ProjectScope) => {
+    const qs = withProject(new URLSearchParams(), project).toString();
+    return fetch(`/api/policies/dry-run${qs ? `?${qs}` : ""}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ yaml }),
-    }).then(handle<PolicyDryRunResult>),
+    }).then(handle<PolicyDryRunResult>);
+  },
 
   startScan: () =>
     fetch("/api/scan", { method: "POST" }).then(handle<JobAccepted>),
@@ -83,26 +114,38 @@ export const api = {
 
   job: (id: string) => fetch(`/api/jobs/${encodeURIComponent(id)}`).then(handle<JobView>),
 
-  graph: (q: {
-    workspace?: string;
-    max_depth?: number;
-    kind?: string;
-  } = {}) => {
+  graph: (
+    q: {
+      workspace?: string;
+      max_depth?: number;
+      kind?: string;
+    } = {},
+    project?: ProjectScope,
+  ) => {
     const params = new URLSearchParams();
     if (q.workspace) params.set("workspace", q.workspace);
     if (q.max_depth !== undefined) params.set("max_depth", String(q.max_depth));
     if (q.kind) params.set("kind", q.kind);
+    withProject(params, project);
     const qs = params.toString();
     return fetch(`/api/graph${qs ? `?${qs}` : ""}`).then(handle<GraphResponse>);
   },
 
-  contaminated: (vuln_id: string) =>
-    fetch(`/api/graph/contaminated?vuln_id=${encodeURIComponent(vuln_id)}`).then(
+  contaminated: (vuln_id: string, project?: ProjectScope) => {
+    const params = new URLSearchParams();
+    params.set("vuln_id", vuln_id);
+    withProject(params, project);
+    return fetch(`/api/graph/contaminated?${params.toString()}`).then(
       handle<ContaminationResult>,
-    ),
+    );
+  },
 
-  packageCompat: (eco: string, name: string) =>
-    fetch(
-      `/api/packages/${encodeURIComponent(eco)}/${encodeURIComponent(name)}/compat`,
-    ).then(handle<CompatResponse>),
+  packageCompat: (eco: string, name: string, project?: ProjectScope) => {
+    const qs = withProject(new URLSearchParams(), project).toString();
+    return fetch(
+      `/api/packages/${encodeURIComponent(eco)}/${encodeURIComponent(name)}/compat${qs ? `?${qs}` : ""}`,
+    ).then(handle<CompatResponse>);
+  },
+
+  workspaces: () => fetch("/api/workspaces").then(handle<WorkspacesResponse>),
 };

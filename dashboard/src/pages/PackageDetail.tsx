@@ -7,6 +7,8 @@ import { ComplianceBadge } from "@/pages/Packages";
 import { VersionTimeline } from "@/components/packages/VersionTimeline";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { scopeLabel } from "@/components/layout/workspace-scope";
+import type { CompatDependent } from "@/api/types/CompatDependent";
 import type { MalwareEntry } from "@/api/types/MalwareEntry";
 import type { PackageDetail } from "@/api/types/PackageDetail";
 import type { VulnerabilityEntry } from "@/api/types/VulnerabilityEntry";
@@ -593,61 +595,8 @@ function CompatibilityTab({
         )}
       </section>
 
-      <section>
-        <SectionHeader
-          title="Used by"
-          count={compat.data.dependents.length}
-        />
-        {compat.data.dependents.length === 0 ? (
-          <EmptyRow>
-            Nothing in the scanned repos depends on this package.
-          </EmptyRow>
-        ) : (
-          <div className="overflow-hidden rounded-md border border-zinc-200 bg-white">
-            <table className="w-full text-sm">
-              <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500">
-                <tr>
-                  <th className="px-3 py-2 text-left font-medium">Parent</th>
-                  <th className="px-3 py-2 text-left font-medium">Version</th>
-                  <th className="px-3 py-2 text-left font-medium">Range asked</th>
-                  <th className="px-3 py-2 text-left font-medium">Kind</th>
-                </tr>
-              </thead>
-              <tbody>
-                {compat.data.dependents.slice(0, 50).map((d, i) => (
-                  <tr
-                    key={`${d.name}@${d.version}-${i}`}
-                    className="border-b border-zinc-100"
-                  >
-                    <td className="px-3 py-1.5">
-                      <Link
-                        to={`/packages/${encodeURIComponent(d.ecosystem)}/${encodeURIComponent(d.name)}`}
-                        className="font-mono text-xs text-zinc-900 hover:underline"
-                      >
-                        {d.name}
-                      </Link>
-                    </td>
-                    <td className="px-3 py-1.5 font-mono text-xs text-zinc-700">
-                      {d.version}
-                    </td>
-                    <td className="px-3 py-1.5 font-mono text-xs text-zinc-700">
-                      {d.range}
-                    </td>
-                    <td className="px-3 py-1.5">
-                      <Badge tone="muted">{d.kind}</Badge>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {compat.data.dependents.length > 50 && (
-              <div className="border-t border-zinc-200 p-2 text-xs text-zinc-500">
-                Showing 50 of {compat.data.dependents.length} dependents.
-              </div>
-            )}
-          </div>
-        )}
-      </section>
+      <UsedBySection dependents={compat.data.dependents} />
+
 
       <div className="flex items-center justify-between rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
         <span>
@@ -666,6 +615,104 @@ function CompatibilityTab({
 
 type PeerDepRow = { name: string; range: string; optional: boolean };
 type EngineRow = { runtime: string; range: string };
+
+function UsedBySection({ dependents }: { dependents: CompatDependent[] }) {
+  // Phase 7b: group the flat "Used by" list by workspace so the user
+  // sees which repo pulls the package in — each section is independently
+  // collapsible via the native <details> element (zero JS state, keeps
+  // the tab light).
+  const byWorkspace = new Map<string, CompatDependent[]>();
+  for (const d of dependents) {
+    const key = d.workspace || "(unknown workspace)";
+    const list = byWorkspace.get(key) ?? [];
+    list.push(d);
+    byWorkspace.set(key, list);
+  }
+  const groups = [...byWorkspace.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const totalWorkspaces = groups.length;
+
+  return (
+    <section>
+      <SectionHeader
+        title={
+          totalWorkspaces === 0
+            ? "Used by"
+            : `Used by · ${totalWorkspaces} workspace${totalWorkspaces === 1 ? "" : "s"}`
+        }
+        count={dependents.length}
+      />
+      {dependents.length === 0 ? (
+        <EmptyRow>
+          Nothing in the scanned repos depends on this package.
+        </EmptyRow>
+      ) : (
+        <div className="space-y-2">
+          {groups.map(([workspace, items], groupIdx) => (
+            <details
+              key={workspace}
+              open={groupIdx === 0}
+              className="overflow-hidden rounded-md border border-zinc-200 bg-white"
+              data-testid={`used-by-group-${workspace}`}
+            >
+              <summary className="flex cursor-pointer items-center justify-between gap-3 border-b border-zinc-100 bg-zinc-50 px-3 py-2 text-xs">
+                <span className="flex items-center gap-2">
+                  <Badge tone="muted">{scopeLabel(workspace)}</Badge>
+                  <span className="font-mono text-[11px] text-zinc-500">
+                    {workspace}
+                  </span>
+                </span>
+                <span className="text-zinc-500">
+                  {items.length} parent{items.length === 1 ? "" : "s"}
+                </span>
+              </summary>
+              <table className="w-full text-sm">
+                <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium">Parent</th>
+                    <th className="px-3 py-2 text-left font-medium">Version</th>
+                    <th className="px-3 py-2 text-left font-medium">Range asked</th>
+                    <th className="px-3 py-2 text-left font-medium">Kind</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.slice(0, 50).map((d, i) => (
+                    <tr
+                      key={`${d.name}@${d.version}-${i}`}
+                      className="border-b border-zinc-100"
+                    >
+                      <td className="px-3 py-1.5">
+                        <Link
+                          to={`/packages/${encodeURIComponent(d.ecosystem)}/${encodeURIComponent(d.name)}`}
+                          className="font-mono text-xs text-zinc-900 hover:underline"
+                        >
+                          {d.name}
+                        </Link>
+                      </td>
+                      <td className="px-3 py-1.5 font-mono text-xs text-zinc-700">
+                        {d.version}
+                      </td>
+                      <td className="px-3 py-1.5 font-mono text-xs text-zinc-700">
+                        {d.range}
+                      </td>
+                      <td className="px-3 py-1.5">
+                        <Badge tone="muted">{d.kind}</Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {items.length > 50 && (
+                <div className="border-t border-zinc-200 p-2 text-xs text-zinc-500">
+                  Showing 50 of {items.length} dependents in this workspace.
+                </div>
+              )}
+            </details>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
 
 function SectionHeader({ title, count }: { title: string; count: number }) {
   return (

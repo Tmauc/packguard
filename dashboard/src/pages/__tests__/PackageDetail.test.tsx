@@ -161,10 +161,11 @@ describe("PackageDetailPage", () => {
       dependents: [
         {
           ecosystem: "npm",
-          name: "@nalo/phoebus",
+          name: "@acme/host-app",
           version: "2026.4.16",
           range: "4.17.23",
           kind: "runtime",
+          workspace: "/tmp/workspace-a",
         },
         {
           ecosystem: "npm",
@@ -172,6 +173,7 @@ describe("PackageDetailPage", () => {
           version: "15.5.2",
           range: "4.17.23",
           kind: "runtime",
+          workspace: "/tmp/workspace-a",
         },
         {
           ecosystem: "npm",
@@ -179,6 +181,7 @@ describe("PackageDetailPage", () => {
           version: "3.12.0",
           range: "4.17.23",
           kind: "runtime",
+          workspace: "/tmp/workspace-a",
         },
         {
           ecosystem: "npm",
@@ -186,6 +189,7 @@ describe("PackageDetailPage", () => {
           version: "3.12.0",
           range: "4.17.23",
           kind: "runtime",
+          workspace: "/tmp/workspace-a",
         },
         {
           ecosystem: "npm",
@@ -193,6 +197,7 @@ describe("PackageDetailPage", () => {
           version: "3.12.0",
           range: "4.17.23",
           kind: "runtime",
+          workspace: "/tmp/workspace-a",
         },
       ],
     });
@@ -211,7 +216,7 @@ describe("PackageDetailPage", () => {
     // header count. Pre-Polish-bis-3 the dogfood saw "Used by (0)"
     // despite a populated API response.
     const expectedDeps = [
-      "@nalo/phoebus",
+      "@acme/host-app",
       "@textlint/linter-formatter",
       "@visx/responsive",
       "@visx/shape",
@@ -272,5 +277,57 @@ describe("PackageDetailPage", () => {
     expect(
       await screen.findByText(/No compatibility metadata for the installed version/i),
     ).toBeInTheDocument();
+  });
+
+  it("groups 'Used by' by workspace and shows a per-workspace parent count", async () => {
+    // Phase 7b: each dependent is tagged with the repo it came from so
+    // the UI can explain "this package is pulled in by X in workspace A
+    // and Y in workspace B" — the aggregate-only view pre-7b hid that.
+    (api.packageCompat as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ecosystem: "npm",
+      name: "lodash",
+      installed: "4.17.20",
+      rows: [],
+      dependents: [
+        {
+          ecosystem: "npm",
+          name: "alpha-parent",
+          version: "1.0.0",
+          range: "^4",
+          kind: "runtime",
+          workspace: "/repos/alpha",
+        },
+        {
+          ecosystem: "npm",
+          name: "alpha-parent-2",
+          version: "1.0.0",
+          range: "^4",
+          kind: "runtime",
+          workspace: "/repos/alpha",
+        },
+        {
+          ecosystem: "npm",
+          name: "beta-parent",
+          version: "2.0.0",
+          range: "^4",
+          kind: "dev",
+          workspace: "/repos/beta",
+        },
+      ],
+    });
+    wrap(fixture());
+    const user = userEvent.setup();
+    await screen.findByText("lodash");
+    await user.click(screen.getByRole("button", { name: /Compatibility/i }));
+    // Section header reflects workspace count.
+    expect(
+      await screen.findByText(/Used by · 2 workspaces/i),
+    ).toBeInTheDocument();
+    // Both workspace group badges render with the tail segment.
+    expect(screen.getByTestId("used-by-group-/repos/alpha")).toBeInTheDocument();
+    expect(screen.getByTestId("used-by-group-/repos/beta")).toBeInTheDocument();
+    // Group summary reports the per-workspace parent count.
+    expect(screen.getByText(/2 parents/)).toBeInTheDocument();
+    expect(screen.getByText(/1 parent\b/)).toBeInTheDocument();
   });
 });
