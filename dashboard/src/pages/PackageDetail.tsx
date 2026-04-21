@@ -500,13 +500,32 @@ function CompatibilityTab({
     `${ecosystem}:${name}@${installed ?? ""}`,
   )}`;
 
+  // Polish-bis-4: two distinct empty cases that used to share one vague
+  // banner. Disambiguate them so a user who sees empty peer/engines
+  // tables knows whether to blame the scan (finding #7, now auto-resolved
+  // since Polish-bis-2) or the package itself (plenty of npm entries
+  // legitimately ship no `engines` / `peerDependencies`).
+  const hasAnyRows = compat.data.rows.length > 0;
+  const installedMissingButOthersPresent = !installedRow && hasAnyRows;
+  const packageCarriesNoMetadata = !hasAnyRows;
+
   return (
     <div className="space-y-4">
-      {!installedRow && (
+      {installedMissingButOthersPresent && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          No compatibility metadata for the installed version
+          (<span className="font-mono">{installed}</span>). Other versions do
+          carry peer deps + engines — scroll through the Versions tab or
+          re-scan the repo so the installed one gets populated.
+        </div>
+      )}
+      {packageCarriesNoMetadata && (
         <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
-          No compatibility metadata on file for the installed version. Peer
-          deps + engines become available after a scan with a populated
-          lockfile (pnpm-lock snapshots or npm full `packages:` tree).
+          This package doesn&apos;t declare any peer dependencies or engine
+          constraints in the scanned lockfile. That&apos;s normal — many npm
+          entries ship neither — so there&apos;s nothing to show in the tables
+          below. The <span className="font-medium">Used by</span> section
+          still reflects who depends on it.
         </div>
       )}
 

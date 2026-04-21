@@ -138,6 +138,12 @@ describe("PackageDetailPage", () => {
   });
 
   it("renders peer deps + engines + dependents on the Compatibility tab", async () => {
+    // Polish-bis-3 regression: the dogfood reported "Used by (0)" on
+    // lodash even though the backend had 5 dependents. Root cause was
+    // Polish-bis-2 (ui defaulting to wrong path), not a UI bug — but we
+    // still want a defensive Vitest that exercises the "≥5 dependents
+    // render" path so a future field-rename or iteration bug gets
+    // caught before shipping.
     (api.packageCompat as ReturnType<typeof vi.fn>).mockResolvedValue({
       ecosystem: "npm",
       name: "lodash",
@@ -160,6 +166,34 @@ describe("PackageDetailPage", () => {
           range: "4.17.23",
           kind: "runtime",
         },
+        {
+          ecosystem: "npm",
+          name: "@textlint/linter-formatter",
+          version: "15.5.2",
+          range: "4.17.23",
+          kind: "runtime",
+        },
+        {
+          ecosystem: "npm",
+          name: "@visx/responsive",
+          version: "3.12.0",
+          range: "4.17.23",
+          kind: "runtime",
+        },
+        {
+          ecosystem: "npm",
+          name: "@visx/shape",
+          version: "3.12.0",
+          range: "4.17.23",
+          kind: "runtime",
+        },
+        {
+          ecosystem: "npm",
+          name: "@visx/text",
+          version: "3.12.0",
+          range: "4.17.23",
+          kind: "runtime",
+        },
       ],
     });
     wrap(fixture());
@@ -173,8 +207,22 @@ describe("PackageDetailPage", () => {
     // engines
     expect(screen.getByText("node")).toBeInTheDocument();
     expect(screen.getByText(">=14")).toBeInTheDocument();
-    // dependents
-    expect(screen.getByText("@nalo/phoebus")).toBeInTheDocument();
+    // Every one of the 5 dependents must land in the DOM — not just the
+    // header count. Pre-Polish-bis-3 the dogfood saw "Used by (0)"
+    // despite a populated API response.
+    const expectedDeps = [
+      "@nalo/phoebus",
+      "@textlint/linter-formatter",
+      "@visx/responsive",
+      "@visx/shape",
+      "@visx/text",
+    ];
+    for (const name of expectedDeps) {
+      expect(screen.getByText(name)).toBeInTheDocument();
+    }
+    // Section header reflects the real length.
+    expect(screen.getByText(/Used by/i)).toBeInTheDocument();
+    expect(screen.getByText(/\(5\)/)).toBeInTheDocument();
     // deep link to graph
     const graphLink = screen.getByRole("link", { name: /Open in graph/i });
     expect(graphLink.getAttribute("href")).toContain("/graph?focus=");
@@ -192,8 +240,37 @@ describe("PackageDetailPage", () => {
     const user = userEvent.setup();
     await screen.findByText("lodash");
     await user.click(screen.getByRole("button", { name: /Compatibility/i }));
+    // Polish-bis-4: "no rows at all" → honest "this package doesn't
+    // declare..." banner rather than a generic "metadata missing"
+    // message that users read as a parser failure.
     expect(
-      await screen.findByText(/No compatibility metadata on file/i),
+      await screen.findByText(/doesn.t declare any peer dependencies/i),
+    ).toBeInTheDocument();
+  });
+
+  it("disambiguates 'installed row missing' from 'package has no metadata'", async () => {
+    // When rows exist but none match `installed`, the amber notice
+    // should call that out — it's the 'rescan' hint path, not the
+    // 'package ships no metadata' path.
+    (api.packageCompat as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ecosystem: "npm",
+      name: "lodash",
+      installed: "4.17.20",
+      rows: [
+        {
+          version: "4.17.21",
+          engines: { node: ">=14" },
+          peer_deps: {},
+        },
+      ],
+      dependents: [],
+    });
+    wrap(fixture());
+    const user = userEvent.setup();
+    await screen.findByText("lodash");
+    await user.click(screen.getByRole("button", { name: /Compatibility/i }));
+    expect(
+      await screen.findByText(/No compatibility metadata for the installed version/i),
     ).toBeInTheDocument();
   });
 });
