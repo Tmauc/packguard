@@ -242,6 +242,13 @@ transitive dependency graph in one of three formats:
 given CVE/GHSA/alias and prints every root → hit chain; reuses the same
 cache the `/graph` page does.
 
+### `packguard scans [--json]`
+
+Lists every `(path, ecosystem)` the store knows about — useful when
+`report` / `audit` / `graph` bail with "no cached scan" and you've
+forgotten where the scan ran from. Same rows feed the "Available scans"
+hint on those errors. `--json` for scripting.
+
 ---
 
 ## Policy format (`.packguard.yml`)
