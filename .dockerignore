@@ -1,0 +1,31 @@
+# Keep the build context tight — everything listed below either pollutes
+# the Docker cache or leaks host-only state into the image.
+
+# Rust build artefacts (Cargo rebuilds inside the image)
+target/
+
+# Node toolchains + vendored deps (pnpm reinstalls in stage 1)
+node_modules/
+dashboard/node_modules/
+dashboard/dist/
+
+# Git + editor junk (never needed in an image)
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+
+# Local per-user dev state
+.envrc
+.env.local
+.env.*.local
+*.log
+
+# Packaging / docs / screenshots (carried by the release workflow, not the image)
+docs/
+PUBLISHING.md
+packaging/
+
+# CI test scaffolding
+tests-integration/
