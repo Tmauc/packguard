@@ -8,7 +8,7 @@ use ts_rs::TS;
 // ---- Overview --------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "Overview.ts")]
+#[ts(export_to = "Overview.ts")]
 pub struct Overview {
     /// 0..=100, computed as `compliant / total * 100` (no scan → null).
     pub health_score: Option<u32>,
@@ -23,14 +23,14 @@ pub struct Overview {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "EcoCount.ts")]
+#[ts(export_to = "EcoCount.ts")]
 pub struct EcoCount {
     pub ecosystem: String,
     pub count: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "VulnSummary.ts")]
+#[ts(export_to = "VulnSummary.ts")]
 pub struct VulnSummary {
     pub critical: u32,
     pub high: u32,
@@ -40,14 +40,14 @@ pub struct VulnSummary {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "MalwareSummary.ts")]
+#[ts(export_to = "MalwareSummary.ts")]
 pub struct MalwareSummary {
     pub confirmed: u32,
     pub typosquat_suspects: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ComplianceSummary.ts")]
+#[ts(export_to = "ComplianceSummary.ts")]
 pub struct ComplianceSummary {
     pub compliant: u32,
     pub warnings: u32,
@@ -56,7 +56,7 @@ pub struct ComplianceSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "RiskRow.ts")]
+#[ts(export_to = "RiskRow.ts")]
 pub struct RiskRow {
     pub ecosystem: String,
     pub name: String,
@@ -69,7 +69,7 @@ pub struct RiskRow {
 // ---- Packages list ---------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "PackagesQuery.ts")]
+#[ts(export_to = "PackagesQuery.ts")]
 pub struct PackagesQuery {
     pub ecosystem: Option<String>,
     pub status: Option<String>,
@@ -84,7 +84,7 @@ pub struct PackagesQuery {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "PackageRow.ts")]
+#[ts(export_to = "PackageRow.ts")]
 pub struct PackageRow {
     pub ecosystem: String,
     pub name: String,
@@ -97,7 +97,7 @@ pub struct PackageRow {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "PackageRisk.ts")]
+#[ts(export_to = "PackageRisk.ts")]
 pub struct PackageRisk {
     pub critical: u32,
     pub high: u32,
@@ -110,7 +110,7 @@ pub struct PackageRisk {
 /// Mirror of `packguard_policy::Compliance` flattened to a string tag — the
 /// frontend only needs the kind, not the full payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ComplianceTag.ts")]
+#[ts(export_to = "ComplianceTag.ts")]
 #[serde(rename_all = "kebab-case")]
 pub enum ComplianceTag {
     Compliant,
@@ -123,7 +123,7 @@ pub enum ComplianceTag {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "PackagesPage.ts")]
+#[ts(export_to = "PackagesPage.ts")]
 pub struct PackagesPage {
     pub total: u32,
     pub page: u32,
@@ -134,7 +134,7 @@ pub struct PackagesPage {
 // ---- Package detail --------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "PackageDetail.ts")]
+#[ts(export_to = "PackageDetail.ts")]
 pub struct PackageDetail {
     pub ecosystem: String,
     pub name: String,
@@ -155,7 +155,7 @@ pub struct PackageDetail {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "VersionRow.ts")]
+#[ts(export_to = "VersionRow.ts")]
 pub struct VersionRow {
     pub version: String,
     pub published_at: Option<String>,
@@ -167,7 +167,7 @@ pub struct VersionRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "VulnerabilityEntry.ts")]
+#[ts(export_to = "VulnerabilityEntry.ts")]
 pub struct VulnerabilityEntry {
     pub source: String,
     pub advisory_id: String,
@@ -184,7 +184,7 @@ pub struct VulnerabilityEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "MalwareEntry.ts")]
+#[ts(export_to = "MalwareEntry.ts")]
 pub struct MalwareEntry {
     pub source: String,
     pub ref_id: String,
@@ -197,7 +197,7 @@ pub struct MalwareEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "PolicyTrace.ts")]
+#[ts(export_to = "PolicyTrace.ts")]
 pub struct PolicyTrace {
     /// Offset in majors below latest (0 = latest allowed).
     pub offset: u32,
@@ -216,7 +216,7 @@ pub struct PolicyTrace {
 // ---- Policy ----------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "PolicyDocument.ts")]
+#[ts(export_to = "PolicyDocument.ts")]
 pub struct PolicyDocument {
     /// Raw `.packguard.yml` contents (or the conservative defaults when no
     /// file is present).
@@ -227,19 +227,19 @@ pub struct PolicyDocument {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "PolicyWrite.ts")]
+#[ts(export_to = "PolicyWrite.ts")]
 pub struct PolicyWrite {
     pub yaml: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "PolicyDryRun.ts")]
+#[ts(export_to = "PolicyDryRun.ts")]
 pub struct PolicyDryRun {
     pub yaml: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "PolicyDryRunResult.ts")]
+#[ts(export_to = "PolicyDryRunResult.ts")]
 pub struct PolicyDryRunResult {
     /// Per-bucket totals when the candidate policy is applied to the last
     /// scan.
@@ -254,7 +254,7 @@ pub struct PolicyDryRunResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "PolicyDryRunChange.ts")]
+#[ts(export_to = "PolicyDryRunChange.ts")]
 pub struct PolicyDryRunChange {
     pub ecosystem: String,
     pub name: String,
@@ -263,7 +263,7 @@ pub struct PolicyDryRunChange {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "YamlErrorLocation.ts")]
+#[ts(export_to = "YamlErrorLocation.ts")]
 pub struct YamlErrorLocation {
     /// 1-based line. `None` when the YAML parser couldn't recover a location
     /// (rare — mostly happens for pure I/O failures).
@@ -274,7 +274,7 @@ pub struct YamlErrorLocation {
 // ---- Jobs ------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
-#[ts(export, export_to = "JobStatus.ts")]
+#[ts(export_to = "JobStatus.ts")]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
     Pending,
@@ -305,7 +305,7 @@ impl JobStatus {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
-#[ts(export, export_to = "JobKind.ts")]
+#[ts(export_to = "JobKind.ts")]
 #[serde(rename_all = "lowercase")]
 pub enum JobKind {
     Scan,
@@ -322,7 +322,7 @@ impl JobKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "JobView.ts")]
+#[ts(export_to = "JobView.ts")]
 pub struct JobView {
     pub id: String,
     pub kind: JobKind,
@@ -334,7 +334,7 @@ pub struct JobView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "JobAccepted.ts")]
+#[ts(export_to = "JobAccepted.ts")]
 pub struct JobAccepted {
     pub id: String,
 }
@@ -342,7 +342,7 @@ pub struct JobAccepted {
 // ---- Scan / Sync result payloads (stored in jobs.result_json) --------------
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "ScanReport.ts")]
+#[ts(export_to = "ScanReport.ts")]
 pub struct ScanReport {
     pub projects_scanned: u32,
     pub packages_persisted: u32,
@@ -350,7 +350,7 @@ pub struct ScanReport {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "SyncReport.ts")]
+#[ts(export_to = "SyncReport.ts")]
 pub struct SyncReport {
     pub osv_npm_persisted: u32,
     pub osv_pypi_persisted: u32,
