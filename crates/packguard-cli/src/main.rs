@@ -639,7 +639,7 @@ fn hint_ci_provider(path: &Path) {
 const GITLAB_CI_SNIPPET: &str = r#"# .packguard/ci/gitlab.yml
 # Paste under your existing `stages:` + adjust the image tag if you've
 # pinned a specific PackGuard version. Full recipe:
-# https://github.com/nalo/packguard/blob/main/docs/integrations/gitlab-ci.md
+# https://github.com/Tmauc/packguard/blob/main/docs/integrations/gitlab-ci.md
 #
 # - scan walks lockfiles and persists deps into the cached SQLite store.
 # - sync refreshes OSV + GHSA + malware intel (network-heavy; consider
@@ -650,7 +650,7 @@ const GITLAB_CI_SNIPPET: &str = r#"# .packguard/ci/gitlab.yml
 
 packguard:
   stage: security
-  image: ghcr.io/nalo/packguard:latest
+  image: ghcr.io/tmauc/packguard:latest
   variables:
     HOME: "$CI_PROJECT_DIR/.packguard-cache"
   cache:
@@ -681,7 +681,7 @@ packguard:
 
 const GITHUB_ACTIONS_SNIPPET: &str = r#"# .packguard/ci/github.yml
 # Paste into .github/workflows/. Full recipe:
-# https://github.com/nalo/packguard/blob/main/docs/integrations/github-actions.md
+# https://github.com/Tmauc/packguard/blob/main/docs/integrations/github-actions.md
 
 name: packguard
 on:
@@ -698,7 +698,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: install packguard
         run: |
-          curl -fsSL https://raw.githubusercontent.com/nalo/packguard/main/install.sh | sh
+          curl -fsSL https://raw.githubusercontent.com/Tmauc/packguard/main/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - uses: actions/cache@v4
         with:
@@ -723,7 +723,7 @@ const JENKINS_SNIPPET: &str = r#"// .packguard/ci/Jenkinsfile
 
 stage('packguard') {
   agent {
-    docker { image 'ghcr.io/nalo/packguard:latest' }
+    docker { image 'ghcr.io/tmauc/packguard:latest' }
   }
   environment {
     HOME = "${WORKSPACE}/.packguard-cache"
@@ -2451,7 +2451,7 @@ fn render_audit_sarif_full(
             "tool": { "driver": {
                 "name": "packguard",
                 "version": env!("CARGO_PKG_VERSION"),
-                "informationUri": "https://github.com/nalo/packguard",
+                "informationUri": "https://github.com/Tmauc/packguard",
                 "rules": [
                     { "id": "packguard.cve", "shortDescription": { "text": "Installed dependency has a known CVE" } },
                     { "id": "packguard.malware", "shortDescription": { "text": "Installed dependency was flagged by a supply-chain scanner" } },
@@ -2799,7 +2799,7 @@ fn render_sarif(rows: &[ReportRow]) -> Result<()> {
                 "driver": {
                     "name": "packguard",
                     "version": env!("CARGO_PKG_VERSION"),
-                    "informationUri": "https://github.com/nalo/packguard",
+                    "informationUri": "https://github.com/Tmauc/packguard",
                     "rules": [{
                         "id": "packguard.policy.violation",
                         "shortDescription": { "text": "Dependency violates the repo policy" },

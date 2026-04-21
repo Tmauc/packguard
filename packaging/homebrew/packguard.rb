@@ -16,28 +16,28 @@
 
 class Packguard < Formula
   desc "Dependency supply-chain scanner: OSV/GHSA + malware/typosquat + policy-driven CI gate"
-  homepage "https://github.com/nalo/packguard"
+  homepage "https://github.com/Tmauc/packguard"
   version "RELEASE_VERSION_PLACEHOLDER"
   license "MIT OR Apache-2.0"
 
   on_macos do
     on_arm do
-      url "https://github.com/nalo/packguard/releases/download/v#{version}/packguard-v#{version}-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/Tmauc/packguard/releases/download/v#{version}/packguard-v#{version}-aarch64-apple-darwin.tar.gz"
       sha256 "RELEASE_SHA256_DARWIN_ARM64_PLACEHOLDER"
     end
     on_intel do
-      url "https://github.com/nalo/packguard/releases/download/v#{version}/packguard-v#{version}-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/Tmauc/packguard/releases/download/v#{version}/packguard-v#{version}-x86_64-apple-darwin.tar.gz"
       sha256 "RELEASE_SHA256_DARWIN_X64_PLACEHOLDER"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/nalo/packguard/releases/download/v#{version}/packguard-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/Tmauc/packguard/releases/download/v#{version}/packguard-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
       sha256 "RELEASE_SHA256_LINUX_ARM64_PLACEHOLDER"
     end
     on_intel do
-      url "https://github.com/nalo/packguard/releases/download/v#{version}/packguard-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/Tmauc/packguard/releases/download/v#{version}/packguard-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "RELEASE_SHA256_LINUX_X64_PLACEHOLDER"
     end
   end

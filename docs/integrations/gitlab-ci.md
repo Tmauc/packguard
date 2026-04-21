@@ -12,7 +12,7 @@ stages:
 
 packguard:
   stage: security
-  image: ghcr.io/nalo/packguard:latest
+  image: ghcr.io/tmauc/packguard:latest
   # Same container serves the scanner + the UI; we only need the CLI.
   cache:
     # The lockfile-hash key means: "re-scan only when deps actually
@@ -58,7 +58,7 @@ packguard:
 
 | Block | Why |
 |---|---|
-| `image: ghcr.io/nalo/packguard:latest` | No runtime install; the image is ~46 MB. Pin to `:vX.Y.Z` for reproducibility once you've picked a version. |
+| `image: ghcr.io/tmauc/packguard:latest` | No runtime install; the image is ~46 MB. Pin to `:vX.Y.Z` for reproducibility once you've picked a version. |
 | `cache.key.files` | Re-uses the SQLite store when lockfiles haven't changed. First MR run builds the cache (~30-90s depending on repo), subsequent runs hit it in ~2s. |
 | `HOME: "$CI_PROJECT_DIR/.packguard-cache"` | GitLab can't cache paths outside the project dir. Redirecting `$HOME` keeps the cache payload inside what GitLab copies around. |
 | `packguard sync` | Separate from `scan` because OSV/GHSA refresh is time-based, not lockfile-based. If you want tighter control, run it in a daily scheduled pipeline and skip it in MR pipelines. |
@@ -77,7 +77,7 @@ If you want sub-30s MR feedback, split into two jobs:
 ```yaml
 packguard:sync-nightly:
   stage: security
-  image: ghcr.io/nalo/packguard:latest
+  image: ghcr.io/tmauc/packguard:latest
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
   script:

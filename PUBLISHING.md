@@ -38,7 +38,7 @@ After the commit, any consumer can verify a release artifact with:
 
 ```bash
 cosign verify-blob \
-  --key https://raw.githubusercontent.com/nalo/packguard/main/cosign.pub \
+  --key https://raw.githubusercontent.com/Tmauc/packguard/main/cosign.pub \
   --signature packguard-vX.Y.Z-aarch64-apple-darwin.tar.gz.sig \
   packguard-vX.Y.Z-aarch64-apple-darwin.tar.gz
 ```
@@ -61,7 +61,7 @@ halfway through, fix + rerun from the failing step.
 
    ```bash
    gh run watch
-   # or: open https://github.com/nalo/packguard/actions
+   # or: open https://github.com/Tmauc/packguard/actions
    ```
 
    Outputs: 5 binaries + SHA256SUMS + (optional) cosign signatures in a
@@ -73,18 +73,18 @@ halfway through, fix + rerun from the failing step.
    ```bash
    gh release download v0.1.0 --pattern '*.sha256'
    cat packguard-v0.1.0-*.sha256 > LOCAL_SUMS
-   curl -sSL -o SHA256SUMS "https://github.com/nalo/packguard/releases/download/v0.1.0/SHA256SUMS"
+   curl -sSL -o SHA256SUMS "https://github.com/Tmauc/packguard/releases/download/v0.1.0/SHA256SUMS"
    diff <(sort LOCAL_SUMS) <(sort SHA256SUMS) && echo "checksums match"
    ```
 
 4. **Publish Docker image**
 
-   The release workflow pushes `ghcr.io/nalo/packguard:v0.1.0` +
+   The release workflow pushes `ghcr.io/tmauc/packguard:v0.1.0` +
    `:latest` unconditionally. Docker Hub push fires only if
    `DOCKERHUB_USERNAME` is set. Smoke test from a non-priviledged shell:
 
    ```bash
-   docker run --rm ghcr.io/nalo/packguard:v0.1.0 --version
+   docker run --rm ghcr.io/tmauc/packguard:v0.1.0 --version
    ```
 
 5. **Publish crates** (separate step — workflow doesn't auto-publish
@@ -117,7 +117,7 @@ halfway through, fix + rerun from the failing step.
      "LINUX_X64:x86_64-unknown-linux-gnu"
    do
      tag="${pair%%:*}"; target="${pair##*:}"
-     url="https://github.com/nalo/packguard/releases/download/v${VERSION}/packguard-v${VERSION}-${target}.tar.gz"
+     url="https://github.com/Tmauc/packguard/releases/download/v${VERSION}/packguard-v${VERSION}-${target}.tar.gz"
      curl -fsSL -o "/tmp/${target}.tar.gz" "$url"
      sed -i.bak "s|RELEASE_SHA256_${tag}_PLACEHOLDER|$(sha256 /tmp/${target}.tar.gz)|" "$formula"
    done
@@ -132,7 +132,7 @@ halfway through, fix + rerun from the failing step.
    After the tap push:
 
    ```bash
-   brew tap nalo/packguard
+   brew tap Tmauc/packguard
    brew install packguard
    packguard --version
    ```
@@ -196,9 +196,9 @@ If a published release turns out to be broken:
 - **Docker**: retag `:latest` to the previous working version:
 
   ```bash
-  docker pull ghcr.io/nalo/packguard:vX.Y.Z-1
-  docker tag ghcr.io/nalo/packguard:vX.Y.Z-1 ghcr.io/nalo/packguard:latest
-  docker push ghcr.io/nalo/packguard:latest
+  docker pull ghcr.io/tmauc/packguard:vX.Y.Z-1
+  docker tag ghcr.io/tmauc/packguard:vX.Y.Z-1 ghcr.io/tmauc/packguard:latest
+  docker push ghcr.io/tmauc/packguard:latest
   ```
 
 - **Homebrew**: revert the formula commit on the tap repo. `brew
@@ -220,14 +220,14 @@ Run through this list before every tag push.
       a linked upstream issue).
 - [ ] `cargo deny check` clean (workspace deps respect the license +
       duplicate policy).
-- [ ] `trivy image ghcr.io/nalo/packguard:vX.Y.Z` reports no CRITICAL
+- [ ] `trivy image ghcr.io/tmauc/packguard:vX.Y.Z` reports no CRITICAL
       un-fixed CVEs (the release workflow enforces this, but spot-check
       locally if CI is flaky).
 - [ ] SHA256 of every artefact in `SHA256SUMS` matches the one under
       `dist/<target>/` on the release page.
 - [ ] cosign signature verifies (if the key is set).
 - [ ] Dashboard-less smoke:
-      `docker run --rm ghcr.io/nalo/packguard:vX.Y.Z scan /workspace`
+      `docker run --rm ghcr.io/tmauc/packguard:vX.Y.Z scan /workspace`
       reads a mounted lockfile without the `ui-embed` UI ever firing.
 
 When all boxes tick, publish the release draft.

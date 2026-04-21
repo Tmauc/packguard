@@ -48,7 +48,7 @@ RUN strip /src/target/release/packguard
 FROM gcr.io/distroless/cc-debian12:nonroot
 LABEL org.opencontainers.image.title="PackGuard"
 LABEL org.opencontainers.image.description="Dependency supply-chain scanner: OSV/GHSA + malware/typosquat + policy-driven CI gate."
-LABEL org.opencontainers.image.source="https://github.com/nalo/packguard"
+LABEL org.opencontainers.image.source="https://github.com/Tmauc/packguard"
 LABEL org.opencontainers.image.licenses="MIT OR Apache-2.0"
 COPY --from=rust-build /src/target/release/packguard /usr/local/bin/packguard
 WORKDIR /workspace

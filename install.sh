@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PackGuard one-shot installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/nalo/packguard/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Tmauc/packguard/main/install.sh | sh
 #
 # What it does:
 #   1. Detects OS + arch, picks the matching release asset from the
@@ -13,7 +13,7 @@
 #      isn't writable — no sudo prompts).
 #
 # Configurable via env:
-#   PACKGUARD_REPO         owner/name on GitHub          (default: nalo/packguard)
+#   PACKGUARD_REPO         owner/name on GitHub          (default: Tmauc/packguard)
 #   PACKGUARD_VERSION      tag to install                 (default: latest)
 #   PACKGUARD_INSTALL_DIR  where to drop the binary
 #   PACKGUARD_TMPDIR       override the extraction spool  (default: mktemp)
@@ -24,7 +24,7 @@
 
 set -euo pipefail
 
-REPO="${PACKGUARD_REPO:-nalo/packguard}"
+REPO="${PACKGUARD_REPO:-Tmauc/packguard}"
 VERSION="${PACKGUARD_VERSION:-latest}"
 INSTALL_DIR="${PACKGUARD_INSTALL_DIR:-}"
 

@@ -32,7 +32,7 @@ jobs:
 
       - name: install packguard
         run: |
-          curl -fsSL https://raw.githubusercontent.com/nalo/packguard/main/install.sh | sh
+          curl -fsSL https://raw.githubusercontent.com/Tmauc/packguard/main/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: restore cache
@@ -84,7 +84,7 @@ jobs:
   packguard:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/nalo/packguard:latest
+      image: ghcr.io/tmauc/packguard:latest
     steps:
       - uses: actions/checkout@v4
       - run: packguard scan .

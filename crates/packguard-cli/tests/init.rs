@@ -81,7 +81,7 @@ fn init_with_ci_gitlab_writes_snippet_and_points_at_doc() {
     let snippet = dir.path().join(".packguard/ci/gitlab.yml");
     let body = std::fs::read_to_string(&snippet).expect("snippet written");
     // Snippet must reference the generic container image, not a Nalo path.
-    assert!(body.contains("ghcr.io/nalo/packguard"));
+    assert!(body.contains("ghcr.io/tmauc/packguard"));
     assert!(body.contains("packguard scan ."));
     assert!(body.contains("--fail-on-violation"));
     // Stdout points the user at the full doc.

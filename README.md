@@ -134,13 +134,13 @@ ship together.
 
 ```bash
 # Option 1 — curl | sh (verifies SHA256, no sudo if /usr/local/bin isn't writable)
-curl -fsSL https://raw.githubusercontent.com/nalo/packguard/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Tmauc/packguard/main/install.sh | sh
 
 # Option 2 — Docker (~46 MB, multi-arch)
-docker run --rm -v "$PWD":/workspace ghcr.io/nalo/packguard:latest scan /workspace
+docker run --rm -v "$PWD":/workspace ghcr.io/tmauc/packguard:latest scan /workspace
 
 # Option 3 — Homebrew
-brew tap nalo/packguard
+brew tap Tmauc/packguard
 brew install packguard
 
 # Option 4 — from source (with the embedded dashboard)
