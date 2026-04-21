@@ -43,11 +43,7 @@ pub fn build(store: &Store, project: Option<&std::path::Path>) -> Result<Overvie
         }
     }
 
-    let health_score = if packages_total == 0 {
-        None
-    } else {
-        Some((compliance.compliant * 100) / packages_total)
-    };
+    let health_score = (compliance.compliant * 100).checked_div(packages_total);
 
     // Top-5 risk: weighted CVE severity + malware bonus + typosquat tap.
     let mut scored: Vec<(u32, &PackageRowFull, String)> = rows
@@ -83,7 +79,7 @@ pub fn build(store: &Store, project: Option<&std::path::Path>) -> Result<Overvie
         })
         .filter(|(s, ..)| *s > 0)
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     let top_risks: Vec<RiskRow> = scored
         .into_iter()
         .take(5)
