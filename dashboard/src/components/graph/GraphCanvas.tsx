@@ -212,21 +212,21 @@ export function GraphCanvas({
     if (layout === "dagre") {
       return {
         name: "dagre",
-        rankDir: "TB",
-        nodeSep: 22,
-        rankSep: 60,
+        rankDir: "LR",
+        nodeSep: 32,
+        rankSep: 110,
         animate: false,
         fit: true,
-        padding: 32,
+        padding: 48,
       };
     }
     return {
       name: "cose-bilkent",
       animate: false,
       fit: true,
-      padding: 32,
-      nodeRepulsion: 4500,
-      idealEdgeLength: 60,
+      padding: 48,
+      nodeRepulsion: 6500,
+      idealEdgeLength: 90,
     };
   }, [layout]);
 

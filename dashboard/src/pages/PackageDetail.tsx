@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeftIcon, ExternalLinkIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -20,9 +19,34 @@ type TabKey =
   | "compatibility"
   | "changelog";
 
+const TAB_KEYS: readonly TabKey[] = [
+  "versions",
+  "vulnerabilities",
+  "malware",
+  "policy",
+  "compatibility",
+  "changelog",
+];
+
+function parseTab(raw: string | null): TabKey {
+  if (raw && (TAB_KEYS as readonly string[]).includes(raw)) {
+    return raw as TabKey;
+  }
+  return "versions";
+}
+
 export function PackageDetailPage() {
   const { ecosystem = "", name = "" } = useParams();
-  const [tab, setTab] = useState<TabKey>("versions");
+  const [params, setParams] = useSearchParams();
+  const tab = parseTab(params.get("tab"));
+  const setTab = (next: TabKey) => {
+    setParams((prev) => {
+      const p = new URLSearchParams(prev);
+      if (next === "versions") p.delete("tab");
+      else p.set("tab", next);
+      return p;
+    });
+  };
 
   const detail = useQuery({
     queryKey: ["package-detail", ecosystem, name],

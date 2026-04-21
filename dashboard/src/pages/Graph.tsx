@@ -60,12 +60,33 @@ export function GraphPage() {
     const edgePairs = new Set<string>();
     for (const chain of contamination.data.chains) {
       for (let i = 0; i < chain.path.length; i += 1) {
-        nodeIds.add(chain.path[i]);
-        if (i > 0) edgePairs.add(`${chain.path[i - 1]}->${chain.path[i]}`);
+        const nodeId = chain.path[i];
+        if (typeof nodeId !== "string") continue;
+        nodeIds.add(nodeId);
+        if (i > 0) {
+          const prev = chain.path[i - 1];
+          if (typeof prev === "string") {
+            edgePairs.add(`${prev}->${nodeId}`);
+          }
+        }
       }
     }
     return { kind: "contamination", nodeIds, edgePairs };
   }, [contamination.data, focusCve]);
+
+  // In focus mode we narrow the canvas to just the contaminated subgraph.
+  // Cytoscape runs its layout on the filtered element set, so the chain
+  // gets the whole viewport instead of being hidden behind 1100+ muted
+  // siblings. The `highlight` classes on top paint those chains red.
+  const displayGraph = useMemo(() => {
+    if (!graphQuery.data) return graphQuery.data;
+    if (highlight.kind !== "contamination") return graphQuery.data;
+    const nodes = graphQuery.data.nodes.filter((n) => highlight.nodeIds.has(n.id));
+    const edges = graphQuery.data.edges.filter((e) =>
+      highlight.edgePairs.has(`${e.source}->${e.target}`),
+    );
+    return { ...graphQuery.data, nodes, edges };
+  }, [graphQuery.data, highlight]);
 
   const selectedNode = useMemo(() => {
     if (!graphQuery.data || !selectedId) return null;
@@ -265,19 +286,24 @@ export function GraphPage() {
                 the graph.
               </div>
             )}
-            {graphQuery.data && graphQuery.data.nodes.length > 0 && (
+            {displayGraph && displayGraph.nodes.length > 0 && (
               <GraphCanvas
-                graph={graphQuery.data}
+                graph={displayGraph}
                 layout={layout}
                 highlight={highlight}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
               />
             )}
-            {graphQuery.data && (
+            {displayGraph && (
               <div className="absolute bottom-2 left-2 rounded-md bg-white/80 px-2 py-0.5 text-[10px] text-zinc-500 shadow">
-                {graphQuery.data.nodes.length} nodes ·{" "}
-                {graphQuery.data.edges.length} edges
+                {displayGraph.nodes.length} nodes ·{" "}
+                {displayGraph.edges.length} edges
+                {highlight.kind === "contamination" && graphQuery.data && (
+                  <span className="ml-1 text-zinc-400">
+                    / {graphQuery.data.nodes.length} total
+                  </span>
+                )}
               </div>
             )}
           </div>
