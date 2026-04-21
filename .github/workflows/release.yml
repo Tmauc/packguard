@@ -140,11 +140,13 @@ jobs:
           echo "sha256=${ASSET}.sha256" >> "$GITHUB_OUTPUT"
 
       - name: install cosign
-        if: ${{ secrets.COSIGN_PRIVATE_KEY != '' }}
+        if: env.COSIGN_PRIVATE_KEY != ''
         uses: sigstore/cosign-installer@v3.7.0
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
 
       - name: sign (cosign, optional)
-        if: ${{ secrets.COSIGN_PRIVATE_KEY != '' }}
+        if: env.COSIGN_PRIVATE_KEY != ''
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
@@ -160,7 +162,9 @@ jobs:
           rm -f cosign.key
 
       - name: sign (skipped — no COSIGN_PRIVATE_KEY)
-        if: ${{ secrets.COSIGN_PRIVATE_KEY == '' }}
+        if: env.COSIGN_PRIVATE_KEY == ''
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
         shell: bash
         run: |
           echo "::warning::COSIGN_PRIVATE_KEY not set — skipping signature for ${{ steps.package.outputs.asset }}. See PUBLISHING.md §cosign."
