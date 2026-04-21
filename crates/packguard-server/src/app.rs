@@ -3,7 +3,7 @@
 
 use crate::dto::{
     JobAccepted, JobKind, JobView, Overview, PackageDetail, PackagesPage, PackagesQuery,
-    PolicyDocument,
+    PolicyDocument, PolicyDryRun, PolicyDryRunResult, PolicyWrite,
 };
 use crate::error::ApiError;
 use crate::jobs;
@@ -35,7 +35,8 @@ pub fn router(cfg: ServerConfig) -> Router {
         .route("/api/overview", get(overview))
         .route("/api/packages", get(packages_list))
         .route("/api/packages/{ecosystem}/{name}", get(package_detail))
-        .route("/api/policies", get(policy_get))
+        .route("/api/policies", get(policy_get).put(policy_put))
+        .route("/api/policies/dry-run", post(policy_dry_run))
         .route("/api/scan", post(scan_create))
         .route("/api/sync", post(sync_create))
         .route("/api/jobs/{id}", get(job_get))
@@ -72,6 +73,32 @@ async fn package_detail(
 
 async fn policy_get(State(s): State<AppState>) -> Result<Json<PolicyDocument>, ApiError> {
     Ok(Json(services::policies::read(&s.repo_path)?))
+}
+
+async fn policy_put(
+    State(s): State<AppState>,
+    Json(body): Json<PolicyWrite>,
+) -> Result<Json<PolicyDocument>, ApiError> {
+    services::policies::write(&s.repo_path, &body.yaml)
+        .map(Json)
+        .map_err(policy_error_to_api)
+}
+
+async fn policy_dry_run(
+    State(s): State<AppState>,
+    Json(body): Json<PolicyDryRun>,
+) -> Result<Json<PolicyDryRunResult>, ApiError> {
+    let store = s.store.lock().await;
+    services::policies::dry_run(&store, &s.repo_path, &body.yaml)
+        .map(Json)
+        .map_err(policy_error_to_api)
+}
+
+fn policy_error_to_api(err: services::policies::PolicyError) -> ApiError {
+    match err {
+        services::policies::PolicyError::Yaml(msg) => ApiError::BadRequest(msg),
+        services::policies::PolicyError::Internal(e) => ApiError::Internal(e),
+    }
 }
 
 async fn scan_create(

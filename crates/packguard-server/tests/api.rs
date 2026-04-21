@@ -391,6 +391,130 @@ async fn policies_returns_repo_file_when_present() {
     assert!(body["yaml"].as_str().unwrap().contains("offset: 0"));
 }
 
+// ---------- /api/policies/dry-run + PUT /api/policies -----------------------
+
+async fn put_json(
+    harness: &Harness,
+    path: &str,
+    body: serde_json::Value,
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let url = format!("{}{}", harness.base, path);
+    let resp = reqwest::Client::new()
+        .put(&url)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    (status, body)
+}
+
+async fn post_json_body(
+    harness: &Harness,
+    path: &str,
+    body: serde_json::Value,
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let url = format!("{}{}", harness.base, path);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    (status, body)
+}
+
+#[tokio::test]
+async fn policies_dry_run_returns_counts_against_current_and_candidate() {
+    let h = spawn(seed_lodash_with_high_cve).await;
+    let candidate = "defaults:\n  offset: 0\n  block:\n    cve_severity: [critical, high]\n";
+    let (status, body) = post_json_body(
+        &h,
+        "/api/policies/dry-run",
+        serde_json::json!({ "yaml": candidate }),
+    )
+    .await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert!(body["candidate"]["violations"].as_u64().unwrap() >= 1);
+    assert!(body["current"]["violations"].as_u64().unwrap() >= 1);
+    // `changed_packages` may be empty — both policies block the high CVE —
+    // but the field must be present so the UI can render "no deltas".
+    assert!(body["changed_packages"].is_array());
+}
+
+#[tokio::test]
+async fn policies_dry_run_surfaces_compliance_delta_when_policy_relaxes() {
+    let h = spawn(seed_lodash_with_high_cve).await;
+    // Candidate policy removes the CVE block → lodash flips from violation to
+    // whatever the non-CVE evaluation returns (warning, most likely).
+    let candidate = "defaults:\n  offset: 0\n  block: {}\n";
+    let (_, body) = post_json_body(
+        &h,
+        "/api/policies/dry-run",
+        serde_json::json!({ "yaml": candidate }),
+    )
+    .await;
+    let changed = body["changed_packages"].as_array().unwrap();
+    let lodash = changed
+        .iter()
+        .find(|c| c["name"] == "lodash")
+        .expect("lodash should flip category when CVE block is removed");
+    assert_eq!(lodash["from"], "cve-violation");
+}
+
+#[tokio::test]
+async fn policies_dry_run_rejects_bad_yaml_with_line_info() {
+    let h = spawn(|_, _| {}).await;
+    let (status, body) = post_json_body(
+        &h,
+        "/api/policies/dry-run",
+        serde_json::json!({ "yaml": "defaults:\n  offset: -1\n    bad_indent: true\n" }),
+    )
+    .await;
+    assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "bad_request");
+    let msg = body["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("line") || msg.contains("YAML"),
+        "error should mention a line or the YAML tag: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn policies_put_writes_the_file_and_returns_the_new_document() {
+    let h = spawn(|_, _| {}).await;
+    let yaml = "defaults:\n  offset: 0\n  min_age_days: 3\n";
+    let (status, body) = put_json(&h, "/api/policies", serde_json::json!({ "yaml": yaml })).await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert_eq!(body["from_file"], true);
+    assert!(body["yaml"].as_str().unwrap().contains("min_age_days: 3"));
+    // Reading it back should now return the same content with from_file=true.
+    let fresh = get_json(&h, "/api/policies").await;
+    assert_eq!(fresh["from_file"], true);
+    assert!(fresh["yaml"].as_str().unwrap().contains("min_age_days: 3"));
+}
+
+#[tokio::test]
+async fn policies_put_rejects_invalid_yaml_without_clobbering_disk() {
+    let h = spawn(|_, repo| {
+        std::fs::write(repo.join(".packguard.yml"), "defaults:\n  offset: 0\n").unwrap();
+    })
+    .await;
+    let (status, _) = put_json(
+        &h,
+        "/api/policies",
+        serde_json::json!({ "yaml": "defaults: not_an_object\n" }),
+    )
+    .await;
+    assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
+    // Existing file must still be there.
+    let fresh = get_json(&h, "/api/policies").await;
+    assert!(fresh["yaml"].as_str().unwrap().contains("offset: 0"));
+}
+
 // ---------- /api/scan + /api/jobs ------------------------------------------
 
 #[tokio::test]

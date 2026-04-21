@@ -109,7 +109,7 @@ pub struct PackageRisk {
 
 /// Mirror of `packguard_policy::Compliance` flattened to a string tag — the
 /// frontend only needs the kind, not the full payload.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "ComplianceTag.ts")]
 #[serde(rename_all = "kebab-case")]
 pub enum ComplianceTag {
@@ -224,6 +224,51 @@ pub struct PolicyDocument {
     /// `true` when the YAML lives on disk; `false` when we're returning the
     /// embedded conservative defaults.
     pub from_file: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "PolicyWrite.ts")]
+pub struct PolicyWrite {
+    pub yaml: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "PolicyDryRun.ts")]
+pub struct PolicyDryRun {
+    pub yaml: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "PolicyDryRunResult.ts")]
+pub struct PolicyDryRunResult {
+    /// Per-bucket totals when the candidate policy is applied to the last
+    /// scan.
+    pub candidate: ComplianceSummary,
+    /// Same counts under the currently active policy — lets the UI show a
+    /// side-by-side delta.
+    pub current: ComplianceSummary,
+    /// Packages whose compliance tag flipped between the two policies.
+    /// Bounded to the first `max` entries the service decides to return
+    /// (currently 50) so a pathological diff doesn't explode the payload.
+    pub changed_packages: Vec<PolicyDryRunChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "PolicyDryRunChange.ts")]
+pub struct PolicyDryRunChange {
+    pub ecosystem: String,
+    pub name: String,
+    pub from: ComplianceTag,
+    pub to: ComplianceTag,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "YamlErrorLocation.ts")]
+pub struct YamlErrorLocation {
+    /// 1-based line. `None` when the YAML parser couldn't recover a location
+    /// (rare — mostly happens for pure I/O failures).
+    pub line: Option<u32>,
+    pub column: Option<u32>,
 }
 
 // ---- Jobs ------------------------------------------------------------------

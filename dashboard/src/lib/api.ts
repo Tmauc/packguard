@@ -6,6 +6,7 @@ import type { PackagesPage } from "@/api/types/PackagesPage";
 import type { PackagesQuery } from "@/api/types/PackagesQuery";
 import type { PackageDetail } from "@/api/types/PackageDetail";
 import type { PolicyDocument } from "@/api/types/PolicyDocument";
+import type { PolicyDryRunResult } from "@/api/types/PolicyDryRunResult";
 import type { JobAccepted } from "@/api/types/JobAccepted";
 import type { JobView } from "@/api/types/JobView";
 
@@ -56,6 +57,20 @@ export const api = {
     ),
 
   policies: () => fetch("/api/policies").then(handle<PolicyDocument>),
+
+  savePolicy: (yaml: string) =>
+    fetch("/api/policies", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ yaml }),
+    }).then(handle<PolicyDocument>),
+
+  dryRunPolicy: (yaml: string) =>
+    fetch("/api/policies/dry-run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ yaml }),
+    }).then(handle<PolicyDryRunResult>),
 
   startScan: () =>
     fetch("/api/scan", { method: "POST" }).then(handle<JobAccepted>),
