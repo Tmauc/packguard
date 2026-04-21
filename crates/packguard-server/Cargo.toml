@@ -27,6 +27,18 @@ uuid = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
+rust-embed = { workspace = true, optional = true }
+mime_guess = { workspace = true, optional = true }
+
+[features]
+default = []
+# Bake the built Vite bundle into the binary so `packguard ui` serves the
+# dashboard without a dev server. Opt-in because embedding adds ~500KB of
+# assets + `build.rs` pulls pnpm into the release build path.
+ui-embed = ["dep:rust-embed", "dep:mime_guess"]
+
+[build-dependencies]
+anyhow = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -11,6 +11,12 @@ description = "PackGuard CLI binary."
 name = "packguard"
 path = "src/main.rs"
 
+[features]
+default = []
+# Pass-through for the server's ui-embed feature so `cargo build --release -p
+# packguard-cli --features ui-embed` produces a self-contained binary.
+ui-embed = ["packguard-server/ui-embed"]
+
 [dependencies]
 packguard-core = { path = "../packguard-core" }
 packguard-store = { path = "../packguard-store" }

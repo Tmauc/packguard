@@ -475,13 +475,20 @@ async fn ui(
         "PackGuard server".bold(),
         url.cyan()
     );
-    println!(
-        "{} dev front-end: {} (run `pnpm dev` in dashboard/)",
-        "→".dimmed(),
-        "http://127.0.0.1:5173".cyan()
-    );
+    let open_url = if cfg!(feature = "ui-embed") {
+        // Release build with the bundle baked in — the server itself serves
+        // the dashboard.
+        url.clone()
+    } else {
+        println!(
+            "{} dev front-end: {} (run `pnpm dev` in dashboard/)",
+            "→".dimmed(),
+            "http://127.0.0.1:5173".cyan()
+        );
+        "http://127.0.0.1:5173".to_string()
+    };
     if !no_open {
-        if let Err(err) = open::that_detached(&url) {
+        if let Err(err) = open::that_detached(&open_url) {
             tracing::warn!(?err, "could not auto-open browser");
         }
     }

@@ -22,6 +22,44 @@ See [CONTEXT.md](./CONTEXT.md) for the full vision, architecture, and roadmap.
 - ✅ **Phase 2.5** — Malware & typosquat: OSV-MAL harvest, top-N typosquat
   heuristic, optional Socket.dev scanner, `block.malware`, `block.typosquat`,
   `audit --focus`, unified `Risk` column in `report`.
+- ✅ **Phase 4** — Local dashboard: `packguard-server` (axum + ts-rs),
+  React 19 + Vite SPA, Overview / Packages / Package detail with visx
+  timeline / Policies YAML editor with dry-run preview, served by a single
+  `packguard ui` binary that embeds the Vite bundle in release.
+
+---
+
+## Dashboard
+
+```bash
+# Dev: run the server + Vite side-by-side (hot reload on the UI).
+packguard ui           # starts the API on :5174
+pnpm --dir dashboard dev   # starts Vite on :5173 (auto-proxies /api/*)
+
+# Release: single binary, no node runtime needed.
+PACKGUARD_SKIP_UI_BUILD=1 cargo build --release -p packguard-cli --features ui-embed
+./target/release/packguard ui
+```
+
+The release binary serves the dashboard, the REST API, and auto-opens the
+browser. `--no-open` suppresses the auto-open, `--port` / `--host` override
+the bind. `PACKGUARD_SKIP_UI_BUILD=1` skips the automatic `pnpm build` in
+`build.rs` when you've pre-built the dashboard (CI). The `ui-embed` feature
+is opt-in so debug builds stay fast and don't require pnpm on the PATH.
+
+### Pages
+
+| Page | URL | Highlights |
+|------|-----|------------|
+| Overview | `/` | Health score · packages tracked · CVE/supply-chain donuts · top-5 risks |
+| Packages | `/packages` | Filterable + sortable table, URL-state filters, paginated |
+| Package detail | `/packages/:eco/:name` | 5-tab view, visx timeline (virtualised above 200 versions), policy trace |
+| Policies | `/policies` | CodeMirror YAML editor, dry-run preview vs current policy, atomic save |
+
+![Overview](docs/screenshots/overview.png)
+![Packages](docs/screenshots/packages.png)
+![Package detail — pillow](docs/screenshots/detail.png)
+![Policies editor](docs/screenshots/policies.png)
 
 ---
 
@@ -31,6 +69,8 @@ See [CONTEXT.md](./CONTEXT.md) for the full vision, architecture, and roadmap.
 cargo install --path crates/packguard-cli
 # or, during development:
 cargo run --release -p packguard-cli -- <args>
+# or, with the embedded dashboard:
+cargo install --path crates/packguard-cli --features ui-embed
 ```
 
 The binary is called `packguard`.
@@ -147,6 +187,14 @@ a compact compliance table grouped by ecosystem → workspace → package:
 
 `--fail-on-violation` exits `1` when at least one row sits at `violation`,
 `cve-violation`, or `malware`. JSON / SARIF outputs additive over Phase 2.
+
+### `packguard ui [path] [--port N] [--host H] [--no-open]`
+
+Boots the local dashboard. In debug builds the Rust server only serves
+`/api/*` — run `pnpm --dir dashboard dev` alongside it so Vite proxies the
+API calls. In a release build compiled with `--features ui-embed`, the
+binary also serves the built Vite bundle under `/`, so a single command is
+enough. Ctrl+C triggers a graceful shutdown.
 
 ---
 
@@ -265,10 +313,14 @@ false positives. Rules of thumb:
 ├── crates/
 │   ├── packguard-core          # Ecosystem trait, npm + pypi parsers, shared types
 │   ├── packguard-policy        # YAML parser, rule resolution, evaluator
-│   ├── packguard-store         # rusqlite + refinery persistence (V1+V2+V3)
+│   ├── packguard-store         # rusqlite + refinery persistence (V1+V2+V3+V4)
 │   ├── packguard-intel         # OSV/GHSA fetchers, matcher, malware harvest,
 │   │                           # typosquat heuristic, OSV/Socket clients
-│   └── packguard-cli           # binary (init / scan / sync / audit / report)
+│   ├── packguard-server        # axum REST API + job runner + ts-rs DTOs
+│   │                           # (+ rust-embed fallback under ui-embed feature)
+│   └── packguard-cli           # binary (init / scan / sync / audit / report / ui)
+├── dashboard/                  # Vite + React 19 SPA consuming the REST API
+├── docs/screenshots/           # embedded dashboard captures (real Nalo data)
 ├── fixtures/                   # npm-basic, pypi-poetry, pypi-uv, pypi-pip
 └── rust-toolchain.toml
 ```
@@ -281,6 +333,18 @@ false positives. Rules of thumb:
 cargo test          # full workspace test suite
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
+cargo test -p packguard-server --features ui-embed --test embed  # dashboard serving
+
+# Dashboard (Vite workspace).
+pnpm --dir dashboard lint
+pnpm --dir dashboard typecheck
+pnpm --dir dashboard test
+```
+
+Regenerate TypeScript types after a DTO change in `packguard-server`:
+
+```bash
+PACKGUARD_REGEN_TYPES=1 cargo test -p packguard-server --test types_drift
 ```
 
 Live tests gated by `PACKGUARD_LIVE_TESTS=1` exercise real api.osv.dev queries.

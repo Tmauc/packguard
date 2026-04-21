@@ -16,6 +16,8 @@
 
 pub mod app;
 pub mod dto;
+#[cfg(feature = "ui-embed")]
+pub mod embed;
 pub mod error;
 pub mod jobs;
 pub mod services;

@@ -30,7 +30,7 @@ pub fn router(cfg: ServerConfig) -> Router {
         store: Arc::new(Mutex::new(cfg.store)),
         repo_path: cfg.repo_path,
     };
-    Router::new()
+    let api = Router::new()
         .route("/api/health", get(health))
         .route("/api/overview", get(overview))
         .route("/api/packages", get(packages_list))
@@ -41,7 +41,21 @@ pub fn router(cfg: ServerConfig) -> Router {
         .route("/api/sync", post(sync_create))
         .route("/api/jobs/{id}", get(job_get))
         .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .with_state(state);
+
+    attach_ui(api)
+}
+
+#[cfg(feature = "ui-embed")]
+fn attach_ui(api: Router) -> Router {
+    use axum::routing::get;
+    api.route("/", get(crate::embed::serve_root))
+        .fallback(crate::embed::serve)
+}
+
+#[cfg(not(feature = "ui-embed"))]
+fn attach_ui(api: Router) -> Router {
+    api
 }
 
 async fn health() -> impl IntoResponse {
