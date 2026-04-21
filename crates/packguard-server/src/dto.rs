@@ -131,7 +131,7 @@ pub struct PackagesPage {
     pub rows: Vec<PackageRow>,
 }
 
-// ---- Package detail (4a: skeleton, 4b: enriched) ---------------------------
+// ---- Package detail --------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "PackageDetail.ts")]
@@ -144,6 +144,14 @@ pub struct PackageDetail {
     pub compliance: ComplianceTag,
     pub risk: PackageRisk,
     pub versions: Vec<VersionRow>,
+    /// Every advisory that matches *any* known version of this package — the
+    /// `affects_installed` flag marks the subset that drives the compliance
+    /// tag. The timeline uses the full list to colour individual markers.
+    pub vulnerabilities: Vec<VulnerabilityEntry>,
+    /// Malware + typosquat intel. Empty when the package is clean.
+    pub malware: Vec<MalwareEntry>,
+    /// Resolved policy + why the installed version is (not) compliant.
+    pub policy_trace: PolicyTrace,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -153,6 +161,56 @@ pub struct VersionRow {
     pub published_at: Option<String>,
     pub deprecated: bool,
     pub yanked: bool,
+    /// Highest severity of advisories matching this version; `None` when the
+    /// version is clean. Drives the marker colour on the timeline.
+    pub severity: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "VulnerabilityEntry.ts")]
+pub struct VulnerabilityEntry {
+    pub source: String,
+    pub advisory_id: String,
+    pub cve_id: Option<String>,
+    /// "critical" | "high" | "medium" | "low" | "unknown".
+    pub severity: String,
+    pub summary: Option<String>,
+    pub url: Option<String>,
+    pub fixed_versions: Vec<String>,
+    /// `true` when the advisory's affected range includes the installed
+    /// version — these are the rows surfaced in the "Installed is affected"
+    /// callout at the top of the tab.
+    pub affects_installed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "MalwareEntry.ts")]
+pub struct MalwareEntry {
+    pub source: String,
+    pub ref_id: String,
+    /// "malware" | "typosquat" | "scanner_signal".
+    pub kind: String,
+    pub version: Option<String>,
+    pub summary: Option<String>,
+    pub url: Option<String>,
+    pub reported_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "PolicyTrace.ts")]
+pub struct PolicyTrace {
+    /// Offset in majors below latest (0 = latest allowed).
+    pub offset: u32,
+    pub pin: Option<String>,
+    /// "stable" | "pre" | "any".
+    pub stability: String,
+    pub min_age_days: u32,
+    /// The version the resolver would recommend upgrading to, given the
+    /// active policy + the known vuln/malware data. `None` when no candidate
+    /// survives every filter.
+    pub recommended: Option<String>,
+    /// Human-readable one-liner — same wording as the CLI report uses.
+    pub reason: String,
 }
 
 // ---- Policy ----------------------------------------------------------------

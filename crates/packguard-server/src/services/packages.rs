@@ -5,12 +5,16 @@
 //! bigger schema change for marginal benefit.
 
 use crate::dto::{
-    ComplianceTag, PackageDetail, PackageRisk, PackageRow, PackagesPage, PackagesQuery, VersionRow,
+    ComplianceTag, MalwareEntry, PackageDetail, PackageRisk, PackageRow, PackagesPage,
+    PackagesQuery, PolicyTrace, VersionRow, VulnerabilityEntry,
 };
 use anyhow::Result;
-use packguard_core::Severity;
+use packguard_core::{MalwareKind, Severity};
 use packguard_intel::match_vulnerabilities;
-use packguard_policy::{evaluate_dependency_full, Compliance, Dialect, Policy};
+use packguard_policy::{
+    compute_recommended_version_full, evaluate_dependency_full, Compliance, Dialect, Policy,
+    Stability,
+};
 use packguard_store::Store;
 
 /// `PackageRow` + the dependency it came from so the overview service can
@@ -61,16 +65,138 @@ pub fn detail(store: &Store, ecosystem: &str, name: &str) -> Result<Option<Packa
         return Ok(None);
     };
 
-    let versions: Vec<VersionRow> = store
-        .load_package_versions(ecosystem, name)?
-        .into_iter()
-        .map(|v| VersionRow {
+    let stored_versions = store.load_package_versions(ecosystem, name)?;
+    let stored_vulns = store.load_vulnerabilities(ecosystem, name)?;
+    let stored_malware = store.load_malware_reports(ecosystem, name)?;
+
+    // Re-run the matcher per-version so we can colour each row by the
+    // highest severity affecting it. The list stays small (<= 500 versions
+    // in practice, including sentry-sdk's 329) so recomputing is fine.
+    let advisories: Vec<packguard_core::Vulnerability> = stored_vulns
+        .iter()
+        .cloned()
+        .map(stored_vuln_to_core)
+        .collect();
+
+    let versions: Vec<VersionRow> = stored_versions
+        .iter()
+        .map(|v| {
+            let matches = match_vulnerabilities(ecosystem, name, &v.version, &advisories);
+            let severity = matches
+                .iter()
+                .map(|m| m.severity)
+                .max()
+                .filter(|s| !matches!(s, Severity::Unknown))
+                .map(|s| s.as_str().to_string());
+            VersionRow {
+                version: v.version.clone(),
+                published_at: v.published_at.clone(),
+                deprecated: v.deprecated,
+                yanked: v.yanked,
+                severity,
+            }
+        })
+        .collect();
+
+    let installed = full.row.installed.clone();
+    let installed_matches: Vec<packguard_intel::MatchedVuln> = installed
+        .as_deref()
+        .map(|v| match_vulnerabilities(ecosystem, name, v, &advisories))
+        .unwrap_or_default();
+
+    let vulnerabilities: Vec<VulnerabilityEntry> = stored_vulns
+        .iter()
+        .map(|v| VulnerabilityEntry {
+            source: v.source.clone(),
+            advisory_id: v.advisory_id.clone(),
+            cve_id: v.cve_id.clone(),
+            severity: v.severity.as_str().to_string(),
+            summary: v.summary.clone(),
+            url: v.url.clone(),
+            fixed_versions: v.fixed_versions.clone(),
+            affects_installed: installed_matches
+                .iter()
+                .any(|m| m.advisory_id == v.advisory_id && m.source == v.source),
+        })
+        .collect();
+
+    let malware: Vec<MalwareEntry> = stored_malware
+        .iter()
+        .map(|m| MalwareEntry {
+            source: m.source.clone(),
+            ref_id: m.ref_id.clone(),
+            kind: match m.kind {
+                MalwareKind::Malware => "malware",
+                MalwareKind::Typosquat => "typosquat",
+                MalwareKind::ScannerSignal => "scanner_signal",
+            }
+            .to_string(),
+            version: m.version.clone(),
+            summary: m.summary.clone(),
+            url: m.url.clone(),
+            reported_at: m.reported_at.clone(),
+        })
+        .collect();
+
+    // Policy trace: the resolved rule + the version the policy would pick.
+    let resolved = policy.resolve(name);
+    let releases: Vec<packguard_policy::ReleaseInfo> = stored_versions
+        .iter()
+        .cloned()
+        .map(|v| packguard_policy::ReleaseInfo {
             version: v.version,
             published_at: v.published_at,
             deprecated: v.deprecated,
             yanked: v.yanked,
         })
         .collect();
+    let mut vulns_by_version: packguard_policy::VulnsByVersion = Default::default();
+    for r in &releases {
+        let m = match_vulnerabilities(ecosystem, name, &r.version, &advisories);
+        if !m.is_empty() {
+            vulns_by_version.insert(r.version.clone(), m);
+        }
+    }
+    let malware_core: Vec<packguard_core::MalwareReport> = stored_malware
+        .iter()
+        .map(|m| packguard_core::MalwareReport {
+            source: m.source.clone(),
+            ref_id: m.ref_id.clone(),
+            ecosystem: m.ecosystem.clone(),
+            package_name: m.package_name.clone(),
+            version: m.version.clone().unwrap_or_default(),
+            kind: m.kind,
+            summary: m.summary.clone(),
+            url: m.url.clone(),
+            evidence: m.evidence.clone(),
+            reported_at: m.reported_at.clone(),
+        })
+        .collect();
+    let dialect = Dialect::for_ecosystem(ecosystem);
+    let recommended = compute_recommended_version_full(
+        &resolved,
+        &releases,
+        &vulns_by_version,
+        &malware_core,
+        dialect,
+        now,
+    );
+    let policy_trace = PolicyTrace {
+        offset: resolved.offset,
+        pin: resolved.pin.clone(),
+        stability: match resolved.stability {
+            Stability::Stable => "stable",
+            Stability::Prerelease => "pre",
+        }
+        .to_string(),
+        min_age_days: resolved.min_age_days,
+        recommended: recommended.clone(),
+        reason: trace_reason(
+            &full.row.compliance,
+            installed.as_deref(),
+            recommended.as_deref(),
+        ),
+    };
 
     Ok(Some(PackageDetail {
         ecosystem: full.row.ecosystem,
@@ -81,7 +207,52 @@ pub fn detail(store: &Store, ecosystem: &str, name: &str) -> Result<Option<Packa
         compliance: full.row.compliance,
         risk: full.row.risk,
         versions,
+        vulnerabilities,
+        malware,
+        policy_trace,
     }))
+}
+
+fn stored_vuln_to_core(s: packguard_store::StoredVulnerability) -> packguard_core::Vulnerability {
+    packguard_core::Vulnerability {
+        source: s.source,
+        advisory_id: s.advisory_id,
+        ecosystem: s.ecosystem,
+        package_name: s.package_name,
+        severity: s.severity,
+        cve_id: s.cve_id,
+        aliases: s.aliases,
+        summary: s.summary,
+        url: s.url,
+        affected: s.affected,
+        fixed_versions: s.fixed_versions,
+        published_at: s.published_at,
+        modified_at: s.modified_at,
+    }
+}
+
+fn trace_reason(tag: &ComplianceTag, installed: Option<&str>, recommended: Option<&str>) -> String {
+    let installed = installed.unwrap_or("—");
+    match tag {
+        ComplianceTag::Compliant => format!("{installed} is within policy."),
+        ComplianceTag::Warning => match recommended {
+            Some(r) if r != installed => format!("behind policy — recommend {r}"),
+            _ => "behind policy".to_string(),
+        },
+        ComplianceTag::Violation => match recommended {
+            Some(r) => format!("blocked by policy — recommend {r}"),
+            None => "blocked by policy — no compliant candidate".to_string(),
+        },
+        ComplianceTag::CveViolation => match recommended {
+            Some(r) => format!("installed {installed} has a blocking CVE — upgrade to {r}"),
+            None => format!("installed {installed} has a blocking CVE — no safe candidate"),
+        },
+        ComplianceTag::Malware => "installed version flagged as malware".to_string(),
+        ComplianceTag::Typosquat => "name resembles a top-N legitimate package".to_string(),
+        ComplianceTag::Insufficient => {
+            "no candidate survives the current policy filters".to_string()
+        }
+    }
 }
 
 /// Evaluate one (ecosystem, name) pair against the active policy, building

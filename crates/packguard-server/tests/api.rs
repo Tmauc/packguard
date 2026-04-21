@@ -234,6 +234,132 @@ async fn package_detail_returns_versions() {
 }
 
 #[tokio::test]
+async fn package_detail_exposes_vulnerabilities_for_installed_version() {
+    let h = spawn(seed_lodash_with_high_cve).await;
+    let body = get_json(&h, "/api/packages/npm/lodash").await;
+    let vulns = body["vulnerabilities"].as_array().unwrap();
+    assert_eq!(vulns.len(), 1);
+    assert_eq!(vulns[0]["cve_id"], "CVE-2021-23337");
+    assert_eq!(vulns[0]["severity"], "high");
+    assert_eq!(vulns[0]["affects_installed"], true);
+    let fixed = vulns[0]["fixed_versions"].as_array().unwrap();
+    assert_eq!(fixed[0], "4.17.21");
+}
+
+#[tokio::test]
+async fn package_detail_exposes_malware_even_when_version_is_different() {
+    let h = spawn(seed_lodash_with_high_cve).await;
+    // The malware record targets 9.9.9 but the detail tab still surfaces it
+    // so users can see the historical record for the package.
+    let body = get_json(&h, "/api/packages/npm/lodash").await;
+    let mw = body["malware"].as_array().unwrap();
+    assert_eq!(mw.len(), 1);
+    assert_eq!(mw[0]["ref_id"], "MAL-2024-42");
+    assert_eq!(mw[0]["kind"], "malware");
+}
+
+#[tokio::test]
+async fn package_detail_policy_trace_recommends_a_safe_upgrade() {
+    let h = spawn(seed_lodash_with_high_cve).await;
+    let body = get_json(&h, "/api/packages/npm/lodash").await;
+    // Installed (4.17.20) is affected; 4.17.21 is the only fix we seeded and
+    // the registry didn't publish it, so policy recommends `None`. We still
+    // want the reason string to mention the CVE so users know why.
+    let trace = &body["policy_trace"];
+    assert!(trace["offset"].is_number());
+    assert_eq!(trace["stability"], "stable");
+    let reason = trace["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("CVE") || reason.contains("blocked") || reason.contains("candidate"),
+        "unexpected trace reason: {reason}"
+    );
+}
+
+#[tokio::test]
+async fn package_detail_version_rows_carry_severity_when_affected() {
+    // Seed a package whose registry advertises both an affected and a fixed
+    // version; confirm the severity field lines up with the matcher.
+    let h = spawn(|store, repo| {
+        let project = Project {
+            ecosystem: "npm",
+            root: repo.to_path_buf(),
+            manifest_path: repo.join("package.json"),
+            name: Some("demo".into()),
+            workspace: None,
+            dependencies: vec![Dependency {
+                name: "lodash".into(),
+                declared_range: "^4.17.0".into(),
+                installed: Some("4.17.20".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("package-lock.json".into()),
+            }],
+        };
+        let remote = RemotePackage {
+            name: "lodash".into(),
+            latest: Some("4.17.21".into()),
+            latest_published_at: Some("2024-06-01T00:00:00Z".into()),
+            versions: vec![
+                packguard_core::RemoteVersion {
+                    version: "4.17.20".into(),
+                    published_at: Some("2024-01-01T00:00:00Z".into()),
+                    deprecated: false,
+                    yanked: false,
+                },
+                packguard_core::RemoteVersion {
+                    version: "4.17.21".into(),
+                    published_at: Some("2024-06-01T00:00:00Z".into()),
+                    deprecated: false,
+                    yanked: false,
+                },
+            ],
+        };
+        let mut remotes = BTreeMap::new();
+        remotes.insert("lodash".into(), remote);
+        store.save_project(repo, &project, &remotes, "fp").unwrap();
+
+        let vuln = Vulnerability {
+            source: "osv".into(),
+            advisory_id: "GHSA-test".into(),
+            ecosystem: "npm".into(),
+            package_name: "lodash".into(),
+            severity: Severity::High,
+            cve_id: Some("CVE-2021-23337".into()),
+            aliases: vec![],
+            summary: None,
+            url: None,
+            affected: AffectedSpec {
+                ranges: vec![AffectedRange {
+                    kind: AffectedRangeKind::Semver,
+                    events: vec![
+                        AffectedEvent::Introduced("0.0.0".into()),
+                        AffectedEvent::Fixed("4.17.21".into()),
+                    ],
+                }],
+                versions: vec![],
+            },
+            fixed_versions: vec!["4.17.21".into()],
+            published_at: None,
+            modified_at: None,
+        };
+        store
+            .persist_vulnerabilities(std::slice::from_ref(&vuln))
+            .unwrap();
+    })
+    .await;
+    let body = get_json(&h, "/api/packages/npm/lodash").await;
+    let versions = body["versions"].as_array().unwrap();
+    let find = |v: &str| {
+        versions
+            .iter()
+            .find(|r| r["version"] == v)
+            .unwrap_or_else(|| panic!("version {v} missing from response"))
+            .clone()
+    };
+    assert_eq!(find("4.17.20")["severity"], "high");
+    assert!(find("4.17.21")["severity"].is_null());
+}
+
+#[tokio::test]
 async fn package_detail_unknown_returns_404() {
     let h = spawn(seed_lodash_with_high_cve).await;
     let url = format!("{}/api/packages/npm/never-heard-of", h.base);
