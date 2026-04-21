@@ -46,8 +46,14 @@ enum Cmd {
     /// Render a compliance report from the SQLite store. Zero network.
     Report {
         /// Path to the repo root whose cached scan should be reported on.
-        #[arg(default_value = ".")]
-        path: PathBuf,
+        /// Omitted (and no `--project`) → pick the most recent scan from
+        /// the store (Phase 7a consistency with `packguard ui`).
+        path: Option<PathBuf>,
+        /// Phase 7a alias for the positional path. Useful in scripts
+        /// that set `--project` uniformly across `report`, `audit`,
+        /// and `graph`. Mutually-exclusive with the positional arg.
+        #[arg(long, conflicts_with = "path")]
+        project: Option<PathBuf>,
         /// Output format.
         #[arg(long, value_enum, default_value_t = ReportFormat::Table)]
         format: ReportFormat,
@@ -58,8 +64,11 @@ enum Cmd {
     /// List every matched vulnerability for the cached scan at `path`.
     Audit {
         /// Path to the repo root whose cached scan should be audited.
-        #[arg(default_value = ".")]
-        path: PathBuf,
+        /// Omitted (and no `--project`) → pick the most recent scan.
+        path: Option<PathBuf>,
+        /// Phase 7a alias for the positional path.
+        #[arg(long, conflicts_with = "path")]
+        project: Option<PathBuf>,
         /// Only show vulns at or above one of these severities (repeatable).
         /// Comma-separated; accepts `critical|high|medium|low`.
         #[arg(long, value_delimiter = ',')]
@@ -127,9 +136,12 @@ enum Cmd {
     /// Print the transitive dependency graph as ASCII, DOT, or JSON.
     /// Zero network — reads only the SQLite store (populate with `scan`).
     Graph {
-        /// Path to the project root (same shape as `scan`).
-        #[arg(default_value = ".")]
-        path: PathBuf,
+        /// Path to the project root (same shape as `scan`). Omitted (and
+        /// no `--project`) → pick the most recent scan from the store.
+        path: Option<PathBuf>,
+        /// Phase 7a alias for the positional path.
+        #[arg(long, conflicts_with = "path")]
+        project: Option<PathBuf>,
         /// Manifest path of the workspace to restrict to (e.g.
         /// `/abs/path/package.json`). Omit to include every workspace of the
         /// repo.
@@ -193,6 +205,7 @@ async fn main() -> Result<()> {
         Cmd::Init { path, force } => init(path, force),
         Cmd::Audit {
             path,
+            project,
             severity,
             fail_on,
             fail_on_malware,
@@ -200,8 +213,9 @@ async fn main() -> Result<()> {
             format,
             no_live_fallback,
         } => {
+            let resolved = resolve_project_for_command(path.or(project), &store_path, "audit")?;
             audit(
-                path,
+                resolved,
                 severity,
                 fail_on,
                 fail_on_malware,
@@ -214,9 +228,13 @@ async fn main() -> Result<()> {
         }
         Cmd::Report {
             path,
+            project,
             format,
             fail_on_violation,
-        } => report(path, format, fail_on_violation, &store_path),
+        } => {
+            let resolved = resolve_project_for_command(path.or(project), &store_path, "report")?;
+            report(resolved, format, fail_on_violation, &store_path)
+        }
         Cmd::Scan {
             path,
             offline,
@@ -236,22 +254,26 @@ async fn main() -> Result<()> {
         } => sync(skip_osv, skip_ghsa, ghsa_cache, all, &store_path).await,
         Cmd::Graph {
             path,
+            project,
             workspace,
             focus,
             contaminated_by,
             max_depth,
             kind,
             format,
-        } => graph(
-            path,
-            workspace.as_deref(),
-            focus.as_deref(),
-            contaminated_by.as_deref(),
-            max_depth,
-            kind.as_deref(),
-            format,
-            &store_path,
-        ),
+        } => {
+            let resolved = resolve_project_for_command(path.or(project), &store_path, "graph")?;
+            graph(
+                resolved,
+                workspace.as_deref(),
+                focus.as_deref(),
+                contaminated_by.as_deref(),
+                max_depth,
+                kind.as_deref(),
+                format,
+                &store_path,
+            )
+        }
         Cmd::Scans { json } => scans(json, &store_path),
     }
 }
@@ -1082,6 +1104,38 @@ fn available_scans_hint(store: &Store) -> String {
     }
     out.push_str("  Run `packguard scans` to list the full set.");
     out
+}
+
+/// Phase 7a CLI fallback: if a command's path argument (or its
+/// `--project` alias) is `None`, pick the most recent scan from the
+/// store instead of silently defaulting to the CWD — same rule as
+/// `packguard ui` since Polish-bis-2. Prints a one-line banner so the
+/// user always knows which scan the command acted against.
+fn resolve_project_for_command(
+    explicit: Option<PathBuf>,
+    store_path: &Path,
+    command_name: &str,
+) -> Result<PathBuf> {
+    if let Some(p) = explicit {
+        return Ok(p);
+    }
+    let store = Store::open(store_path)
+        .with_context(|| format!("opening store at {}", store_path.display()))?;
+    let scans = store.scans_index().unwrap_or_default();
+    let Some(first) = scans.into_iter().next() else {
+        anyhow::bail!(
+            "no cached scan found for `packguard {command_name}`. \
+             Run `packguard scan <path>` first, then re-try — or pass an \
+             explicit path / --project argument.",
+        );
+    };
+    eprintln!(
+        "{} {command_name}: defaulting to {} {}",
+        "ⓘ".dimmed(),
+        first.path.display().to_string().cyan(),
+        "(most recent scan; pass --project to override)".dimmed()
+    );
+    Ok(first.path)
 }
 
 fn resolve_store_path(explicit: Option<PathBuf>) -> Result<PathBuf> {

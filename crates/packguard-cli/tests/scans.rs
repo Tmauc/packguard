@@ -291,6 +291,78 @@ fn run_ui_collect_banner(args: &[&str], deadline_ms: u64) -> String {
 }
 
 #[test]
+fn report_accepts_project_flag_as_alias_of_path_arg() {
+    // Phase 7a: `--project` must behave exactly like the positional
+    // path on `report` / `audit` / `graph`. We run both forms on the
+    // same store and assert the stdout is identical so future command
+    // additions can follow the same pattern.
+    let (_tmp, store, repo) = tmp_with_store();
+    let positional = Command::new(bin())
+        .args([
+            "--store",
+            store.to_str().unwrap(),
+            "report",
+            repo.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let aliased = Command::new(bin())
+        .args([
+            "--store",
+            store.to_str().unwrap(),
+            "report",
+            "--project",
+            repo.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(positional.status.success(), "positional: {:?}", positional);
+    assert!(aliased.status.success(), "--project: {:?}", aliased);
+    let a = strip_ansi(&String::from_utf8(positional.stdout).unwrap());
+    let b = strip_ansi(&String::from_utf8(aliased.stdout).unwrap());
+    assert_eq!(a, b, "positional vs --project stdout mismatched");
+}
+
+#[test]
+fn report_without_arg_falls_back_to_most_recent_scan_with_banner() {
+    // Phase 7a: matching `packguard ui` (Polish-bis-2), running a
+    // project-scoped command with no argument should default to the
+    // most recent scan and surface a stderr banner so the user never
+    // confuses "most-recent" fallback with a silent CWD default.
+    let (_tmp, store, repo) = tmp_with_store();
+    let out = Command::new(bin())
+        .args(["--store", store.to_str().unwrap(), "report"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    let stderr = strip_ansi(&String::from_utf8(out.stderr).unwrap());
+    assert!(
+        stderr.contains("most recent scan") && stderr.contains(&repo.display().to_string()),
+        "expected most-recent banner in stderr, got: {stderr}",
+    );
+}
+
+#[test]
+fn report_without_arg_on_empty_store_exits_with_actionable_error() {
+    // And the empty-store branch must bail with a message that names
+    // the escape hatch — never crash into a blank scan error the user
+    // has to decode.
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store.db");
+    Store::open(&store).unwrap();
+    let out = Command::new(bin())
+        .args(["--store", store.to_str().unwrap(), "report"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = strip_ansi(&String::from_utf8(out.stderr).unwrap());
+    assert!(
+        stderr.contains("no cached scan") && stderr.contains("packguard scan"),
+        "expected actionable empty-store error, got: {stderr}",
+    );
+}
+
+#[test]
 fn ui_without_path_on_empty_store_prints_no_scans_yet_banner() {
     // Polish-bis-2: `packguard ui` must never silently fall back to the
     // process CWD anymore. On an empty store we want an honest banner
