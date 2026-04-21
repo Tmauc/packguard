@@ -42,6 +42,15 @@ enum Cmd {
         /// Overwrite an existing `.packguard.yml`.
         #[arg(long)]
         force: bool,
+        /// Also write a ready-to-paste CI snippet for the named
+        /// provider. Output lands in `.packguard/ci/<provider>.yml`
+        /// alongside a one-line pointer to the full recipe under
+        /// `docs/integrations/`. When omitted, the command still
+        /// detects an existing `.gitlab-ci.yml` / `.github/workflows/`
+        /// layout and prints a suggestion — it never touches existing
+        /// pipeline files.
+        #[arg(long, value_enum)]
+        with_ci: Option<CiProvider>,
     },
     /// Render a compliance report from the SQLite store. Zero network.
     Report {
@@ -202,7 +211,11 @@ async fn main() -> Result<()> {
     let store_path = resolve_store_path(cli.store)?;
 
     match cli.command {
-        Cmd::Init { path, force } => init(path, force),
+        Cmd::Init {
+            path,
+            force,
+            with_ci,
+        } => init(path, force, with_ci),
         Cmd::Audit {
             path,
             project,
@@ -500,7 +513,18 @@ enum GraphFormat {
     Json,
 }
 
-fn init(path: PathBuf, force: bool) -> Result<()> {
+/// Phase 8.5 — CI snippet providers `packguard init --with-ci` can
+/// emit. Kept tight on purpose: each variant maps to a recipe under
+/// `docs/integrations/` that this command only needs to point at, not
+/// replicate in full.
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
+enum CiProvider {
+    Gitlab,
+    Github,
+    Jenkins,
+}
+
+fn init(path: PathBuf, force: bool, with_ci: Option<CiProvider>) -> Result<()> {
     let ecosystems = default_ecosystems()?;
     let detected: Vec<&'static str> = ecosystems
         .iter()
@@ -538,8 +562,185 @@ fn init(path: PathBuf, force: bool) -> Result<()> {
             detected.join(", ").bold()
         );
     }
+
+    // Phase 8.5 — CI snippet emission. Explicit --with-ci always writes;
+    // otherwise we only hint based on the VCS layout (.gitlab-ci.yml
+    // present → suggest gitlab, .github/workflows/ → suggest github).
+    if let Some(provider) = with_ci {
+        emit_ci_snippet(&path, provider, force)?;
+    } else {
+        hint_ci_provider(&path);
+    }
     Ok(())
 }
+
+/// Write `.packguard/ci/<provider>.yml` — a minimal, copy-pasteable
+/// snippet. The full recipe (cache tuning, MR-only gates, SARIF
+/// upload, …) stays in `docs/integrations/<provider>*.md`; this file
+/// exists so the user can pipe it into their pipeline without leaving
+/// the repo.
+fn emit_ci_snippet(path: &Path, provider: CiProvider, force: bool) -> Result<()> {
+    let (filename, body, doc_link) = match provider {
+        CiProvider::Gitlab => (
+            "gitlab.yml",
+            GITLAB_CI_SNIPPET,
+            "docs/integrations/gitlab-ci.md",
+        ),
+        CiProvider::Github => (
+            "github.yml",
+            GITHUB_ACTIONS_SNIPPET,
+            "docs/integrations/github-actions.md",
+        ),
+        CiProvider::Jenkins => (
+            "Jenkinsfile",
+            JENKINS_SNIPPET,
+            "docs/integrations/pre-commit.md",
+        ),
+    };
+
+    let dir = path.join(".packguard").join("ci");
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let target = dir.join(filename);
+    if target.exists() && !force {
+        anyhow::bail!(
+            "{} already exists; rerun with --force to overwrite",
+            target.display()
+        );
+    }
+    std::fs::write(&target, body).with_context(|| format!("writing {}", target.display()))?;
+    println!(
+        "{} wrote {} — paste into your pipeline (full recipe: {})",
+        "✓".green(),
+        target.display().to_string().bold(),
+        doc_link
+    );
+    Ok(())
+}
+
+/// No explicit --with-ci: detect the repo's VCS layout and print a
+/// single hint pointing at the right provider + doc. Never writes.
+fn hint_ci_provider(path: &Path) {
+    let has_gitlab = path.join(".gitlab-ci.yml").exists();
+    let has_github = path.join(".github").join("workflows").is_dir();
+    let (provider, doc_link) = match (has_gitlab, has_github) {
+        (true, _) => ("gitlab", "docs/integrations/gitlab-ci.md"),
+        (_, true) => ("github", "docs/integrations/github-actions.md"),
+        _ => return,
+    };
+    println!(
+        "{} detected {} — run `packguard init --with-ci {}` to emit a snippet ({})",
+        "•".dimmed(),
+        provider,
+        provider,
+        doc_link
+    );
+}
+
+const GITLAB_CI_SNIPPET: &str = r#"# .packguard/ci/gitlab.yml
+# Paste under your existing `stages:` + adjust the image tag if you've
+# pinned a specific PackGuard version. Full recipe:
+# https://github.com/nalo/packguard/blob/main/docs/integrations/gitlab-ci.md
+#
+# - scan walks lockfiles and persists deps into the cached SQLite store.
+# - sync refreshes OSV + GHSA + malware intel (network-heavy; consider
+#   moving it to a scheduled pipeline if your MR turnaround needs to
+#   stay under 30s).
+# - report --format sarif --fail-on-violation exits non-zero on a
+#   blocking CVE and feeds the Security panel via `reports.sast`.
+
+packguard:
+  stage: security
+  image: ghcr.io/nalo/packguard:latest
+  variables:
+    HOME: "$CI_PROJECT_DIR/.packguard-cache"
+  cache:
+    key:
+      files:
+        - package-lock.json
+        - pnpm-lock.yaml
+        - yarn.lock
+        - poetry.lock
+        - uv.lock
+        - requirements.txt
+    paths:
+      - .packguard-cache/
+  before_script:
+    - mkdir -p "$HOME/.packguard"
+  script:
+    - packguard scan .
+    - packguard sync
+    - packguard report . --format sarif --fail-on-violation > packguard.sarif
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - packguard.sarif
+    reports:
+      sast: packguard.sarif
+"#;
+
+const GITHUB_ACTIONS_SNIPPET: &str = r#"# .packguard/ci/github.yml
+# Paste into .github/workflows/. Full recipe:
+# https://github.com/nalo/packguard/blob/main/docs/integrations/github-actions.md
+
+name: packguard
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  security-events: write
+jobs:
+  packguard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install packguard
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/nalo/packguard/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.packguard
+          key: packguard-${{ runner.os }}-${{ hashFiles('**/package-lock.json', '**/pnpm-lock.yaml', '**/yarn.lock', '**/poetry.lock', '**/uv.lock', '**/requirements*.txt') }}
+          restore-keys: |
+            packguard-${{ runner.os }}-
+      - run: packguard scan .
+      - run: packguard sync
+      - run: packguard report . --format sarif --fail-on-violation > packguard.sarif
+      - if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: packguard.sarif
+          category: packguard
+"#;
+
+const JENKINS_SNIPPET: &str = r#"// .packguard/ci/Jenkinsfile
+// Declarative stage — drop inside your existing `stages { ... }` block.
+// No official Jenkins-specific recipe yet; the generic scan → sync →
+// audit sequence works identically to the shell step below.
+
+stage('packguard') {
+  agent {
+    docker { image 'ghcr.io/nalo/packguard:latest' }
+  }
+  environment {
+    HOME = "${WORKSPACE}/.packguard-cache"
+  }
+  steps {
+    sh 'mkdir -p "$HOME/.packguard"'
+    sh 'packguard scan .'
+    sh 'packguard sync'
+    sh 'packguard audit . --fail-on critical --fail-on-malware'
+  }
+  post {
+    always {
+      archiveArtifacts artifacts: 'packguard.sarif', allowEmptyArchive: true
+    }
+  }
+}
+"#;
 
 async fn ui(
     path: Option<PathBuf>,

@@ -622,9 +622,8 @@ pub fn compat(
             .then(a.name.cmp(&b.name))
             .then(a.version.cmp(&b.version))
     });
-    dependents.dedup_by(|a, b| {
-        a.workspace == b.workspace && a.name == b.name && a.version == b.version
-    });
+    dependents
+        .dedup_by(|a, b| a.workspace == b.workspace && a.name == b.name && a.version == b.version);
 
     Ok(CompatResponse {
         ecosystem: ecosystem.to_string(),
