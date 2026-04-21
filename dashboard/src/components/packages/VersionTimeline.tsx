@@ -12,7 +12,7 @@ import type { VersionRow } from "@/api/types/VersionRow";
 /// 200 is what keeps individual markers legibly non-overlapping at typical
 /// dashboard widths).
 const CLUSTER_THRESHOLD = 200;
-/// Number of time-buckets when clustering is active. Tuned so Nalo's dense
+/// Number of time-buckets when clustering is active. Tuned so dense
 /// npm packages (sentry-sdk ~329 versions, pillow ~108) still read cleanly.
 const CLUSTER_BUCKETS = 60;
 

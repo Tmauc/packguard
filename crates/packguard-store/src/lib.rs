@@ -19,8 +19,8 @@ mod embedded {
 }
 
 /// Normalize a repo path for the `repos.path` column + every lookup that
-/// joins through it. Without this, a scan run from `/path/to/vesta` and a
-/// `packguard ui` launched from `/path/to/packguard` would persist two
+/// joins through it. Without this, a scan run from `/path/to/repo` and a
+/// `packguard ui` launched from a different CWD would persist two
 /// different strings for the same directory, and `/api/graph` would
 /// return `{nodes:[], edges:[]}` while `packguard graph` reads the same
 /// store fine (CLI canonicalizes its arg; server canonicalizes its

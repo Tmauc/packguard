@@ -1,5 +1,5 @@
 //! Packages list + per-package detail. The list endpoint applies filters,
-//! sort, and pagination on a fully-evaluated row set — Nalo-scale data
+//! sort, and pagination on a fully-evaluated row set — dogfood-scale data
 //! (~120 watched packages × ~260 advisories) fits comfortably in memory,
 //! and SQL-side filtering against denormalized aggregates would be a much
 //! bigger schema change for marginal benefit.
@@ -430,7 +430,7 @@ fn dependency_for(
     }
     // Walk every distinct repo path the store has scanned and pick the rows
     // that match our (ecosystem, name) pair. The dataset is small enough
-    // (Nalo: 2 repos × ~120 deps) that a per-repo sweep is cheaper than a
+    // (hundreds of deps per repo) that a per-repo sweep is cheaper than a
     // schema change to index dependencies by package_id directly.
     let mut all_deps: Vec<packguard_store::StoredDependency> = Vec::new();
     for path in store.distinct_repo_paths()? {
