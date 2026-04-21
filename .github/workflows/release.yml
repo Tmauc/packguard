@@ -139,8 +139,12 @@ jobs:
           echo "asset=${ASSET}" >> "$GITHUB_OUTPUT"
           echo "sha256=${ASSET}.sha256" >> "$GITHUB_OUTPUT"
 
+      - name: install cosign
+        if: ${{ secrets.COSIGN_PRIVATE_KEY != '' }}
+        uses: sigstore/cosign-installer@v3.7.0
+
       - name: sign (cosign, optional)
-        if: env.COSIGN_PRIVATE_KEY != ''
+        if: ${{ secrets.COSIGN_PRIVATE_KEY != '' }}
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
@@ -148,14 +152,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -sSL -o /tmp/cosign https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64
-          chmod +x /tmp/cosign
-          echo "$COSIGN_PRIVATE_KEY" > /tmp/cosign.key
-          /tmp/cosign sign-blob --yes --key /tmp/cosign.key --output-signature "${ASSET}.sig" "$ASSET"
-          rm -f /tmp/cosign.key
+          printf '%s' "$COSIGN_PRIVATE_KEY" > cosign.key
+          cosign sign-blob --yes --key cosign.key \
+            --output-signature "${ASSET}.sig" \
+            --bundle "${ASSET}.bundle" \
+            "$ASSET"
+          rm -f cosign.key
 
       - name: sign (skipped — no COSIGN_PRIVATE_KEY)
-        if: env.COSIGN_PRIVATE_KEY == ''
+        if: ${{ secrets.COSIGN_PRIVATE_KEY == '' }}
+        shell: bash
         run: |
           echo "::warning::COSIGN_PRIVATE_KEY not set — skipping signature for ${{ steps.package.outputs.asset }}. See PUBLISHING.md §cosign."
 
@@ -166,6 +172,7 @@ jobs:
             ${{ steps.package.outputs.asset }}
             ${{ steps.package.outputs.sha256 }}
             ${{ steps.package.outputs.asset }}.sig
+            ${{ steps.package.outputs.asset }}.bundle
           if-no-files-found: warn
 
   # ------------------------------------------------------------------
