@@ -252,9 +252,27 @@ jobs:
 
       - name: tags
         id: tags
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          REPO_LC="${GITHUB_REPOSITORY,,}"
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          {
+            echo "version=${VERSION}"
+            echo "ghcr=ghcr.io/${REPO_LC}"
+          } >> "$GITHUB_OUTPUT"
+          # tag list as heredoc (build-push reads multi-line input and drops empty lines)
+          {
+            echo 'tags<<EOF'
+            echo "ghcr.io/${REPO_LC}:${VERSION}"
+            echo "ghcr.io/${REPO_LC}:latest"
+            if [ -n "${DOCKERHUB_USERNAME:-}" ]; then
+              echo "${DOCKERHUB_USERNAME}/${REPO_NAME}:${VERSION}"
+              echo "${DOCKERHUB_USERNAME}/${REPO_NAME}:latest"
+            fi
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
 
       - name: build + push
         uses: docker/build-push-action@v6
@@ -263,16 +281,14 @@ jobs:
           platforms: linux/amd64,linux/arm64
           # Push to ghcr always; push to Docker Hub only if creds present.
           push: ${{ github.event_name == 'push' }}
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ steps.tags.outputs.version }}
-            ghcr.io/${{ github.repository }}:latest
+          tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: trivy scan
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          image-ref: ghcr.io/${{ github.repository }}:${{ steps.tags.outputs.version }}
+          image-ref: ${{ steps.tags.outputs.ghcr }}:${{ steps.tags.outputs.version }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
