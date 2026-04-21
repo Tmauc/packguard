@@ -533,20 +533,34 @@ async fn ui(
         "PackGuard server".bold(),
         url.cyan()
     );
-    let open_url = if cfg!(feature = "ui-embed") {
-        // Release build with the bundle baked in — the server itself serves
-        // the dashboard.
-        url.clone()
+    // Banner + auto-open honor the `ui-embed` feature:
+    // - feature ON → the binary itself serves `/` (and SPA routes). Point
+    //   the browser at `url`, print an affirmative embed line so users
+    //   don't expect a separate dev server.
+    // - feature OFF → the Rust server only exposes `/api/*`. The dashboard
+    //   runs in Vite at :5173 which proxies `/api/*` back here; the
+    //   browser must open :5173, not the API port.
+    let (banner_url, dashboard_line) = if cfg!(feature = "ui-embed") {
+        (
+            url.clone(),
+            format!(
+                "{} dashboard served inline (ui-embed feature)",
+                "→".dimmed()
+            ),
+        )
     } else {
-        println!(
-            "{} dev front-end: {} (run `pnpm dev` in dashboard/)",
-            "→".dimmed(),
-            "http://127.0.0.1:5173".cyan()
-        );
-        "http://127.0.0.1:5173".to_string()
+        (
+            "http://127.0.0.1:5173".to_string(),
+            format!(
+                "{} dashboard: {} (run `pnpm --dir dashboard dev` to start Vite)",
+                "→".dimmed(),
+                "http://127.0.0.1:5173".cyan()
+            ),
+        )
     };
+    println!("{dashboard_line}");
     if !no_open {
-        if let Err(err) = open::that_detached(&open_url) {
+        if let Err(err) = open::that_detached(&banner_url) {
             tracing::warn!(?err, "could not auto-open browser");
         }
     }

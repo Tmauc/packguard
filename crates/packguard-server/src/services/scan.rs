@@ -11,22 +11,52 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Dashboard-driven scan.
+///
+/// The UI's "Scan" button used to run this against the single path the
+/// server was launched with (`ServerConfig.repo_path`) — that was the
+/// server's CWD in practice, and was almost never a directory with a
+/// scannable manifest (dogfood finding #5: "no supported manifest found
+/// at /.../packguard"). Option A per §14.10: re-scan every repo the
+/// store already knows about. If the store is empty, fall back to the
+/// server's `repo_root` so a fresh install still has a path to try — but
+/// the error when that path has no manifest now mentions the alternative
+/// (`packguard scan <path>` from the CLI).
 pub async fn run(store: &mut Store, repo_root: &Path) -> Result<ScanReport> {
     let ecosystems = default_ecosystems()?;
     let mut report = ScanReport::default();
     let mut any_detected = false;
-    for eco in &ecosystems {
-        let projects = eco.detect(repo_root)?;
-        if projects.is_empty() {
-            continue;
-        }
-        any_detected = true;
-        for project in projects {
-            scan_one_project(store, eco.as_ref(), &project, repo_root, &mut report).await?;
+
+    let known_repos = store.distinct_repo_paths()?;
+    let targets: Vec<std::path::PathBuf> = if known_repos.is_empty() {
+        vec![repo_root.to_path_buf()]
+    } else {
+        known_repos
+    };
+
+    for target in &targets {
+        for eco in &ecosystems {
+            let projects = eco.detect(target)?;
+            if projects.is_empty() {
+                continue;
+            }
+            any_detected = true;
+            for project in projects {
+                scan_one_project(store, eco.as_ref(), &project, target, &mut report).await?;
+            }
         }
     }
+
     if !any_detected {
-        anyhow::bail!("no supported manifest found at {}", repo_root.display());
+        let joined = targets
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "no supported manifest found in any scanned repo ({joined}). \
+             Run `packguard scan <path>` from the CLI to register a new repo first."
+        );
     }
     Ok(report)
 }

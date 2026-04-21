@@ -530,10 +530,112 @@ async fn scan_returns_job_id_and_eventually_fails_when_no_manifest() {
     let final_state = poll_job(&h, &id).await;
     // Empty repo → scan flow bails with "no supported manifest".
     assert_eq!(final_state["status"], "failed");
-    assert!(final_state["error"]
-        .as_str()
-        .unwrap()
-        .contains("no supported manifest"));
+    let err = final_state["error"].as_str().unwrap();
+    assert!(err.contains("no supported manifest"));
+    // Finding #5 + #1: honest guidance when the user triggered Scan on a
+    // fresh store with no registered repos.
+    assert!(
+        err.contains("packguard scan"),
+        "error should suggest the CLI fallback: {err}"
+    );
+}
+
+/// Polish-4 regression: the Scan button used to run against the single
+/// `ServerConfig.repo_path` — the CWD the server was launched in, which
+/// often had no manifest. Now it walks `store.distinct_repo_paths()`
+/// instead. Here we seed the store with a repo, trigger /api/scan, and
+/// assert the job picks up *that* repo rather than the server's CWD
+/// (which is just a scratch tempdir with no package.json).
+#[tokio::test]
+async fn scan_walks_every_registered_repo_not_just_server_cwd() {
+    let temp = tempfile::tempdir().unwrap();
+    let store_path = temp.path().join("store.db");
+    let server_cwd = temp.path().join("cwd");
+    std::fs::create_dir_all(&server_cwd).unwrap();
+    let scanned_repo = temp.path().join("nalo_like_repo");
+    std::fs::create_dir_all(&scanned_repo).unwrap();
+    std::fs::write(
+        scanned_repo.join("package.json"),
+        r#"{"name":"demo","dependencies":{"lodash":"^4.17.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        scanned_repo.join("package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"":{},"node_modules/lodash":{"version":"4.17.20"}}}"#,
+    )
+    .unwrap();
+
+    // Seed a record for scanned_repo so `distinct_repo_paths()` includes it.
+    {
+        let mut store = Store::open(&store_path).unwrap();
+        let project = Project {
+            ecosystem: "npm",
+            root: scanned_repo.clone(),
+            manifest_path: scanned_repo.join("package.json"),
+            name: Some("demo".into()),
+            workspace: None,
+            dependencies: vec![Dependency {
+                name: "lodash".into(),
+                declared_range: "^4.17.0".into(),
+                installed: Some("4.17.20".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("package-lock.json".into()),
+            }],
+            edges: Vec::new(),
+            compatibility: Vec::new(),
+        };
+        store
+            .save_project(&scanned_repo, &project, &BTreeMap::new(), "fp-initial")
+            .unwrap();
+    }
+
+    // Start the server pointed at the *scratch* server_cwd (no manifest).
+    let store = Store::open(&store_path).unwrap();
+    let app = router(ServerConfig {
+        repo_path: server_cwd.clone(),
+        store,
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    // Trigger /api/scan — offline-ish (network failures don't kill the job).
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/api/scan"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let job_id = body["id"].as_str().unwrap().to_string();
+
+    // Poll until done. The scan must succeed (even if network fails for
+    // registry queries, the manifest parse + save_project path is fine).
+    let mut final_state = serde_json::Value::Null;
+    for _ in 0..60 {
+        let got: serde_json::Value = reqwest::get(format!("{base}/api/jobs/{job_id}"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if matches!(got["status"].as_str(), Some("succeeded") | Some("failed")) {
+            final_state = got;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        final_state["status"], "succeeded",
+        "Scan should walk registered repos rather than bail on the server CWD: {final_state}",
+    );
+    assert!(
+        final_state["result"]["projects_scanned"].as_u64().unwrap() >= 1,
+        "at least one registered repo should have been scanned",
+    );
 }
 
 #[tokio::test]
