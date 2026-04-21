@@ -4,7 +4,7 @@
 
 use packguard_core::{
     AffectedEvent, AffectedRange, AffectedRangeKind, AffectedSpec, DepKind, Dependency,
-    MalwareKind, MalwareReport, Project, RemotePackage, Severity, Vulnerability,
+    DependencyEdge, MalwareKind, MalwareReport, Project, RemotePackage, Severity, Vulnerability,
 };
 use packguard_server::{router, ServerConfig};
 use packguard_store::Store;
@@ -554,4 +554,205 @@ async fn poll_job(harness: &Harness, id: &str) -> serde_json::Value {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     panic!("job {id} did not finish in time");
+}
+
+// ---------- Phase 5: /api/graph + contamination + compat -------------------
+
+fn seed_react_chain_with_lodash_cve(store: &mut Store, repo: &Path) {
+    // `demo` depends on react@18.2.0. react depends on loose-envify@1.4.0.
+    // loose-envify depends on lodash@4.17.20 (to line up with the CVE below).
+    let project = Project {
+        ecosystem: "npm",
+        root: repo.to_path_buf(),
+        manifest_path: repo.join("package.json"),
+        name: Some("demo".into()),
+        workspace: None,
+        dependencies: vec![Dependency {
+            name: "react".into(),
+            declared_range: "^18.2.0".into(),
+            installed: Some("18.2.0".into()),
+            kind: DepKind::Runtime,
+            source_lockfile: Some("package-lock.json".into()),
+        }],
+        edges: vec![
+            DependencyEdge {
+                source_name: "react".into(),
+                source_version: "18.2.0".into(),
+                target_name: "loose-envify".into(),
+                target_range: "^1.1.0".into(),
+                resolved_target_version: Some("1.4.0".into()),
+                kind: DepKind::Runtime,
+            },
+            DependencyEdge {
+                source_name: "loose-envify".into(),
+                source_version: "1.4.0".into(),
+                target_name: "lodash".into(),
+                target_range: "^4.17.0".into(),
+                resolved_target_version: Some("4.17.20".into()),
+                kind: DepKind::Runtime,
+            },
+            DependencyEdge {
+                source_name: "react".into(),
+                source_version: "18.2.0".into(),
+                target_name: "scheduler".into(),
+                target_range: "^0.23.0".into(),
+                resolved_target_version: None,
+                kind: DepKind::Peer,
+            },
+        ],
+        compatibility: vec![packguard_core::CompatibilityInfo {
+            package_name: "react".into(),
+            version: "18.2.0".into(),
+            engines: [("node".to_string(), ">=14".to_string())]
+                .into_iter()
+                .collect(),
+            peer_deps: BTreeMap::new(),
+        }],
+    };
+    let remotes: BTreeMap<String, RemotePackage> = [
+        (
+            "react".into(),
+            RemotePackage {
+                name: "react".into(),
+                latest: Some("18.2.0".into()),
+                latest_published_at: Some("2024-01-01T00:00:00Z".into()),
+                versions: vec![],
+            },
+        ),
+        (
+            "loose-envify".into(),
+            RemotePackage {
+                name: "loose-envify".into(),
+                latest: Some("1.4.0".into()),
+                latest_published_at: None,
+                versions: vec![],
+            },
+        ),
+        (
+            "lodash".into(),
+            RemotePackage {
+                name: "lodash".into(),
+                latest: Some("4.17.21".into()),
+                latest_published_at: None,
+                versions: vec![packguard_core::RemoteVersion {
+                    version: "4.17.20".into(),
+                    published_at: Some("2024-01-01T00:00:00Z".into()),
+                    deprecated: false,
+                    yanked: false,
+                }],
+            },
+        ),
+    ]
+    .into_iter()
+    .collect();
+    store.save_project(repo, &project, &remotes, "fp").unwrap();
+
+    // Seed a high CVE on lodash@4.17.20 so contamination BFS has a real
+    // target to chase.
+    let vuln = Vulnerability {
+        source: "osv".into(),
+        advisory_id: "GHSA-lodash".into(),
+        ecosystem: "npm".into(),
+        package_name: "lodash".into(),
+        severity: Severity::High,
+        cve_id: Some("CVE-2021-23337".into()),
+        aliases: vec![],
+        summary: Some("Command injection".into()),
+        url: Some("https://example/cve".into()),
+        affected: AffectedSpec {
+            ranges: vec![AffectedRange {
+                kind: AffectedRangeKind::Semver,
+                events: vec![
+                    AffectedEvent::Introduced("0.0.0".into()),
+                    AffectedEvent::Fixed("4.17.21".into()),
+                ],
+            }],
+            versions: vec![],
+        },
+        fixed_versions: vec!["4.17.21".into()],
+        published_at: None,
+        modified_at: None,
+    };
+    store
+        .persist_vulnerabilities(std::slice::from_ref(&vuln))
+        .unwrap();
+}
+
+#[tokio::test]
+async fn graph_endpoint_returns_nodes_and_resolved_edges() {
+    let h = spawn(seed_react_chain_with_lodash_cve).await;
+    let body = get_json(&h, "/api/graph").await;
+    let nodes = body["nodes"].as_array().unwrap();
+    let names: Vec<&str> = nodes.iter().map(|n| n["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"react"));
+    assert!(names.contains(&"loose-envify"));
+    assert!(names.contains(&"lodash"));
+
+    // The root react node carries is_root=true; lodash deeper down does not.
+    let react = nodes.iter().find(|n| n["name"] == "react").unwrap();
+    assert_eq!(react["is_root"], true);
+    let lodash = nodes.iter().find(|n| n["name"] == "lodash").unwrap();
+    assert_eq!(lodash["is_root"], false);
+    // lodash@4.17.20 carries the high severity we seeded.
+    assert_eq!(lodash["cve_severity"], "high");
+
+    // Unresolved peer dep shows up as an edge with unresolved=true but no
+    // matching target node (graph view renders it as a dashed halo).
+    let edges = body["edges"].as_array().unwrap();
+    let unresolved = edges.iter().find(|e| e["unresolved"] == true).unwrap();
+    assert_eq!(unresolved["kind"], "peer");
+}
+
+#[tokio::test]
+async fn graph_endpoint_filters_by_kind() {
+    let h = spawn(seed_react_chain_with_lodash_cve).await;
+    let body = get_json(&h, "/api/graph?kind=runtime").await;
+    let edges = body["edges"].as_array().unwrap();
+    // With `kind=runtime` the peer edge should be filtered out.
+    assert!(edges.iter().all(|e| e["kind"] == "runtime"));
+}
+
+#[tokio::test]
+async fn contamination_endpoint_returns_chain_to_root_and_caches_result() {
+    let h = spawn(seed_react_chain_with_lodash_cve).await;
+    let body = get_json(&h, "/api/graph/contaminated?vuln_id=CVE-2021-23337").await;
+    let hits = body["hits"].as_array().unwrap();
+    assert!(hits.iter().any(|h| h["name"] == "lodash"));
+    let chains = body["chains"].as_array().unwrap();
+    assert!(!chains.is_empty());
+    let path = chains[0]["path"].as_array().unwrap();
+    let first = path[0].as_str().unwrap();
+    let last = path.last().unwrap().as_str().unwrap();
+    assert!(first.contains("react@18.2.0"));
+    assert!(last.contains("lodash@4.17.20"));
+    assert_eq!(body["from_cache"], false);
+
+    // Second call must hit the cache.
+    let again = get_json(&h, "/api/graph/contaminated?vuln_id=CVE-2021-23337").await;
+    assert_eq!(again["from_cache"], true);
+}
+
+#[tokio::test]
+async fn contamination_endpoint_returns_empty_for_unknown_advisory() {
+    let h = spawn(seed_react_chain_with_lodash_cve).await;
+    let body = get_json(&h, "/api/graph/contaminated?vuln_id=GHSA-never-seen").await;
+    assert!(body["hits"].as_array().unwrap().is_empty());
+    assert!(body["chains"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn compat_endpoint_exposes_engines_peer_deps_and_dependents() {
+    let h = spawn(seed_react_chain_with_lodash_cve).await;
+    let body = get_json(&h, "/api/packages/npm/react/compat").await;
+    assert_eq!(body["name"], "react");
+    assert_eq!(body["installed"], "18.2.0");
+    let rows = body["rows"].as_array().unwrap();
+    assert!(rows
+        .iter()
+        .any(|r| r["version"] == "18.2.0" && r["engines"]["node"] == ">=14"));
+
+    // Dependents of loose-envify should at least include react.
+    let le = get_json(&h, "/api/packages/npm/loose-envify/compat").await;
+    let deps = le["dependents"].as_array().unwrap();
+    assert!(deps.iter().any(|d| d["name"] == "react"));
 }

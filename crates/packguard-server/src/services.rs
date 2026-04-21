@@ -2,6 +2,7 @@
 //! `app.rs` go through here, so business logic stays in the existing crates
 //! and these functions stay readable.
 
+pub mod graph;
 pub mod overview;
 pub mod packages;
 pub mod policies;

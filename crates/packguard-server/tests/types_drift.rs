@@ -66,6 +66,18 @@ fn export_all(target: &Path) {
         dto::JobAccepted,
         dto::ScanReport,
         dto::SyncReport,
+        dto::GraphQuery,
+        dto::GraphResponse,
+        dto::GraphNode,
+        dto::GraphEdge,
+        dto::ContaminatedQuery,
+        dto::ContaminationResult,
+        dto::ContaminationHit,
+        dto::ContaminationChain,
+        dto::CompatResponse,
+        dto::CompatRow,
+        dto::CompatPeerDep,
+        dto::CompatDependent,
     );
 }
 

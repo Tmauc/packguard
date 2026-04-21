@@ -357,3 +357,142 @@ pub struct SyncReport {
     pub ghsa_persisted: u32,
     pub typosquat_suspects: u32,
 }
+
+// ---- Phase 5: graph / compatibility DTOs ---------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "GraphQuery.ts")]
+pub struct GraphQuery {
+    /// Optional manifest path for a specific workspace (as listed in the
+    /// store); when `None` the graph spans every workspace of the configured
+    /// repo. The string matches the stored `workspaces.manifest_path`.
+    pub workspace: Option<String>,
+    /// Cap on BFS depth from direct deps. `None` = no cap. Clamped to
+    /// `[0, 64]` server-side so a pathological client can't blow out
+    /// memory on a cyclic graph.
+    pub max_depth: Option<u32>,
+    /// Comma-separated subset of `runtime,dev,peer,optional`. `None` =
+    /// include everything.
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "GraphResponse.ts")]
+pub struct GraphResponse {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+    /// Emitted when the node count exceeds the Cytoscape-native sweet
+    /// spot (~2000). The dashboard shows the warning and prompts the user
+    /// to tighten filters.
+    pub oversize_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "GraphNode.ts")]
+pub struct GraphNode {
+    /// `ecosystem:name@version` — unique id across ecosystems. Also the
+    /// anchor the detail page links use.
+    pub id: String,
+    pub ecosystem: String,
+    pub name: String,
+    pub version: String,
+    /// `true` when this node is a direct dep of at least one workspace,
+    /// so the UI can tint roots differently.
+    pub is_root: bool,
+    /// Highest CVE severity hitting this version, `None` when clean.
+    pub cve_severity: Option<String>,
+    pub has_malware: bool,
+    pub has_typosquat: bool,
+    pub compliance: Option<ComplianceTag>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "GraphEdge.ts")]
+pub struct GraphEdge {
+    pub source: String,
+    pub target: String,
+    /// Declared range from the source side (what the parent asked for).
+    pub range: String,
+    /// "runtime" | "dev" | "peer" | "optional".
+    pub kind: String,
+    /// `true` when the target didn't resolve — peer deps can legitimately
+    /// stay unresolved; the UI renders them as a dashed halo.
+    pub unresolved: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "ContaminatedQuery.ts")]
+pub struct ContaminatedQuery {
+    /// Advisory id to trace back (GHSA-/CVE-/MAL-…). Matching is by
+    /// `cve_id` first, then by `source:advisory_id`.
+    pub vuln_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "ContaminationResult.ts")]
+pub struct ContaminationResult {
+    /// Every `(package, version)` the advisory hits directly, so the UI
+    /// can highlight them as the "patient zero" set.
+    pub hits: Vec<ContaminationHit>,
+    /// Sorted, deduplicated chains: each chain starts at a direct dep and
+    /// ends at one of the hits. Capped server-side (see
+    /// `services::graph::MAX_CHAINS`).
+    pub chains: Vec<ContaminationChain>,
+    /// `true` when the BFS was answered from the cache.
+    pub from_cache: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "ContaminationHit.ts")]
+pub struct ContaminationHit {
+    pub ecosystem: String,
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "ContaminationChain.ts")]
+pub struct ContaminationChain {
+    /// Ordered root-first list of `ecosystem:name@version` node ids.
+    pub path: Vec<String>,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "CompatResponse.ts")]
+pub struct CompatResponse {
+    pub ecosystem: String,
+    pub name: String,
+    pub installed: Option<String>,
+    /// One row per known version, ordered oldest → newest. Engines is a
+    /// `{ runtime → required_range }` map (e.g. `{"node": ">=14"}`).
+    pub rows: Vec<CompatRow>,
+    /// Direct dependents within the scanned repos — count + sample list,
+    /// so the UI can show "used by 12 packages" + a preview.
+    pub dependents: Vec<CompatDependent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "CompatRow.ts")]
+pub struct CompatRow {
+    pub version: String,
+    pub engines: std::collections::BTreeMap<String, String>,
+    pub peer_deps: std::collections::BTreeMap<String, CompatPeerDep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "CompatPeerDep.ts")]
+pub struct CompatPeerDep {
+    pub range: String,
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "CompatDependent.ts")]
+pub struct CompatDependent {
+    pub ecosystem: String,
+    pub name: String,
+    pub version: String,
+    pub range: String,
+    pub kind: String,
+}

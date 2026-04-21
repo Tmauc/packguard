@@ -2,8 +2,9 @@
 //! service crate keeps every endpoint testable without spinning up axum.
 
 use crate::dto::{
-    JobAccepted, JobKind, JobView, Overview, PackageDetail, PackagesPage, PackagesQuery,
-    PolicyDocument, PolicyDryRun, PolicyDryRunResult, PolicyWrite,
+    CompatResponse, ContaminatedQuery, ContaminationResult, GraphQuery, GraphResponse, JobAccepted,
+    JobKind, JobView, Overview, PackageDetail, PackagesPage, PackagesQuery, PolicyDocument,
+    PolicyDryRun, PolicyDryRunResult, PolicyWrite,
 };
 use crate::error::ApiError;
 use crate::jobs;
@@ -37,6 +38,12 @@ pub fn router(cfg: ServerConfig) -> Router {
         .route("/api/packages/{ecosystem}/{name}", get(package_detail))
         .route("/api/policies", get(policy_get).put(policy_put))
         .route("/api/policies/dry-run", post(policy_dry_run))
+        .route("/api/graph", get(graph_get))
+        .route("/api/graph/contaminated", get(graph_contaminated))
+        .route(
+            "/api/packages/{ecosystem}/{name}/compat",
+            get(package_compat),
+        )
         .route("/api/scan", post(scan_create))
         .route("/api/sync", post(sync_create))
         .route("/api/jobs/{id}", get(job_get))
@@ -96,6 +103,45 @@ async fn policy_put(
     services::policies::write(&s.repo_path, &body.yaml)
         .map(Json)
         .map_err(policy_error_to_api)
+}
+
+async fn graph_get(
+    State(s): State<AppState>,
+    Query(q): Query<GraphQuery>,
+) -> Result<Json<GraphResponse>, ApiError> {
+    let store = s.store.lock().await;
+    Ok(Json(services::graph::build(
+        &store,
+        &s.repo_path,
+        q.workspace.as_deref(),
+        q.max_depth,
+        q.kind.as_deref(),
+    )?))
+}
+
+async fn graph_contaminated(
+    State(s): State<AppState>,
+    Query(q): Query<ContaminatedQuery>,
+) -> Result<Json<ContaminationResult>, ApiError> {
+    let store = s.store.lock().await;
+    Ok(Json(services::graph::contaminated_chains(
+        &store,
+        &s.repo_path,
+        &q.vuln_id,
+    )?))
+}
+
+async fn package_compat(
+    State(s): State<AppState>,
+    Path((ecosystem, name)): Path<(String, String)>,
+) -> Result<Json<CompatResponse>, ApiError> {
+    let store = s.store.lock().await;
+    Ok(Json(services::graph::compat(
+        &store,
+        &s.repo_path,
+        &ecosystem,
+        &name,
+    )?))
 }
 
 async fn policy_dry_run(
