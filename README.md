@@ -42,6 +42,16 @@ See [CONTEXT.md](./CONTEXT.md) for the full vision, architecture, and roadmap.
   `audit` / `graph` accept `--project <path>` as a flag alias of the
   existing positional; all commands fall back to the most-recent scan
   with an explicit stderr banner on an empty argv.
+- ✅ **Phase 8a** — Release-ready packaging: multi-stage Dockerfile
+  (~46 MB distroless image with ui-embed), GitHub Actions CI +
+  `release.yml` workflow producing 5 platform binaries + SHA256SUMS +
+  optional cosign signatures + multi-arch `ghcr.io` push + Trivy scan,
+  POSIX `install.sh` one-liner with zero-trust SHA256 verification, four
+  copy-paste CI/IDE recipes under [`docs/integrations/`](docs/integrations/README.md)
+  (GitLab CI, GitHub Actions, pre-commit, VSCode), `packguard init
+  --with-ci <gitlab|github|jenkins>` generating ready-to-paste pipeline
+  snippets, Homebrew formula template, and a full [`PUBLISHING.md`](PUBLISHING.md)
+  runbook for the credential-bound Phase 8b steps.
 
 ---
 
@@ -116,21 +126,69 @@ packguard graph path/to/repo --format json
 
 ---
 
-## Install (from source)
+## Install
+
+Pick the channel that fits your machine. Every option installs the
+same `packguard` binary — the scanner, the dashboard, and the CLI all
+ship together.
 
 ```bash
-cargo install --path crates/packguard-cli
-# or, during development:
-cargo run --release -p packguard-cli -- <args>
-# or, with the embedded dashboard:
+# Option 1 — curl | sh (verifies SHA256, no sudo if /usr/local/bin isn't writable)
+curl -fsSL https://raw.githubusercontent.com/nalo/packguard/main/install.sh | sh
+
+# Option 2 — Docker (~46 MB, multi-arch)
+docker run --rm -v "$PWD":/workspace ghcr.io/nalo/packguard:latest scan /workspace
+
+# Option 3 — Homebrew
+brew tap nalo/packguard
+brew install packguard
+
+# Option 4 — from source (with the embedded dashboard)
 cargo install --path crates/packguard-cli --features ui-embed
 ```
 
-The binary is called `packguard`.
+The binary is called `packguard`. Verify with `packguard --version`.
 
 ---
 
-## Quick start
+## Integrate in CI — 5-minute onboarding
+
+Goal: a blocking pipeline gate on critical CVEs across any repo, in
+three commits.
+
+```bash
+# 1. Generate the policy + a pipeline snippet pre-wired for your VCS.
+packguard init --with-ci github          # or gitlab / jenkins
+# ⇒ wrote .packguard.yml           (conservative defaults)
+# ⇒ wrote .packguard/ci/github.yml (ready-to-paste snippet)
+# ⇒ full recipe: docs/integrations/github-actions.md
+
+# 2. Copy the snippet into the pipeline layout your repo expects.
+mkdir -p .github/workflows && cp .packguard/ci/github.yml .github/workflows/packguard.yml
+
+# 3. Commit + push.
+git add .packguard.yml .github/workflows/packguard.yml \
+  && git commit -m "ci: add PackGuard supply-chain gate" \
+  && git push
+```
+
+On the next PR, the workflow:
+- installs PackGuard (fast — `install.sh` or the ghcr.io image),
+- caches `~/.packguard/` keyed by a hash of your lockfiles,
+- runs `scan → sync → report --fail-on-violation`,
+- uploads SARIF into the Security tab.
+
+A PR that introduces a critical CVE turns the check red and blocks
+merge (if branch protection requires the check). That's it. Adjust
+the YAML shape of `.packguard.yml` to tune the bar.
+
+Full recipes + extras (monorepo matrix, scheduled intel refresh,
+per-workspace scoping, pre-commit hook, VSCode tasks) live under
+[`docs/integrations/`](docs/integrations/README.md).
+
+---
+
+## Quick start (local scan, no CI)
 
 ```bash
 # 1. Write a conservative .packguard.yml in the repo.
@@ -148,9 +206,8 @@ packguard audit
 # 5. Report — group by ecosystem/workspace, show policy compliance.
 packguard report
 
-# 6. CI gate — exit 1 when at least one blocking violation is stored.
-packguard report --fail-on-violation --format sarif > packguard.sarif
-packguard audit --fail-on high --fail-on-malware --format sarif > packguard-cve.sarif
+# 6. Dashboard — interactive view of everything above.
+packguard ui
 ```
 
 By default the store lives at `~/.packguard/store.db`. Override with the global
