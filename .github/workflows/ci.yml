@@ -1,0 +1,85 @@
+# Continuous checks — runs on every push + PR against main.
+#
+# Proves three things before code lands:
+#   1. The full Rust workspace compiles and all tests (~227) pass.
+#   2. clippy is clean with `-D warnings` and fmt is untouched.
+#   3. The dashboard builds + all ts-rs generated types match (drift
+#      test), plus the dashboard's own lint + vitest are green.
+#   4. The production Dockerfile builds end-to-end and the resulting
+#      binary at least prints --help — catches any environment drift
+#      (base-image EOL, Rust version churn, missing runtime libs)
+#      before a release tag discovers it.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust:
+    name: rust · test + clippy + fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace --locked
+
+  dashboard:
+    name: dashboard · lint + test + typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+      - name: install
+        working-directory: dashboard
+        run: pnpm install --frozen-lockfile
+      - name: lint
+        working-directory: dashboard
+        run: pnpm lint
+      - name: typecheck
+        working-directory: dashboard
+        run: pnpm tsc --noEmit
+      - name: test
+        working-directory: dashboard
+        run: pnpm test
+
+  docker:
+    name: docker · build + smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: packguard:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: smoke test
+        run: |
+          docker run --rm packguard:ci --help
+          docker run --rm packguard:ci --version
