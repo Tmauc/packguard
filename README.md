@@ -32,6 +32,16 @@ See [CONTEXT.md](./CONTEXT.md) for the full vision, architecture, and roadmap.
   mode that traces a chain from a workspace root to the vulnerable
   package, Compatibility tab on the package detail, and a
   `packguard graph` CLI (ascii / dot / json).
+- ✅ **Phase 7** — Per-project scoping (monorepo-ready): `GET
+  /api/workspaces` + `?project=<path>` query param on every list-returning
+  endpoint, strict backend validation (404 with known-workspace list on
+  a miss), `<WorkspaceSelector />` header dropdown that writes the scope
+  into the URL and persists the last pick in localStorage, per-page
+  scope badge, per-workspace `.packguard.yml` editor, and "Used by ·
+  N workspaces" drill-down on the Compatibility tab. CLI `report` /
+  `audit` / `graph` accept `--project <path>` as a flag alias of the
+  existing positional; all commands fall back to the most-recent scan
+  with an explicit stderr banner on an empty argv.
 
 ---
 
@@ -59,9 +69,16 @@ is opt-in so debug builds stay fast and don't require pnpm on the PATH.
 |------|-----|------------|
 | Overview | `/` | Health score · packages tracked · CVE/supply-chain donuts · top-5 risks |
 | Packages | `/packages` | Filterable + sortable table, URL-state filters, paginated |
-| Package detail | `/packages/:eco/:name` | 6-tab view: Versions + visx timeline, Vulnerabilities, Malware, Policy eval, Compatibility, Changelog |
+| Package detail | `/packages/:eco/:name` | 6-tab view: Versions + visx timeline, Vulnerabilities, Malware, Policy eval, Compatibility (Used by · per-workspace drill-down), Changelog |
 | Graph | `/graph` | Cytoscape (dagre + cose-bilkent), URL-driven filters, focus-CVE contamination mode |
-| Policies | `/policies` | CodeMirror YAML editor, dry-run preview vs current policy, atomic save |
+| Policies | `/policies` | CodeMirror YAML editor per-workspace, dry-run preview vs current policy, atomic save |
+
+Every list-returning page reads the active workspace from `?project=<path>`
+and threads it into the backend call. The header `Workspace` selector
+writes that param without unmounting the current route — safe to bookmark,
+safe to flip mid-session, safe to open two browser tabs on different
+workspaces side by side. The scope badge top-right of each page tells
+you at a glance whether the numbers are aggregated or scoped.
 
 ![Overview](docs/screenshots/overview.png)
 ![Packages](docs/screenshots/packages.png)
