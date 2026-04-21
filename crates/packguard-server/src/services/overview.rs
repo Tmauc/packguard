@@ -8,8 +8,8 @@ use anyhow::Result;
 use packguard_store::Store;
 use std::collections::BTreeMap;
 
-pub fn build(store: &Store) -> Result<Overview> {
-    let rows = evaluate_all(store)?;
+pub fn build(store: &Store, project: Option<&std::path::Path>) -> Result<Overview> {
+    let rows = evaluate_all(store, project)?;
     let packages_total = rows.len() as u32;
 
     // Per-ecosystem package counts (deterministic order via BTreeMap).
@@ -126,8 +126,11 @@ pub fn build(store: &Store) -> Result<Overview> {
     })
 }
 
-fn evaluate_all(store: &Store) -> Result<Vec<PackageRowFull>> {
-    let watched = store.watched_packages()?;
+fn evaluate_all(store: &Store, project: Option<&std::path::Path>) -> Result<Vec<PackageRowFull>> {
+    let watched = match project {
+        Some(p) => store.watched_packages_for_path(p)?,
+        None => store.watched_packages()?,
+    };
     let policy = crate::services::policies::current_policy_or_default()?;
     let now = chrono::Utc::now();
     let mut out = Vec::new();

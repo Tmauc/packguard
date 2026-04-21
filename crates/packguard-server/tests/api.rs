@@ -835,9 +835,14 @@ async fn api_graph_matches_service_output_when_repo_path_is_non_canonical() {
     // directly here (avoiding a child-process spawn + its own path-
     // canonicalize), with the canonical path — same data, same JSON.
     let fresh_store = Store::open(&store_path).unwrap();
-    let service_response =
-        packguard_server::services::graph::build(&fresh_store, &canonical_repo, None, None, None)
-            .unwrap();
+    let service_response = packguard_server::services::graph::build(
+        &fresh_store,
+        Some(&canonical_repo),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(
         api_nodes,
         service_response.nodes.len(),
@@ -967,4 +972,166 @@ async fn compat_endpoint_exposes_engines_peer_deps_and_dependents() {
     let le = get_json(&h, "/api/packages/npm/loose-envify/compat").await;
     let deps = le["dependents"].as_array().unwrap();
     assert!(deps.iter().any(|d| d["name"] == "react"));
+}
+
+// ---------- Phase 7a: /api/workspaces + ?project= filtering ---------------
+
+#[tokio::test]
+async fn workspaces_endpoint_lists_registered_scans_sorted_by_last_scan_desc() {
+    // Empty store → empty list, not an error.
+    let h = spawn(|_, _| {}).await;
+    let body = get_json(&h, "/api/workspaces").await;
+    assert_eq!(body["workspaces"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn workspaces_endpoint_surfaces_every_scanned_repo() {
+    let h = spawn(seed_react_chain_with_lodash_cve).await;
+    let body = get_json(&h, "/api/workspaces").await;
+    let rows = body["workspaces"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row["ecosystem"], "npm");
+    assert!(row["dependency_count"].as_u64().unwrap() >= 1);
+    assert!(row["path"].as_str().unwrap().contains("repo"));
+    assert!(!row["fingerprint"].as_str().unwrap().is_empty());
+}
+
+/// Spawn a harness with TWO independent workspaces in the same store so
+/// we can verify Phase 7a isolation + the parity invariant
+/// (scoped ⊆ unscoped) across overview, packages, graph, compat, and
+/// policies. The fixture is deliberately generic — library names from
+/// the common npm ecosystem, no product-specific hardcoding.
+async fn spawn_two_workspaces() -> (Harness, String, String) {
+    let temp = tempfile::tempdir().unwrap();
+    let store_path = temp.path().join("store.db");
+    let repo_a_raw = temp.path().join("workspace_alpha");
+    let repo_b_raw = temp.path().join("workspace_beta");
+    std::fs::create_dir_all(&repo_a_raw).unwrap();
+    std::fs::create_dir_all(&repo_b_raw).unwrap();
+    let repo_a = repo_a_raw.canonicalize().unwrap();
+    let repo_b = repo_b_raw.canonicalize().unwrap();
+
+    {
+        let mut store = Store::open(&store_path).unwrap();
+        let project_a = Project {
+            ecosystem: "npm",
+            root: repo_a.clone(),
+            manifest_path: repo_a.join("package.json"),
+            name: Some("alpha".into()),
+            workspace: None,
+            dependencies: vec![Dependency {
+                name: "lodash".into(),
+                declared_range: "^4".into(),
+                installed: Some("4.17.20".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("package-lock.json".into()),
+            }],
+            edges: Vec::new(),
+            compatibility: Vec::new(),
+        };
+        let project_b = Project {
+            ecosystem: "npm",
+            root: repo_b.clone(),
+            manifest_path: repo_b.join("package.json"),
+            name: Some("beta".into()),
+            workspace: None,
+            dependencies: vec![Dependency {
+                name: "express".into(),
+                declared_range: "^4".into(),
+                installed: Some("4.19.2".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("package-lock.json".into()),
+            }],
+            edges: Vec::new(),
+            compatibility: Vec::new(),
+        };
+        store
+            .save_project(&repo_a, &project_a, &BTreeMap::new(), "fp-alpha")
+            .unwrap();
+        store
+            .save_project(&repo_b, &project_b, &BTreeMap::new(), "fp-beta")
+            .unwrap();
+    }
+
+    // Reopen to mirror production `packguard ui` — ServerConfig.repo_path
+    // points at workspace_alpha so we can also assert that `?project=` is
+    // the source of truth, not the server's default.
+    let store = Store::open(&store_path).unwrap();
+    let app = router(ServerConfig {
+        repo_path: repo_a.clone(),
+        store,
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let harness = Harness {
+        base: format!("http://{addr}"),
+        _temp: temp,
+    };
+    (
+        harness,
+        repo_a.display().to_string(),
+        repo_b.display().to_string(),
+    )
+}
+
+#[tokio::test]
+async fn overview_project_filter_isolates_workspaces_and_parity_holds() {
+    let (h, alpha, beta) = spawn_two_workspaces().await;
+
+    let all = get_json(&h, "/api/overview").await;
+    let alpha_body = get_json(&h, &format!("/api/overview?project={alpha}")).await;
+    let beta_body = get_json(&h, &format!("/api/overview?project={beta}")).await;
+
+    // Parity: scoped ≤ unscoped, and since the fixtures are disjoint the
+    // two workspace counts sum to the aggregate.
+    let all_v = all["packages_total"].as_u64().unwrap();
+    let a_v = alpha_body["packages_total"].as_u64().unwrap();
+    let b_v = beta_body["packages_total"].as_u64().unwrap();
+    assert!(a_v <= all_v, "alpha {a_v} > all {all_v}");
+    assert!(b_v <= all_v, "beta {b_v} > all {all_v}");
+    assert_eq!(a_v + b_v, all_v, "a+b must equal aggregate");
+}
+
+#[tokio::test]
+async fn packages_project_filter_isolates_workspaces() {
+    let (h, alpha, beta) = spawn_two_workspaces().await;
+
+    let a = get_json(&h, &format!("/api/packages?project={alpha}")).await;
+    let b = get_json(&h, &format!("/api/packages?project={beta}")).await;
+
+    let a_names: Vec<&str> = a["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    let b_names: Vec<&str> = b["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+
+    assert!(a_names.contains(&"lodash"));
+    assert!(!a_names.contains(&"express"));
+    assert!(b_names.contains(&"express"));
+    assert!(!b_names.contains(&"lodash"));
+}
+
+#[tokio::test]
+async fn unknown_project_query_returns_404_with_known_list() {
+    let (h, alpha, _beta) = spawn_two_workspaces().await;
+    let url = format!("{}/api/overview?project=/nowhere", h.base);
+    let resp = reqwest::get(&url).await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let msg = body["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("unknown workspace") && msg.contains(&alpha),
+        "error should list known workspaces: {msg}",
+    );
 }

@@ -8,3 +8,4 @@ pub mod packages;
 pub mod policies;
 pub mod scan;
 pub mod sync_intel;
+pub mod workspaces;

@@ -18,6 +18,18 @@ use packguard_store::{Store, StoredEdge};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
+/// Resolve the set of repo paths a Phase 7a scoped service should walk.
+/// `Some(path)` → that single path (trust the caller to have validated
+/// it through `resolve_project_filter`). `None` → every repo in the
+/// store, so the endpoint's aggregate view is a strict superset of any
+/// scoped call.
+fn scope_paths(store: &Store, project: Option<&Path>) -> Result<Vec<std::path::PathBuf>> {
+    match project {
+        Some(p) => Ok(vec![p.to_path_buf()]),
+        None => Ok(store.distinct_repo_paths()?),
+    }
+}
+
 /// Hard cap on nodes before we signal the Cytoscape warning path.
 const OVERSIZE_NODE_THRESHOLD: usize = 2000;
 /// Hard cap on chains returned per contamination query.
@@ -28,13 +40,24 @@ const MAX_BFS_DEPTH: u32 = 32;
 
 pub fn build(
     store: &Store,
-    repo_path: &Path,
+    project: Option<&Path>,
     workspace_filter: Option<&str>,
     max_depth: Option<u32>,
     kind_filter: Option<&str>,
 ) -> Result<GraphResponse> {
-    let edges = store.load_repo_edges(repo_path)?;
-    let workspaces = store.load_workspaces_for_repo(repo_path)?;
+    // Phase 7a: `project = None` aggregates across every scanned repo so
+    // `/api/graph` ⊇ `/api/graph?project=<path>` by construction. The
+    // store helpers stay per-path — we just union the results here.
+    let paths = scope_paths(store, project)?;
+    let mut edges: Vec<StoredEdge> = Vec::new();
+    let mut deps: Vec<packguard_store::StoredDependency> = Vec::new();
+    let mut workspaces: Vec<(i64, Option<String>, std::path::PathBuf)> = Vec::new();
+    for p in &paths {
+        edges.extend(store.load_repo_edges(p)?);
+        deps.extend(store.load_repo_dependencies(p)?);
+        workspaces.extend(store.load_workspaces_for_repo(p)?);
+    }
+
     let workspace_ids: BTreeSet<i64> = match workspace_filter {
         Some(w) => workspaces
             .iter()
@@ -45,8 +68,6 @@ pub fn build(
     };
     let kinds = parse_kind_filter(kind_filter);
     let depth_cap = max_depth.unwrap_or(MAX_BFS_DEPTH).min(MAX_BFS_DEPTH);
-
-    let deps = store.load_repo_dependencies(repo_path)?;
     let ecosystem = deps
         .first()
         .map(|d| d.ecosystem.clone())
@@ -276,9 +297,23 @@ fn ensure_node<'a>(
 
 pub fn contaminated_chains(
     store: &Store,
-    repo_path: &Path,
+    project: Option<&Path>,
     advisory_id: &str,
 ) -> Result<ContaminationResult> {
+    // Phase 7a: the contamination BFS now aggregates across every repo
+    // when `project = None`, so `/api/graph/contaminated?vuln_id=X` ⊇
+    // `/api/graph/contaminated?vuln_id=X&project=<path>`. When scoped,
+    // the cache + BFS stay exactly as Phase 5 shipped them.
+    let paths = scope_paths(store, project)?;
+    let mut all_deps: Vec<packguard_store::StoredDependency> = Vec::new();
+    let mut all_edges: Vec<StoredEdge> = Vec::new();
+    let mut all_workspaces: Vec<(i64, Option<String>, std::path::PathBuf)> = Vec::new();
+    for p in &paths {
+        all_deps.extend(store.load_repo_dependencies(p)?);
+        all_edges.extend(store.load_repo_edges(p)?);
+        all_workspaces.extend(store.load_workspaces_for_repo(p)?);
+    }
+
     // Which (package, version) does this advisory actually hit? We match
     // by cve_id / source+advisory_id / alias against every concrete
     // version observable in the scan: direct deps' installed versions
@@ -287,12 +322,16 @@ pub fn contaminated_chains(
     // since we only seed the version history for direct deps.
     let mut hits: Vec<ContaminationHit> = Vec::new();
     let mut observed: BTreeSet<(String, String, String)> = BTreeSet::new();
-    for dep in store.load_repo_dependencies(repo_path)? {
-        if let Some(v) = dep.installed {
-            observed.insert((dep.ecosystem, dep.name, v));
+    for dep in &all_deps {
+        if let Some(v) = &dep.installed {
+            observed.insert((dep.ecosystem.clone(), dep.name.clone(), v.clone()));
         }
     }
-    for edge in store.load_repo_edges(repo_path)? {
+    let default_eco = all_deps
+        .first()
+        .map(|d| d.ecosystem.clone())
+        .unwrap_or_else(|| "npm".to_string());
+    for edge in &all_edges {
         let Some(resolved) = edge.resolved_version.as_deref() else {
             continue;
         };
@@ -300,15 +339,7 @@ pub fn contaminated_chains(
             .resolved_target_name
             .as_deref()
             .unwrap_or(&edge.target_name);
-        // Edges don't carry ecosystem; fall back to the first dep's ecosystem
-        // (scans stay per-ecosystem today, so this is always correct in
-        // practice).
-        let eco = store
-            .load_repo_dependencies(repo_path)?
-            .first()
-            .map(|d| d.ecosystem.clone())
-            .unwrap_or_else(|| "npm".to_string());
-        observed.insert((eco, name.to_string(), resolved.to_string()));
+        observed.insert((default_eco.clone(), name.to_string(), resolved.to_string()));
     }
 
     let mut advisory_cache: HashMap<(String, String), Vec<packguard_core::Vulnerability>> =
@@ -366,10 +397,10 @@ pub fn contaminated_chains(
     // Fast path: cache keyed by (advisory_id, workspace_id). When every
     // workspace has a hit, return the union from the cache. Partial-miss
     // falls through to recomputation.
-    let workspaces = store.load_workspaces_for_repo(repo_path)?;
+    let workspaces = &all_workspaces;
     let mut cached_chains: Vec<ContaminationChain> = Vec::new();
     let mut missing_workspace = false;
-    for (ws_id, _, manifest) in &workspaces {
+    for (ws_id, _, manifest) in workspaces {
         match store.load_contamination_cache(advisory_id, *ws_id)? {
             Some(json) => {
                 let parsed: Vec<Vec<String>> = serde_json::from_str(&json).unwrap_or_default();
@@ -398,12 +429,12 @@ pub fn contaminated_chains(
     }
 
     // Slow path — inverse BFS, per workspace.
-    let edges = store.load_repo_edges(repo_path)?;
-    let deps = store.load_repo_dependencies(repo_path)?;
+    let edges = &all_edges;
+    let deps = &all_deps;
 
     // Index edges by (target_name, resolved_version) for reverse traversal.
     let mut parents_by_resolved: HashMap<(String, String), Vec<&StoredEdge>> = HashMap::new();
-    for e in &edges {
+    for e in edges.iter() {
         let Some(rv) = e.resolved_version.as_deref() else {
             continue;
         };
@@ -419,7 +450,7 @@ pub fn contaminated_chains(
         .map(|h| (h.ecosystem.clone(), h.name.clone(), h.version.clone()))
         .collect();
 
-    for (ws_id, _, _) in &workspaces {
+    for (ws_id, _, _) in workspaces {
         // Roots for this workspace: direct deps with an installed version.
         let workspace_roots: Vec<(String, String, String)> = deps
             .iter()
@@ -521,7 +552,7 @@ pub fn contaminated_chains(
 
 pub fn compat(
     store: &Store,
-    repo_path: &Path,
+    project: Option<&Path>,
     ecosystem: &str,
     name: &str,
 ) -> Result<CompatResponse> {
@@ -551,27 +582,35 @@ pub fn compat(
         .collect();
     compat_rows.sort_by(|a, b| a.version.cmp(&b.version));
 
-    let installed = store
-        .load_repo_dependencies(repo_path)?
-        .into_iter()
-        .find(|d| d.ecosystem == ecosystem && d.name == name)
-        .and_then(|d| d.installed);
-
-    // Direct dependents: every edge whose target resolves to this (eco, name).
+    // Phase 7a: aggregate across every scanned repo when `project = None`
+    // so the Compat tab's "Used by" list shows every workspace that
+    // depends on this package. Phase 7b adds the per-workspace drill-down
+    // view on top; the DTO shape stays unchanged.
+    let paths = scope_paths(store, project)?;
+    let mut installed: Option<String> = None;
     let mut dependents: Vec<CompatDependent> = Vec::new();
-    for e in store.load_repo_edges(repo_path)? {
-        let matches_by_resolved = e.resolved_target_name.as_deref() == Some(name);
-        let matches_by_declared = e.target_name == name && e.resolved_target_name.is_none();
-        if !(matches_by_resolved || matches_by_declared) {
-            continue;
+    for p in &paths {
+        if installed.is_none() {
+            installed = store
+                .load_repo_dependencies(p)?
+                .into_iter()
+                .find(|d| d.ecosystem == ecosystem && d.name == name)
+                .and_then(|d| d.installed);
         }
-        dependents.push(CompatDependent {
-            ecosystem: ecosystem.to_string(),
-            name: e.source_name,
-            version: e.source_version,
-            range: e.target_range,
-            kind: kind_label(e.kind).to_string(),
-        });
+        for e in store.load_repo_edges(p)? {
+            let matches_by_resolved = e.resolved_target_name.as_deref() == Some(name);
+            let matches_by_declared = e.target_name == name && e.resolved_target_name.is_none();
+            if !(matches_by_resolved || matches_by_declared) {
+                continue;
+            }
+            dependents.push(CompatDependent {
+                ecosystem: ecosystem.to_string(),
+                name: e.source_name,
+                version: e.source_version,
+                range: e.target_range,
+                kind: kind_label(e.kind).to_string(),
+            });
+        }
     }
     dependents.sort_by(|a, b| a.name.cmp(&b.name).then(a.version.cmp(&b.version)));
     dependents.dedup_by(|a, b| a.name == b.name && a.version == b.version);

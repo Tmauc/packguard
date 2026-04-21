@@ -81,6 +81,11 @@ pub struct PackagesQuery {
     pub dir: Option<String>,  // "asc" | "desc"
     pub page: Option<u32>,    // 1-based
     pub per_page: Option<u32>,
+    /// Phase 7: scope the listing to a single workspace's dependencies
+    /// (direct + transitive). Must match one of the paths returned by
+    /// `/api/workspaces`. `None` returns the aggregate across every
+    /// scanned repo.
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -363,9 +368,12 @@ pub struct SyncReport {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export_to = "GraphQuery.ts")]
 pub struct GraphQuery {
-    /// Optional manifest path for a specific workspace (as listed in the
-    /// store); when `None` the graph spans every workspace of the configured
-    /// repo. The string matches the stored `workspaces.manifest_path`.
+    /// Phase 7: scope to a single repo (path returned by
+    /// `/api/workspaces`). `None` = aggregate across every scanned repo.
+    pub project: Option<String>,
+    /// Optional manifest path to narrow within the chosen repo. The
+    /// string matches the stored `workspaces.manifest_path`. Only
+    /// meaningful when `project` is also provided.
     pub workspace: Option<String>,
     /// Cap on BFS depth from direct deps. `None` = no cap. Clamped to
     /// `[0, 64]` server-side so a pathological client can't blow out
@@ -433,6 +441,17 @@ pub struct ContaminatedQuery {
     /// Advisory id to trace back (GHSA-/CVE-/MAL-…). Matching is by
     /// `cve_id` first, then by `source:advisory_id`.
     pub vuln_id: String,
+    /// Phase 7: scope the BFS to a single workspace. `None` = aggregate
+    /// across every scanned repo.
+    pub project: Option<String>,
+}
+
+/// Simple `?project=<path>` query for endpoints that only need the scope
+/// filter (overview, policy get, compat).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export_to = "ProjectQuery.ts")]
+pub struct ProjectQuery {
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -502,4 +521,27 @@ pub struct CompatDependent {
     pub version: String,
     pub range: String,
     pub kind: String,
+}
+
+// ---- Phase 7: workspaces ---------------------------------------------------
+
+/// One row for the workspace selector in the dashboard header and for the
+/// `packguard scans` CLI output that drives the "Available scans" error
+/// hints. Sourced from `packguard_store::ScanIndexRow` (already sorted by
+/// `last_scan_at DESC`); path strings are the canonicalized forms
+/// persisted since Polish-1.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "WorkspaceInfo.ts")]
+pub struct WorkspaceInfo {
+    pub path: String,
+    pub ecosystem: String,
+    pub last_scan_at: String,
+    pub fingerprint: String,
+    pub dependency_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "WorkspacesResponse.ts")]
+pub struct WorkspacesResponse {
+    pub workspaces: Vec<WorkspaceInfo>,
 }

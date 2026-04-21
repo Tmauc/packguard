@@ -2,9 +2,14 @@
 
 export type GraphQuery = { 
 /**
- * Optional manifest path for a specific workspace (as listed in the
- * store); when `None` the graph spans every workspace of the configured
- * repo. The string matches the stored `workspaces.manifest_path`.
+ * Phase 7: scope to a single repo (path returned by
+ * `/api/workspaces`). `None` = aggregate across every scanned repo.
+ */
+project: string | null, 
+/**
+ * Optional manifest path to narrow within the chosen repo. The
+ * string matches the stored `workspaces.manifest_path`. Only
+ * meaningful when `project` is also provided.
  */
 workspace: string | null, 
 /**

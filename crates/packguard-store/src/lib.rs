@@ -693,6 +693,48 @@ impl Store {
         Ok(out)
     }
 
+    /// Every `(ecosystem, name)` pair reachable from a single repo — both
+    /// direct dependencies and packages that appear as either endpoint of
+    /// a transitive edge. This is what Phase 7's `?project=<path>` filter
+    /// narrows the Overview / Packages views to: all deps the user's
+    /// project is actually exposed to, including transitive risk.
+    ///
+    /// Path normalization mirrors Polish-1 — the `repos.path` column and
+    /// every lookup canonicalize through `normalize_repo_path`, so the
+    /// join stays sound whether the caller passes a symlink, a relative
+    /// form, or the already-canonical absolute string.
+    pub fn watched_packages_for_path(&self, repo_path: &Path) -> Result<Vec<(String, String)>> {
+        let canonical = normalize_repo_path(repo_path);
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT p.ecosystem, p.name \
+                 FROM packages p \
+                 JOIN dependencies d ON d.pkg_id = p.id \
+                 JOIN workspaces w ON w.id = d.workspace_id \
+                 JOIN repos r ON r.id = w.repo_id \
+                 WHERE r.path = ?1 \
+                 UNION \
+                 SELECT DISTINCT p.ecosystem, p.name \
+                 FROM packages p \
+                 JOIN dependency_edges e ON (e.source_pkg_id = p.id OR e.resolved_pkg_id = p.id) \
+                 JOIN workspaces w ON w.id = e.workspace_id \
+                 JOIN repos r ON r.id = w.repo_id \
+                 WHERE r.path = ?1",
+            )
+            .context("prepare watched_packages_for_path")?;
+        let rows = stmt
+            .query_map(params![canonical], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .context("query watched_packages_for_path")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     // ---- Phase 5: graph edges + compatibility + contamination cache -------
 
     /// Every `dependency_edges` row persisted for a given repo, across
@@ -1812,5 +1854,108 @@ mod tests {
         assert_eq!(ws_via_raw.len(), 1);
         // And both forms resolve to the same row.
         assert_eq!(ws_via_canonical[0].0, ws_via_raw[0].0);
+    }
+
+    /// Phase 7a: `watched_packages_for_path` returns only the deps
+    /// (direct + transitive) reachable from a given repo_path. Two
+    /// workspaces in the same store must stay isolated — Workspace A's
+    /// packages must not leak into a lookup scoped to Workspace B.
+    #[test]
+    fn watched_packages_for_path_isolates_workspaces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store_path = tmp.path().join("store.db");
+        let mut store = Store::open(&store_path).unwrap();
+
+        // Workspace A — react → loose-envify.
+        let repo_a = tmp
+            .path()
+            .join("workspace_a")
+            .canonicalize()
+            .unwrap_or_else(|_| {
+                std::fs::create_dir_all(tmp.path().join("workspace_a")).unwrap();
+                tmp.path().join("workspace_a").canonicalize().unwrap()
+            });
+        let project_a = Project {
+            ecosystem: "npm",
+            root: repo_a.clone(),
+            manifest_path: repo_a.join("package.json"),
+            name: Some("a".into()),
+            workspace: None,
+            dependencies: vec![Dependency {
+                name: "react".into(),
+                declared_range: "^18".into(),
+                installed: Some("18.2.0".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("package-lock.json".into()),
+            }],
+            edges: vec![packguard_core::model::DependencyEdge {
+                source_name: "react".into(),
+                source_version: "18.2.0".into(),
+                target_name: "loose-envify".into(),
+                target_range: "^1.1.0".into(),
+                resolved_target_version: Some("1.4.0".into()),
+                kind: DepKind::Runtime,
+            }],
+            compatibility: Vec::new(),
+        };
+        store
+            .save_project(&repo_a, &project_a, &sample_remotes(), "fp-a")
+            .unwrap();
+
+        // Workspace B — express only. Disjoint from A.
+        let repo_b = tmp
+            .path()
+            .join("workspace_b")
+            .canonicalize()
+            .unwrap_or_else(|_| {
+                std::fs::create_dir_all(tmp.path().join("workspace_b")).unwrap();
+                tmp.path().join("workspace_b").canonicalize().unwrap()
+            });
+        let project_b = Project {
+            ecosystem: "npm",
+            root: repo_b.clone(),
+            manifest_path: repo_b.join("package.json"),
+            name: Some("b".into()),
+            workspace: None,
+            dependencies: vec![Dependency {
+                name: "express".into(),
+                declared_range: "^4".into(),
+                installed: Some("4.19.2".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("package-lock.json".into()),
+            }],
+            edges: Vec::new(),
+            compatibility: Vec::new(),
+        };
+        store
+            .save_project(&repo_b, &project_b, &sample_remotes(), "fp-b")
+            .unwrap();
+
+        let a_pkgs: std::collections::BTreeSet<(String, String)> = store
+            .watched_packages_for_path(&repo_a)
+            .unwrap()
+            .into_iter()
+            .collect();
+        let b_pkgs: std::collections::BTreeSet<(String, String)> = store
+            .watched_packages_for_path(&repo_b)
+            .unwrap()
+            .into_iter()
+            .collect();
+
+        // A sees its direct dep + the transitive via the edge; B doesn't.
+        assert!(a_pkgs.contains(&("npm".into(), "react".into())));
+        assert!(a_pkgs.contains(&("npm".into(), "loose-envify".into())));
+        assert!(!a_pkgs.contains(&("npm".into(), "express".into())));
+
+        // B sees only its own.
+        assert!(b_pkgs.contains(&("npm".into(), "express".into())));
+        assert!(!b_pkgs.contains(&("npm".into(), "react".into())));
+        assert!(!b_pkgs.contains(&("npm".into(), "loose-envify".into())));
+
+        // Global view still includes everything — the filter is additive.
+        let all: std::collections::BTreeSet<(String, String)> =
+            store.watched_packages().unwrap().into_iter().collect();
+        assert!(all.is_superset(&a_pkgs));
+        assert!(all.is_superset(&b_pkgs));
     }
 }

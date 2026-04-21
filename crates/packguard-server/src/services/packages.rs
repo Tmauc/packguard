@@ -23,11 +23,18 @@ pub struct PackageRowFull {
     pub row: PackageRow,
 }
 
-pub fn list(store: &Store, query: &PackagesQuery) -> Result<PackagesPage> {
+pub fn list(
+    store: &Store,
+    query: &PackagesQuery,
+    project: Option<&std::path::Path>,
+) -> Result<PackagesPage> {
     let policy = crate::services::policies::current_policy_or_default()?;
     let now = chrono::Utc::now();
 
-    let watched = store.watched_packages()?;
+    let watched = match project {
+        Some(p) => store.watched_packages_for_path(p)?,
+        None => store.watched_packages()?,
+    };
     let mut rows: Vec<PackageRow> = Vec::with_capacity(watched.len());
     for (eco, name) in watched {
         if let Some(full) = evaluate_row(store, &policy, &now, &eco, &name)? {

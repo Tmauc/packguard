@@ -78,6 +78,9 @@ fn export_all(target: &Path) {
         dto::CompatRow,
         dto::CompatPeerDep,
         dto::CompatDependent,
+        dto::WorkspaceInfo,
+        dto::WorkspacesResponse,
+        dto::ProjectQuery,
     );
 }
 

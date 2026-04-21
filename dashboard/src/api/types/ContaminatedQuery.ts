@@ -5,4 +5,9 @@ export type ContaminatedQuery = {
  * Advisory id to trace back (GHSA-/CVE-/MAL-…). Matching is by
  * `cve_id` first, then by `source:advisory_id`.
  */
-vuln_id: string, };
+vuln_id: string, 
+/**
+ * Phase 7: scope the BFS to a single workspace. `None` = aggregate
+ * across every scanned repo.
+ */
+project: string | null, };

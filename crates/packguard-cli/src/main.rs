@@ -668,8 +668,11 @@ fn graph(
 
     // Branch: contamination view overrides focus + graph.
     if let Some(advisory) = contaminated_by {
-        let result =
-            packguard_server::services::graph::contaminated_chains(&store, &repo_path, advisory)?;
+        let result = packguard_server::services::graph::contaminated_chains(
+            &store,
+            Some(&repo_path),
+            advisory,
+        )?;
         match format {
             GraphFormat::Json => {
                 println!("{}", serde_json::to_string_pretty(&result)?);
@@ -686,8 +689,13 @@ fn graph(
         }
     }
 
-    let response =
-        packguard_server::services::graph::build(&store, &repo_path, workspace, max_depth, kind)?;
+    let response = packguard_server::services::graph::build(
+        &store,
+        Some(&repo_path),
+        workspace,
+        max_depth,
+        kind,
+    )?;
 
     // Optional `--focus` narrows to the forward-reachable subtree from a
     // single node. Cheaper + more ergonomic than piping through grep.
