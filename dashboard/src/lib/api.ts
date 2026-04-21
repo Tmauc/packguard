@@ -9,6 +9,9 @@ import type { PolicyDocument } from "@/api/types/PolicyDocument";
 import type { PolicyDryRunResult } from "@/api/types/PolicyDryRunResult";
 import type { JobAccepted } from "@/api/types/JobAccepted";
 import type { JobView } from "@/api/types/JobView";
+import type { GraphResponse } from "@/api/types/GraphResponse";
+import type { ContaminationResult } from "@/api/types/ContaminationResult";
+import type { CompatResponse } from "@/api/types/CompatResponse";
 
 export class ApiError extends Error {
   constructor(
@@ -79,4 +82,27 @@ export const api = {
     fetch("/api/sync", { method: "POST" }).then(handle<JobAccepted>),
 
   job: (id: string) => fetch(`/api/jobs/${encodeURIComponent(id)}`).then(handle<JobView>),
+
+  graph: (q: {
+    workspace?: string;
+    max_depth?: number;
+    kind?: string;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (q.workspace) params.set("workspace", q.workspace);
+    if (q.max_depth !== undefined) params.set("max_depth", String(q.max_depth));
+    if (q.kind) params.set("kind", q.kind);
+    const qs = params.toString();
+    return fetch(`/api/graph${qs ? `?${qs}` : ""}`).then(handle<GraphResponse>);
+  },
+
+  contaminated: (vuln_id: string) =>
+    fetch(`/api/graph/contaminated?vuln_id=${encodeURIComponent(vuln_id)}`).then(
+      handle<ContaminationResult>,
+    ),
+
+  packageCompat: (eco: string, name: string) =>
+    fetch(
+      `/api/packages/${encodeURIComponent(eco)}/${encodeURIComponent(name)}/compat`,
+    ).then(handle<CompatResponse>),
 };

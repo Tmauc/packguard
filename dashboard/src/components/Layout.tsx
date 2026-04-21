@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ActivityIcon,
+  GitBranchIcon,
   ListChecksIcon,
   PackageIcon,
   RefreshCcwIcon,
@@ -17,6 +18,7 @@ import { cn } from "@/lib/cn";
 const navItems = [
   { to: "/", label: "Overview", icon: ActivityIcon, end: true },
   { to: "/packages", label: "Packages", icon: PackageIcon, end: false },
+  { to: "/graph", label: "Graph", icon: GitBranchIcon, end: false },
   { to: "/policies", label: "Policies", icon: ListChecksIcon, end: false },
 ];
 
