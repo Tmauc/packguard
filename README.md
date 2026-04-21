@@ -26,6 +26,12 @@ See [CONTEXT.md](./CONTEXT.md) for the full vision, architecture, and roadmap.
   React 19 + Vite SPA, Overview / Packages / Package detail with visx
   timeline / Policies YAML editor with dry-run preview, served by a single
   `packguard ui` binary that embeds the Vite bundle in release.
+- ✅ **Phase 5** — Dependency graph + contamination: transitive edges
+  harvested from `package-lock.json` / `pnpm-lock` (v6/v7 + v9 snapshots)
+  / `poetry.lock` / `uv.lock`, Cytoscape `/graph` page with focus-CVE
+  mode that traces a chain from a workspace root to the vulnerable
+  package, Compatibility tab on the package detail, and a
+  `packguard graph` CLI (ascii / dot / json).
 
 ---
 
@@ -53,13 +59,36 @@ is opt-in so debug builds stay fast and don't require pnpm on the PATH.
 |------|-----|------------|
 | Overview | `/` | Health score · packages tracked · CVE/supply-chain donuts · top-5 risks |
 | Packages | `/packages` | Filterable + sortable table, URL-state filters, paginated |
-| Package detail | `/packages/:eco/:name` | 5-tab view, visx timeline (virtualised above 200 versions), policy trace |
+| Package detail | `/packages/:eco/:name` | 6-tab view: Versions + visx timeline, Vulnerabilities, Malware, Policy eval, Compatibility, Changelog |
+| Graph | `/graph` | Cytoscape (dagre + cose-bilkent), URL-driven filters, focus-CVE contamination mode |
 | Policies | `/policies` | CodeMirror YAML editor, dry-run preview vs current policy, atomic save |
 
 ![Overview](docs/screenshots/overview.png)
 ![Packages](docs/screenshots/packages.png)
 ![Package detail — pillow](docs/screenshots/detail.png)
 ![Policies editor](docs/screenshots/policies.png)
+![Graph — Nalo front/vesta](docs/screenshots/graph-default.png)
+![Graph focus — CVE contamination chain to lodash](docs/screenshots/graph-focus-lodash.png)
+![Compatibility tab — lodash](docs/screenshots/compat-lodash.png)
+
+### Graph CLI
+
+```bash
+# Read-only tree view of the last scan (ascii by default).
+packguard graph path/to/repo
+
+# Just the subtree rooted at a specific package.
+packguard graph path/to/repo --focus npm:react@18.3.1
+
+# All contamination chains for a CVE — same BFS + cache as the dashboard.
+packguard graph path/to/repo --contaminated-by CVE-2026-4800
+
+# Pipe into Graphviz.
+packguard graph path/to/repo --format dot | dot -Tsvg -o deps.svg
+
+# Machine-readable (same DTOs ts-rs exports for the dashboard).
+packguard graph path/to/repo --format json
+```
 
 ---
 
@@ -196,6 +225,23 @@ API calls. In a release build compiled with `--features ui-embed`, the
 binary also serves the built Vite bundle under `/`, so a single command is
 enough. Ctrl+C triggers a graceful shutdown.
 
+### `packguard graph [path] [--workspace …] [--focus pkg] [--contaminated-by CVE] [--format ascii|dot|json] [--max-depth N] [--kind runtime,dev,peer,optional]`
+
+Reads only the SQLite store (populate with `scan` first). Emits the
+transitive dependency graph in one of three formats:
+
+- `ascii` (default) — indented tree with per-node risk suffixes
+  (`(high CVE)`, `(malware)`, `(unresolved peer)`).
+- `dot` — Graphviz `digraph` with ecosystem-coloured fills + red borders
+  on CVE hits. Pipe into `dot -Tsvg` or similar.
+- `json` — raw `GraphResponse` (or `ContaminationResult` when
+  `--contaminated-by` is set); same DTOs the dashboard consumes via ts-rs.
+
+`--focus ecosystem:name@version` narrows to the forward-reachable subtree.
+`--contaminated-by <advisory>` runs the inverse contamination BFS from the
+given CVE/GHSA/alias and prints every root → hit chain; reuses the same
+cache the `/graph` page does.
+
 ---
 
 ## Policy format (`.packguard.yml`)
@@ -313,12 +359,12 @@ false positives. Rules of thumb:
 ├── crates/
 │   ├── packguard-core          # Ecosystem trait, npm + pypi parsers, shared types
 │   ├── packguard-policy        # YAML parser, rule resolution, evaluator
-│   ├── packguard-store         # rusqlite + refinery persistence (V1+V2+V3+V4)
+│   ├── packguard-store         # rusqlite + refinery persistence (V1..V5)
 │   ├── packguard-intel         # OSV/GHSA fetchers, matcher, malware harvest,
 │   │                           # typosquat heuristic, OSV/Socket clients
 │   ├── packguard-server        # axum REST API + job runner + ts-rs DTOs
 │   │                           # (+ rust-embed fallback under ui-embed feature)
-│   └── packguard-cli           # binary (init / scan / sync / audit / report / ui)
+│   └── packguard-cli           # binary (init / scan / sync / audit / report / ui / graph)
 ├── dashboard/                  # Vite + React 19 SPA consuming the REST API
 ├── docs/screenshots/           # embedded dashboard captures (real Nalo data)
 ├── fixtures/                   # npm-basic, pypi-poetry, pypi-uv, pypi-pip
