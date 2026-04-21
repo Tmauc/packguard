@@ -6,3 +6,4 @@ Cargo.lock.bak
 .vscode/
 *.swp
 cosign.key
+.env
