@@ -123,6 +123,36 @@ enum Cmd {
         #[arg(long)]
         no_open: bool,
     },
+    /// Print the transitive dependency graph as ASCII, DOT, or JSON.
+    /// Zero network — reads only the SQLite store (populate with `scan`).
+    Graph {
+        /// Path to the project root (same shape as `scan`).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Manifest path of the workspace to restrict to (e.g.
+        /// `/abs/path/package.json`). Omit to include every workspace of the
+        /// repo.
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Narrow the output to the subtree rooted at this package id
+        /// (`ecosystem:name@version`). Cheaper than piping through grep
+        /// when the repo is large.
+        #[arg(long)]
+        focus: Option<String>,
+        /// Instead of the full graph, print every root→hit chain for the
+        /// given advisory id (CVE / GHSA / alias). Overrides `--focus`.
+        #[arg(long)]
+        contaminated_by: Option<String>,
+        /// Max BFS depth from direct deps. Clamped to 32 server-side.
+        #[arg(long)]
+        max_depth: Option<u32>,
+        /// Comma-separated kinds (`runtime,dev,peer,optional`).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Output format.
+        #[arg(long, default_value = "ascii")]
+        format: GraphFormat,
+    },
     /// Scan a project, query registries, and persist the result to SQLite.
     Scan {
         /// Path to the project root. Defaults to the current directory.
@@ -194,6 +224,24 @@ async fn main() -> Result<()> {
             ghsa_cache,
             all,
         } => sync(skip_osv, skip_ghsa, ghsa_cache, all, &store_path).await,
+        Cmd::Graph {
+            path,
+            workspace,
+            focus,
+            contaminated_by,
+            max_depth,
+            kind,
+            format,
+        } => graph(
+            path,
+            workspace.as_deref(),
+            focus.as_deref(),
+            contaminated_by.as_deref(),
+            max_depth,
+            kind.as_deref(),
+            format,
+            &store_path,
+        ),
     }
 }
 
@@ -409,6 +457,16 @@ enum AuditFocus {
     Typosquat,
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
+enum GraphFormat {
+    /// Indented tree — sensible default for terminal use.
+    Ascii,
+    /// Graphviz DOT — pipe into `dot -Tsvg` for a rendered graph.
+    Dot,
+    /// Raw `GraphResponse` / `ContaminationResult` JSON.
+    Json,
+}
+
 fn init(path: PathBuf, force: bool) -> Result<()> {
     let ecosystems = default_ecosystems()?;
     let detected: Vec<&'static str> = ecosystems
@@ -503,6 +561,331 @@ async fn ui(
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
     println!("\n{} shutting down…", "⏹".dimmed());
+}
+
+#[allow(clippy::too_many_arguments)]
+fn graph(
+    path: PathBuf,
+    workspace: Option<&str>,
+    focus: Option<&str>,
+    contaminated_by: Option<&str>,
+    max_depth: Option<u32>,
+    kind: Option<&str>,
+    format: GraphFormat,
+    store_path: &Path,
+) -> Result<()> {
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+    let store = Store::open(store_path)
+        .with_context(|| format!("opening store at {}", store_path.display()))?;
+    let repo_path = path.canonicalize().unwrap_or(path);
+
+    // Branch: contamination view overrides focus + graph.
+    if let Some(advisory) = contaminated_by {
+        let result =
+            packguard_server::services::graph::contaminated_chains(&store, &repo_path, advisory)?;
+        match format {
+            GraphFormat::Json => {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+                return Ok(());
+            }
+            GraphFormat::Dot => {
+                print_contamination_dot(advisory, &result);
+                return Ok(());
+            }
+            GraphFormat::Ascii => {
+                print_contamination_ascii(advisory, &result);
+                return Ok(());
+            }
+        }
+    }
+
+    let response =
+        packguard_server::services::graph::build(&store, &repo_path, workspace, max_depth, kind)?;
+
+    // Optional `--focus` narrows to the forward-reachable subtree from a
+    // single node. Cheaper + more ergonomic than piping through grep.
+    let (nodes, edges) = if let Some(anchor) = focus {
+        narrow_to_subtree(&response, anchor)
+    } else {
+        (response.nodes.to_vec(), response.edges.to_vec())
+    };
+
+    match format {
+        GraphFormat::Json => {
+            let narrowed = packguard_server::dto::GraphResponse {
+                nodes: nodes.clone(),
+                edges: edges.clone(),
+                oversize_warning: response.oversize_warning.clone(),
+            };
+            println!("{}", serde_json::to_string_pretty(&narrowed)?);
+        }
+        GraphFormat::Dot => print_graph_dot(&nodes, &edges),
+        GraphFormat::Ascii => print_graph_ascii(&nodes, &edges),
+    }
+
+    // --- nested helpers — kept local so the top of the file stays readable.
+
+    fn narrow_to_subtree(
+        resp: &packguard_server::dto::GraphResponse,
+        anchor: &str,
+    ) -> (
+        Vec<packguard_server::dto::GraphNode>,
+        Vec<packguard_server::dto::GraphEdge>,
+    ) {
+        let mut by_source: BTreeMap<&str, Vec<&packguard_server::dto::GraphEdge>> = BTreeMap::new();
+        for e in &resp.edges {
+            by_source.entry(e.source.as_str()).or_default().push(e);
+        }
+        let mut keep_nodes: BTreeSet<String> = BTreeSet::new();
+        let mut keep_edges: Vec<packguard_server::dto::GraphEdge> = Vec::new();
+        let mut queue: VecDeque<String> = VecDeque::from([anchor.to_string()]);
+        while let Some(id) = queue.pop_front() {
+            if !keep_nodes.insert(id.clone()) {
+                continue;
+            }
+            if let Some(children) = by_source.get(id.as_str()) {
+                for e in children {
+                    keep_edges.push((*e).clone());
+                    queue.push_back(e.target.clone());
+                }
+            }
+        }
+        let nodes: Vec<_> = resp
+            .nodes
+            .iter()
+            .filter(|n| keep_nodes.contains(&n.id))
+            .cloned()
+            .collect();
+        (nodes, keep_edges)
+    }
+
+    fn print_graph_ascii(
+        nodes: &[packguard_server::dto::GraphNode],
+        edges: &[packguard_server::dto::GraphEdge],
+    ) {
+        use owo_colors::OwoColorize;
+        let mut children: BTreeMap<&str, Vec<&packguard_server::dto::GraphEdge>> = BTreeMap::new();
+        for e in edges {
+            children.entry(e.source.as_str()).or_default().push(e);
+        }
+        for v in children.values_mut() {
+            v.sort_by(|a, b| a.target.cmp(&b.target));
+        }
+        let roots: Vec<&packguard_server::dto::GraphNode> =
+            nodes.iter().filter(|n| n.is_root).collect();
+        if roots.is_empty() {
+            println!("{}", "(no roots in the narrowed graph)".dimmed());
+            return;
+        }
+        let mut visited: BTreeSet<String> = BTreeSet::new();
+        for root in roots {
+            print_ascii_node(root, &children, nodes, "", true, &mut visited);
+        }
+    }
+
+    fn print_ascii_node(
+        node: &packguard_server::dto::GraphNode,
+        children: &BTreeMap<&str, Vec<&packguard_server::dto::GraphEdge>>,
+        all_nodes: &[packguard_server::dto::GraphNode],
+        prefix: &str,
+        last: bool,
+        visited: &mut BTreeSet<String>,
+    ) {
+        use owo_colors::OwoColorize;
+        let connector = if prefix.is_empty() {
+            ""
+        } else if last {
+            "└── "
+        } else {
+            "├── "
+        };
+        let mut label = format!("{}@{}", node.name, node.version);
+        if let Some(sev) = &node.cve_severity {
+            label = format!("{} {}", label, format!("({sev} CVE)").red());
+        }
+        if node.has_malware {
+            label = format!("{} {}", label, "(malware)".purple());
+        }
+        if node.is_root {
+            label = format!("{}", label.bold());
+        }
+        println!("{prefix}{connector}{label}");
+        if !visited.insert(node.id.clone()) {
+            return;
+        }
+        let Some(outs) = children.get(node.id.as_str()) else {
+            return;
+        };
+        for (i, e) in outs.iter().enumerate() {
+            let is_last = i + 1 == outs.len();
+            let child_prefix = if prefix.is_empty() {
+                if is_last {
+                    "   ".to_string()
+                } else {
+                    "│  ".to_string()
+                }
+            } else if last {
+                format!("{prefix}    ")
+            } else {
+                format!("{prefix}│   ")
+            };
+            if let Some(child) = all_nodes.iter().find(|n| n.id == e.target) {
+                print_ascii_node(child, children, all_nodes, &child_prefix, is_last, visited);
+            } else if e.unresolved {
+                println!(
+                    "{child_prefix}{} {} {}",
+                    if is_last { "└── " } else { "├── " },
+                    e.target,
+                    "(unresolved peer)".yellow()
+                );
+            }
+        }
+    }
+
+    fn print_graph_dot(
+        nodes: &[packguard_server::dto::GraphNode],
+        edges: &[packguard_server::dto::GraphEdge],
+    ) {
+        println!("digraph packguard {{");
+        println!("  rankdir=LR;");
+        println!("  node [shape=box, style=rounded, fontname=\"Helvetica\"];");
+        for n in nodes {
+            let fill = match n.ecosystem.as_str() {
+                "npm" => "#dbeafe",
+                "pypi" => "#dcfce7",
+                _ => "#f4f4f5",
+            };
+            let mut extra = String::new();
+            if n.cve_severity.is_some() {
+                extra.push_str(" color=\"#dc2626\" penwidth=2");
+            }
+            if n.has_malware {
+                extra.push_str(" color=\"#a855f7\" penwidth=2");
+            }
+            if n.is_root {
+                extra.push_str(" fontname=\"Helvetica-Bold\"");
+            }
+            println!(
+                "  \"{}\" [label=\"{}\\n{}\", fillcolor=\"{}\", style=\"rounded,filled\"{}];",
+                dot_escape(&n.id),
+                dot_escape(&n.name),
+                dot_escape(&n.version),
+                fill,
+                extra,
+            );
+        }
+        for e in edges {
+            let style = match e.kind.as_str() {
+                "dev" => " color=\"#3b82f6\"",
+                "peer" => " color=\"#f97316\", style=dashed",
+                "optional" => " color=\"#a1a1aa\", style=dotted",
+                _ => "",
+            };
+            println!(
+                "  \"{}\" -> \"{}\" [label=\"{}\"{}];",
+                dot_escape(&e.source),
+                dot_escape(&e.target),
+                dot_escape(&e.kind),
+                style,
+            );
+        }
+        println!("}}");
+    }
+
+    fn dot_escape(s: &str) -> String {
+        s.replace('\\', "\\\\").replace('"', "\\\"")
+    }
+
+    fn print_contamination_ascii(
+        advisory: &str,
+        result: &packguard_server::dto::ContaminationResult,
+    ) {
+        use owo_colors::OwoColorize;
+        println!(
+            "{} — {} hit(s), {} chain(s){}",
+            advisory.bold(),
+            result.hits.len(),
+            result.chains.len(),
+            if result.from_cache {
+                " · cached".dimmed().to_string()
+            } else {
+                String::new()
+            },
+        );
+        if result.hits.is_empty() {
+            println!(
+                "  {}",
+                "no installed package matches this advisory".dimmed()
+            );
+            return;
+        }
+        for (i, chain) in result.chains.iter().enumerate() {
+            println!("\n  chain {}: {}", i + 1, chain.workspace.dimmed());
+            for (j, id) in chain.path.iter().enumerate() {
+                let marker = if j == 0 {
+                    "┌"
+                } else if j + 1 == chain.path.len() {
+                    "└"
+                } else {
+                    "│"
+                };
+                let painted = if j + 1 == chain.path.len() {
+                    id.red().to_string()
+                } else {
+                    id.clone()
+                };
+                println!("    {marker}── {painted}");
+            }
+        }
+    }
+
+    fn print_contamination_dot(
+        advisory: &str,
+        result: &packguard_server::dto::ContaminationResult,
+    ) {
+        println!("digraph contamination {{");
+        println!("  rankdir=LR;");
+        println!("  node [shape=box, style=\"rounded,filled\", fontname=\"Helvetica\"];");
+        println!(
+            "  label=\"{} — {} chain(s)\";",
+            dot_escape(advisory),
+            result.chains.len()
+        );
+        let hit_ids: BTreeSet<String> = result
+            .hits
+            .iter()
+            .map(|h| format!("{}:{}@{}", h.ecosystem, h.name, h.version))
+            .collect();
+        let mut emitted_nodes: BTreeSet<String> = BTreeSet::new();
+        for chain in &result.chains {
+            for (i, id) in chain.path.iter().enumerate() {
+                if emitted_nodes.insert(id.clone()) {
+                    let fill = if hit_ids.contains(id) {
+                        "#fecaca"
+                    } else {
+                        "#f4f4f5"
+                    };
+                    println!(
+                        "  \"{}\" [label=\"{}\", fillcolor=\"{}\"];",
+                        dot_escape(id),
+                        dot_escape(id),
+                        fill
+                    );
+                }
+                if i > 0 {
+                    println!(
+                        "  \"{}\" -> \"{}\" [color=\"#dc2626\"];",
+                        dot_escape(&chain.path[i - 1]),
+                        dot_escape(id),
+                    );
+                }
+            }
+        }
+        println!("}}");
+    }
+
+    Ok(())
 }
 
 fn resolve_store_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
