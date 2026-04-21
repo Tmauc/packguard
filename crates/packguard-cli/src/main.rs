@@ -106,9 +106,10 @@ enum Cmd {
     /// command serves both API + UI in release.
     Ui {
         /// Path the server uses as the project root for scan operations.
-        /// Defaults to the current directory.
-        #[arg(default_value = ".")]
-        path: PathBuf,
+        /// When omitted, `packguard ui` picks the most recent scan from
+        /// the store (by `last_scan_at`). Empty-store case: server still
+        /// boots, the UI shows a "no scans yet" placeholder.
+        path: Option<PathBuf>,
         /// TCP port to bind. Default 5174 (matches the Vite proxy in
         /// `dashboard/vite.config.ts`).
         #[arg(long, default_value_t = 5174)]
@@ -519,7 +520,7 @@ fn init(path: PathBuf, force: bool) -> Result<()> {
 }
 
 async fn ui(
-    path: PathBuf,
+    path: Option<PathBuf>,
     port: u16,
     host: String,
     no_open: bool,
@@ -527,8 +528,51 @@ async fn ui(
 ) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("opening store at {}", store_path.display()))?;
-    let repo_path = path.canonicalize().unwrap_or_else(|_| path.clone());
-    let app = packguard_server::router(packguard_server::ServerConfig { repo_path, store });
+
+    // Resolve the server's view root:
+    //  - explicit path → canonicalize + use as-is.
+    //  - no path + store has scans → default to the most recent one (by
+    //    `last_scan_at DESC`). No more silent fallback to CWD that ships
+    //    an empty graph with zero feedback.
+    //  - no path + empty store → keep a PathBuf sentinel for ServerConfig
+    //    (none of the graph/packages/compat queries will match anything
+    //    in the store, which is honest) and banner the user to scan.
+    let scans = store.scans_index().unwrap_or_default();
+    let (repo_path, resolution_note): (PathBuf, String) = match (path, scans.first()) {
+        (Some(p), _) => {
+            let canonical = p.canonicalize().unwrap_or_else(|_| p.clone());
+            (
+                canonical.clone(),
+                format!(
+                    "{} workspace: {}",
+                    "→".dimmed(),
+                    canonical.display().to_string().cyan()
+                ),
+            )
+        }
+        (None, Some(first)) => (
+            first.path.clone(),
+            format!(
+                "{} workspace: {} {} (override with `packguard ui <path>`)",
+                "→".dimmed(),
+                first.path.display().to_string().cyan(),
+                "(most recent scan)".dimmed(),
+            ),
+        ),
+        (None, None) => (
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            format!(
+                "{} no scans yet — run `{}` to register one",
+                "ⓘ".yellow(),
+                "packguard scan <path>".cyan()
+            ),
+        ),
+    };
+
+    let app = packguard_server::router(packguard_server::ServerConfig {
+        repo_path: repo_path.clone(),
+        store,
+    });
     let addr: std::net::SocketAddr = format!("{host}:{port}")
         .parse()
         .with_context(|| format!("parsing bind address {host}:{port}"))?;
@@ -543,6 +587,7 @@ async fn ui(
         "PackGuard server".bold(),
         url.cyan()
     );
+    println!("{resolution_note}");
     // Banner + auto-open honor the `ui-embed` feature:
     // - feature ON → the binary itself serves `/` (and SPA routes). Point
     //   the browser at `url`, print an affirmative embed line so users
@@ -575,6 +620,11 @@ async fn ui(
         }
     }
     println!("{} press Ctrl+C to stop\n", "•".dimmed());
+    // Flush so the banner lands in piped stdout (tests, CI) before we
+    // hand control to axum — otherwise a hard kill in the middle of
+    // `serve` can drop buffered bytes on the floor.
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -766,12 +816,29 @@ fn graph(
             } else {
                 format!("{prefix}│   ")
             };
-            if let Some(child) = all_nodes.iter().find(|n| n.id == e.target) {
-                print_ascii_node(child, children, all_nodes, &child_prefix, is_last, visited);
+            // Since Polish-bis-1 the backend emits a placeholder node for
+            // every unresolved edge target, so `all_nodes.find()` now
+            // succeeds even for peer/optional deps absent from the
+            // lockfile. We still want the ascii output to call them out
+            // as "(unresolved peer)" rather than treat them as first-
+            // class children — the flag carried on the node itself.
+            let connector = if is_last { "└── " } else { "├── " };
+            let resolved_child = all_nodes.iter().find(|n| n.id == e.target);
+            if let Some(child) = resolved_child {
+                if child.is_unresolved || e.unresolved {
+                    println!(
+                        "{child_prefix}{connector}{} {}",
+                        e.target,
+                        "(unresolved peer)".yellow()
+                    );
+                } else {
+                    print_ascii_node(child, children, all_nodes, &child_prefix, is_last, visited);
+                }
             } else if e.unresolved {
+                // Safety net for older servers that never emit the
+                // placeholder node — we still show the warning.
                 println!(
-                    "{child_prefix}{} {} {}",
-                    if is_last { "└── " } else { "├── " },
+                    "{child_prefix}{connector}{} {}",
                     e.target,
                     "(unresolved peer)".yellow()
                 );

@@ -244,6 +244,112 @@ fn scan_forces_rescan_when_schema_drifted_after_last_scan() {
     );
 }
 
+/// Spawn `packguard ui` in a thread, collect stdout lines as they
+/// arrive, give it up to `deadline_ms` to emit the full banner, kill the
+/// child. `child.kill()` is SIGKILL on macOS which drops buffered
+/// output — reading incrementally lets us capture the banner before we
+/// shut the server down.
+fn run_ui_collect_banner(args: &[&str], deadline_ms: u64) -> String {
+    use std::io::{BufRead, BufReader};
+    use std::sync::mpsc;
+
+    let mut child = Command::new(bin())
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().expect("stdout captured");
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
+    let mut collected = Vec::new();
+    while std::time::Instant::now() < deadline {
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(line) => {
+                collected.push(line);
+                // The banner is 3 lines (server URL, resolution note,
+                // dashboard line) + a press-Ctrl+C footer. Once we have
+                // those four we can safely kill the child.
+                if collected.len() >= 4 {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    strip_ansi(&collected.join("\n"))
+}
+
+#[test]
+fn ui_without_path_on_empty_store_prints_no_scans_yet_banner() {
+    // Polish-bis-2: `packguard ui` must never silently fall back to the
+    // process CWD anymore. On an empty store we want an honest banner
+    // that tells the user to run `packguard scan` first.
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store.db");
+    let stdout = run_ui_collect_banner(
+        &[
+            "--store",
+            store.to_str().unwrap(),
+            "ui",
+            "--port",
+            "0",
+            "--host",
+            "127.0.0.1",
+            "--no-open",
+        ],
+        3000,
+    );
+    assert!(
+        stdout.contains("no scans yet") && stdout.contains("packguard scan"),
+        "expected empty-store banner, got: {stdout}",
+    );
+}
+
+#[test]
+fn ui_without_path_on_populated_store_picks_most_recent_scan() {
+    // Polish-bis-2 happy path: when the store has at least one scan,
+    // `packguard ui` with no arg falls back to the most-recent
+    // `last_scan_at` entry and calls that out in the banner.
+    let (_tmp, store, repo) = tmp_with_store();
+    let stdout = run_ui_collect_banner(
+        &[
+            "--store",
+            store.to_str().unwrap(),
+            "ui",
+            "--port",
+            "0",
+            "--host",
+            "127.0.0.1",
+            "--no-open",
+        ],
+        3000,
+    );
+    let repo_str = repo.display().to_string();
+    assert!(
+        stdout.contains(&repo_str),
+        "banner should mention the auto-picked workspace {repo_str}: {stdout}",
+    );
+    assert!(
+        stdout.contains("most recent scan"),
+        "banner should flag auto-selection: {stdout}",
+    );
+    assert!(
+        stdout.contains("override with `packguard ui <path>`"),
+        "banner should surface the override hint: {stdout}",
+    );
+}
+
 #[test]
 fn report_on_unknown_path_lists_available_scans() {
     let (_tmp, store, _repo) = tmp_with_store();
