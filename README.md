@@ -84,9 +84,16 @@ you at a glance whether the numbers are aggregated or scoped.
 ![Packages](docs/screenshots/packages.png)
 ![Package detail — pillow](docs/screenshots/detail.png)
 ![Policies editor](docs/screenshots/policies.png)
-![Graph — Nalo front/vesta](docs/screenshots/graph-default.png)
+![Graph — front/vesta](docs/screenshots/graph-default.png)
 ![Graph focus — CVE contamination chain to lodash](docs/screenshots/graph-focus-lodash.png)
 ![Compatibility tab — lodash](docs/screenshots/compat-lodash.png)
+
+**Phase 7 — Workspace scoping (two browser tabs, two workspaces, same store):**
+
+![Overview scoped side-by-side — 91 deps vs 27 deps, same store, two tabs](docs/screenshots/phase7-isolation-sidebyside.png)
+![Header workspace selector open — aggregate · incentive · vesta](docs/screenshots/phase7-selector-open.png)
+![Compatibility tab — Used by · per-workspace drill-down](docs/screenshots/phase7-compat-drilldown.png)
+![Policies — empty state without scope vs CodeMirror editor when a workspace is picked](docs/screenshots/phase7-policies-empty-vs-scoped.png)
 
 ### Graph CLI
 
