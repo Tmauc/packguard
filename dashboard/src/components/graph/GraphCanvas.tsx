@@ -49,7 +49,9 @@ export function GraphCanvas({
 
   const elements: ElementDefinition[] = useMemo(() => {
     const out: ElementDefinition[] = [];
+    const nodeIds = new Set<string>();
     for (const n of graph.nodes) {
+      nodeIds.add(n.id);
       out.push({
         data: {
           id: n.id,
@@ -60,10 +62,18 @@ export function GraphCanvas({
           has_malware: n.has_malware ? "1" : "",
           has_typosquat: n.has_typosquat ? "1" : "",
           is_root: n.is_root ? "1" : "",
+          is_unresolved: n.is_unresolved ? "1" : "",
         },
       });
     }
+    // Safety net — Cytoscape throws at mount if we push an edge whose
+    // source or target isn't in the node set. The backend is supposed to
+    // emit placeholder nodes for every unresolved target (Polish-bis-1
+    // backend half), but this filter keeps the UI robust if that ever
+    // regresses or a newer backend ships a variant we don't expect. Three
+    // lines of defense that cost nothing.
     for (const e of graph.edges) {
+      if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) continue;
       out.push({
         data: {
           id: `${e.source}->${e.target}:${e.kind}`,
@@ -123,6 +133,22 @@ export function GraphCanvas({
           "border-color": COLORS.yanked,
           "border-width": 3,
           "border-style": "dashed",
+        },
+      },
+      {
+        // Placeholder nodes for unresolved optional/peer targets. Dashed
+        // outline + reduced opacity so they read as "absent from the
+        // lockfile" at a glance. Label carries `@unresolved` via the
+        // backend's synthetic version field.
+        selector: "node[is_unresolved = '1']",
+        style: {
+          "background-color": "#f4f4f5",
+          "border-color": "#a1a1aa",
+          "border-width": 2,
+          "border-style": "dashed",
+          opacity: 0.55,
+          color: "#71717a",
+          "font-style": "italic",
         },
       },
       {

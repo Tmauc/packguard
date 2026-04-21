@@ -1383,6 +1383,7 @@ dependencies = [
  "packguard-policy",
  "packguard-server",
  "packguard-store",
+ "rusqlite",
  "serde_json",
  "sha2",
  "tempfile",

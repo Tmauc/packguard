@@ -15,4 +15,13 @@ is_root: boolean,
 /**
  * Highest CVE severity hitting this version, `None` when clean.
  */
-cve_severity: string | null, has_malware: boolean, has_typosquat: boolean, compliance: ComplianceTag | null, };
+cve_severity: string | null, has_malware: boolean, has_typosquat: boolean, compliance: ComplianceTag | null, 
+/**
+ * `true` when this node is a synthetic placeholder emitted so every
+ * edge has a landing point — the actual package (an unresolved peer
+ * / optional dep) isn't in the lockfile. Frontend renders it with a
+ * dashed outline + reduced opacity. Without this, Cytoscape crashes
+ * at mount when it finds an edge whose target is missing from the
+ * node set (Polish-bis-1, finding #8).
+ */
+is_unresolved: boolean, };

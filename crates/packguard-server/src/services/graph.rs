@@ -130,6 +130,24 @@ pub fn build(
                 if visited.insert(key) {
                     queue.push_back((node.name.clone(), node.version.clone(), depth + 1));
                 }
+            } else {
+                // Placeholder node so the frontend never sees an edge whose
+                // target is missing from `nodes[]`. Cytoscape crashes at
+                // mount in that case — this is the backend half of the
+                // Polish-bis-1 defense-in-depth fix (the frontend still
+                // filters orphan edges independently).
+                nodes.entry(tgt_id.clone()).or_insert_with(|| GraphNode {
+                    id: tgt_id,
+                    ecosystem: ecosystem.clone(),
+                    name: target_name,
+                    version: target_version,
+                    is_root: false,
+                    cve_severity: None,
+                    has_malware: false,
+                    has_typosquat: false,
+                    compliance: None,
+                    is_unresolved: true,
+                });
             }
         }
     }
@@ -243,6 +261,7 @@ fn ensure_node<'a>(
             has_malware,
             has_typosquat,
             compliance: None,
+            is_unresolved: false,
         });
     } else if is_root {
         // Promote to root if any call-site flagged it as one.

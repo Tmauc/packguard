@@ -868,11 +868,51 @@ async fn graph_endpoint_returns_nodes_and_resolved_edges() {
     // lodash@4.17.20 carries the high severity we seeded.
     assert_eq!(lodash["cve_severity"], "high");
 
-    // Unresolved peer dep shows up as an edge with unresolved=true but no
-    // matching target node (graph view renders it as a dashed halo).
+    // Unresolved peer dep: edge carries `unresolved=true` AND the response
+    // now includes a placeholder node so Cytoscape never receives an edge
+    // pointing at a missing target (Polish-bis-1).
     let edges = body["edges"].as_array().unwrap();
-    let unresolved = edges.iter().find(|e| e["unresolved"] == true).unwrap();
-    assert_eq!(unresolved["kind"], "peer");
+    let unresolved_edge = edges.iter().find(|e| e["unresolved"] == true).unwrap();
+    assert_eq!(unresolved_edge["kind"], "peer");
+    let tgt_id = unresolved_edge["target"].as_str().unwrap();
+    let placeholder = nodes
+        .iter()
+        .find(|n| n["id"] == tgt_id)
+        .expect("unresolved edge target must have a placeholder node");
+    assert_eq!(placeholder["is_unresolved"], true);
+    assert_eq!(placeholder["name"], "scheduler");
+}
+
+/// Polish-bis-1 regression: every edge in the response must have its
+/// source AND target listed in `nodes[]`. Without this invariant, the
+/// `/graph` page used to crash at mount because Cytoscape rejects edges
+/// whose endpoints aren't registered as elements. The rule applies
+/// regardless of kind filter, depth, or whether the edge is unresolved.
+#[tokio::test]
+async fn graph_response_is_closed_every_edge_references_existing_nodes() {
+    let h = spawn(seed_react_chain_with_lodash_cve).await;
+    for query in &["/api/graph", "/api/graph?kind=runtime,dev,peer,optional"] {
+        let body = get_json(&h, query).await;
+        let node_ids: std::collections::HashSet<&str> = body["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_str().unwrap())
+            .collect();
+        for e in body["edges"].as_array().unwrap() {
+            let src = e["source"].as_str().unwrap();
+            let tgt = e["target"].as_str().unwrap();
+            assert!(
+                node_ids.contains(src),
+                "edge source {src} missing from nodes (query={query})",
+            );
+            assert!(
+                node_ids.contains(tgt),
+                "edge target {tgt} missing from nodes (query={query}) — \
+                 this used to crash Cytoscape at mount",
+            );
+        }
+    }
 }
 
 #[tokio::test]

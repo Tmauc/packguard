@@ -58,6 +58,7 @@ const GRAPH: GraphResponse = {
       has_malware: false,
       has_typosquat: false,
       compliance: null,
+      is_unresolved: false,
     },
     {
       id: "npm:lodash@4.17.23",
@@ -69,6 +70,7 @@ const GRAPH: GraphResponse = {
       has_malware: false,
       has_typosquat: false,
       compliance: null,
+      is_unresolved: false,
     },
   ],
   edges: [
