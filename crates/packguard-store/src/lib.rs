@@ -18,6 +18,25 @@ mod embedded {
     refinery::embed_migrations!("migrations");
 }
 
+/// Normalize a repo path for the `repos.path` column + every lookup that
+/// joins through it. Without this, a scan run from `/path/to/vesta` and a
+/// `packguard ui` launched from `/path/to/packguard` would persist two
+/// different strings for the same directory, and `/api/graph` would
+/// return `{nodes:[], edges:[]}` while `packguard graph` reads the same
+/// store fine (CLI canonicalizes its arg; server canonicalizes its
+/// `ServerConfig.repo_path`). Canonicalizing on *both* sides guarantees
+/// the join finds the row — and stays consistent across CWD changes,
+/// relative paths, and symlinks.
+///
+/// Non-existent paths (test fixtures on tempdirs that have been cleaned
+/// up, etc.) fall back to the raw display string so we never panic on
+/// missing files.
+pub fn normalize_repo_path(path: &Path) -> String {
+    path.canonicalize()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| path.display().to_string())
+}
+
 pub struct Store {
     conn: Connection,
 }
@@ -181,7 +200,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT fingerprint FROM repos WHERE path = ?1 AND ecosystem = ?2",
-                params![path.display().to_string(), ecosystem],
+                params![normalize_repo_path(path), ecosystem],
                 |row| row.get::<_, String>(0),
             )
             .optional()
@@ -403,7 +422,7 @@ impl Store {
             )
             .context("preparing load_repo_dependencies")?;
         let rows = stmt
-            .query_map(params![repo_path.display().to_string()], |row| {
+            .query_map(params![normalize_repo_path(repo_path)], |row| {
                 Ok(StoredDependency {
                     ecosystem: row.get(0)?,
                     repo_path: PathBuf::from(row.get::<_, String>(1)?),
@@ -605,7 +624,7 @@ impl Store {
             )
             .context("prepare load_repo_edges")?;
         let rows = stmt
-            .query_map(params![repo_path.to_string_lossy().as_ref()], |row| {
+            .query_map(params![normalize_repo_path(repo_path)], |row| {
                 Ok(StoredEdge {
                     workspace_id: row.get(0)?,
                     source_name: row.get(1)?,
@@ -729,7 +748,7 @@ impl Store {
             )
             .context("prepare load_workspaces_for_repo")?;
         let rows = stmt
-            .query_map(params![repo_path.to_string_lossy().as_ref()], |row| {
+            .query_map(params![normalize_repo_path(repo_path)], |row| {
                 let id: i64 = row.get(0)?;
                 let name: Option<String> = row.get(1)?;
                 let manifest: String = row.get(2)?;
@@ -1041,24 +1060,23 @@ fn upsert_repo(
     fingerprint: &str,
     now: DateTime<Utc>,
 ) -> Result<i64> {
+    // Normalize once — every `repos.path` lookup canonicalizes too so the
+    // join stays sound regardless of whether the caller passed a relative
+    // path, a symlink, or an absolute already-canonical one.
+    let canonical = normalize_repo_path(path);
     tx.execute(
         "INSERT INTO repos (path, ecosystem, fingerprint, last_scan_at) \
          VALUES (?1, ?2, ?3, ?4) \
          ON CONFLICT(path, ecosystem) DO UPDATE SET \
             fingerprint = excluded.fingerprint, \
             last_scan_at = excluded.last_scan_at",
-        params![
-            path.display().to_string(),
-            ecosystem,
-            fingerprint,
-            now.to_rfc3339(),
-        ],
+        params![canonical, ecosystem, fingerprint, now.to_rfc3339()],
     )
     .context("upsert repo")?;
     let id: i64 = tx
         .query_row(
             "SELECT id FROM repos WHERE path = ?1 AND ecosystem = ?2",
-            params![path.display().to_string(), ecosystem],
+            params![canonical, ecosystem],
             |row| row.get(0),
         )
         .context("selecting repo id")?;
@@ -1663,5 +1681,47 @@ mod tests {
             .load_contamination_cache("GHSA-x", ws_id)
             .unwrap()
             .is_none());
+    }
+
+    /// Regression for the dogfood finding #6: `/api/graph` returned empty
+    /// nodes/edges because `save_project` stored the path as-passed (often
+    /// relative or symlinked) while `load_repo_*` queried with a
+    /// canonical form from `ServerConfig.repo_path`. Here we save via a
+    /// relative path, switch CWD, then query via the canonical absolute
+    /// path — both must land on the same repo row.
+    #[test]
+    fn relative_then_canonical_paths_join_on_the_same_repo_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_abs = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_abs).unwrap();
+        let store_path = tmp.path().join("store.db");
+
+        // Save with a path that is NOT canonical (the tempdir's realpath
+        // may differ on macOS: `/var/folders/...` vs `/private/var/...`).
+        // We simulate the CLI `packguard scan .` case by feeding the raw
+        // tempdir child.
+        {
+            let mut store = Store::open(&store_path).unwrap();
+            let project = sample_project_with_graph(&repo_abs);
+            store
+                .save_project(&repo_abs, &project, &sample_remotes(), "fp")
+                .unwrap();
+        }
+
+        // Now open a fresh handle and query via the *canonicalized* form —
+        // the same form `packguard ui`'s ServerConfig.repo_path carries.
+        let store = Store::open(&store_path).unwrap();
+        let canonical = repo_abs.canonicalize().unwrap();
+        let edges_via_canonical = store.load_repo_edges(&canonical).unwrap();
+        let edges_via_raw = store.load_repo_edges(&repo_abs).unwrap();
+        assert_eq!(edges_via_canonical.len(), 2);
+        assert_eq!(edges_via_raw.len(), 2);
+
+        let ws_via_canonical = store.load_workspaces_for_repo(&canonical).unwrap();
+        let ws_via_raw = store.load_workspaces_for_repo(&repo_abs).unwrap();
+        assert_eq!(ws_via_canonical.len(), 1);
+        assert_eq!(ws_via_raw.len(), 1);
+        // And both forms resolve to the same row.
+        assert_eq!(ws_via_canonical[0].0, ws_via_raw[0].0);
     }
 }

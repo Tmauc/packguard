@@ -678,6 +678,76 @@ fn seed_react_chain_with_lodash_cve(store: &mut Store, repo: &Path) {
         .unwrap();
 }
 
+/// Regression for the dogfood finding #6: seed the store with a *raw*
+/// (non-canonical) path and start the server with the *canonical* form of
+/// the same directory (what `packguard ui` stashes in
+/// `ServerConfig.repo_path`). Without the path-normalization fix in
+/// `packguard-store`, the SQL join on `repos.path` returns zero rows and
+/// `/api/graph` ships `{nodes:[], edges:[]}`. With the fix, both forms
+/// normalize to the same canonical string and the response matches what
+/// `packguard_server::services::graph::build` would return on the same
+/// store.
+#[tokio::test]
+async fn api_graph_matches_service_output_when_repo_path_is_non_canonical() {
+    // `tempdir()` returns `/var/folders/...` on macOS, which canonicalizes
+    // to `/private/var/folders/...`. We seed with the first form and spin
+    // the server with the second form — the divergence that caused the
+    // Nalo dogfood bug.
+    let temp = tempfile::tempdir().unwrap();
+    let raw_repo = temp.path().join("repo");
+    std::fs::create_dir_all(&raw_repo).unwrap();
+    let canonical_repo = raw_repo.canonicalize().unwrap();
+    let store_path = temp.path().join("store.db");
+    {
+        let mut store = Store::open(&store_path).unwrap();
+        seed_react_chain_with_lodash_cve(&mut store, &raw_repo);
+    }
+
+    let store = Store::open(&store_path).unwrap();
+    let app = router(ServerConfig {
+        repo_path: canonical_repo.clone(),
+        store,
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let api_body: serde_json::Value = reqwest::get(format!("{base}/api/graph"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let api_nodes = api_body["nodes"].as_array().unwrap().len();
+    let api_edges = api_body["edges"].as_array().unwrap().len();
+    assert!(
+        api_nodes > 0,
+        "API returned empty graph — path canonicalization regressed: {api_body:#}"
+    );
+
+    // Symmetry contract: the CLI's `packguard graph --format json` goes
+    // through the very same `services::graph::build` call. We invoke it
+    // directly here (avoiding a child-process spawn + its own path-
+    // canonicalize), with the canonical path — same data, same JSON.
+    let fresh_store = Store::open(&store_path).unwrap();
+    let service_response =
+        packguard_server::services::graph::build(&fresh_store, &canonical_repo, None, None, None)
+            .unwrap();
+    assert_eq!(
+        api_nodes,
+        service_response.nodes.len(),
+        "API vs service node count diverged — CLI/UI symmetry broken",
+    );
+    assert_eq!(
+        api_edges,
+        service_response.edges.len(),
+        "API vs service edge count diverged — CLI/UI symmetry broken",
+    );
+}
+
 #[tokio::test]
 async fn graph_endpoint_returns_nodes_and_resolved_edges() {
     let h = spawn(seed_react_chain_with_lodash_cve).await;
