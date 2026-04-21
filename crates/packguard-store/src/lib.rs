@@ -148,6 +148,18 @@ pub struct SyncState {
     pub record_count: i64,
 }
 
+/// One row per registered `(path, ecosystem)` scan — powers the
+/// `packguard scans` CLI + the fallback hints when report/audit/graph
+/// land on an unknown path.
+#[derive(Debug, Clone)]
+pub struct ScanIndexRow {
+    pub path: PathBuf,
+    pub ecosystem: String,
+    pub last_scan_at: String,
+    pub fingerprint: String,
+    pub dependency_count: u32,
+}
+
 /// A full dependency row as read back from the store, in display-friendly form.
 #[derive(Debug, Clone)]
 pub struct StoredDependency {
@@ -581,6 +593,83 @@ impl Store {
             out.push(PathBuf::from(r?));
         }
         Ok(out)
+    }
+
+    /// `(path, ecosystem, last_scan_at)` for every `repos` row — drives the
+    /// `packguard scans` CLI + the "available scans" hint error messages.
+    /// Paginated inline if the store ever grows to thousands of repos;
+    /// today we cap at the first 500 to keep the CLI output usable.
+    pub fn scans_index(&self) -> Result<Vec<ScanIndexRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT r.path, r.ecosystem, r.last_scan_at, r.fingerprint, \
+                        (SELECT COUNT(*) FROM dependencies d \
+                         JOIN workspaces w ON w.id = d.workspace_id \
+                         WHERE w.repo_id = r.id) as dep_count \
+                 FROM repos r \
+                 ORDER BY r.last_scan_at DESC \
+                 LIMIT 500",
+            )
+            .context("prepare scans_index")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ScanIndexRow {
+                    path: PathBuf::from(row.get::<_, String>(0)?),
+                    ecosystem: row.get::<_, String>(1)?,
+                    last_scan_at: row.get::<_, String>(2)?,
+                    fingerprint: row.get::<_, String>(3)?,
+                    dependency_count: row.get::<_, i64>(4)? as u32,
+                })
+            })
+            .context("query scans_index")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Timestamp of the most recent applied migration. Used by the scan
+    /// skip-check to force a rescan when migrations ran more recently
+    /// than the repo's last scan — the V5 upgrade added empty
+    /// `dependency_edges` tables that wouldn't be filled otherwise.
+    pub fn latest_migration_at(&self) -> Result<Option<DateTime<Utc>>> {
+        // refinery's embedded history table is `refinery_schema_history`;
+        // the `applied_on` column holds RFC 3339 timestamps. Nothing in
+        // the rest of the store writes to it so this stays a read-only
+        // observation of the library's own bookkeeping.
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT MAX(applied_on) FROM refinery_schema_history",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .context("query latest_migration_at")?
+            .flatten();
+        Ok(raw
+            .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+            .map(|d| d.to_utc()))
+    }
+
+    /// Last scan timestamp for a (path, ecosystem) pair. Paired with
+    /// `latest_migration_at` so the CLI can detect "binary upgraded since
+    /// last scan" without a dedicated schema column.
+    pub fn last_scan_at(&self, path: &Path, ecosystem: &str) -> Result<Option<DateTime<Utc>>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT last_scan_at FROM repos WHERE path = ?1 AND ecosystem = ?2",
+                params![normalize_repo_path(path), ecosystem],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("query last_scan_at")?;
+        Ok(raw
+            .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+            .map(|d| d.to_utc()))
     }
 
     /// Every `(ecosystem, name)` pair currently tracked in `packages`. Used

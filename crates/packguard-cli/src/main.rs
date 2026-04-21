@@ -165,6 +165,15 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// List every repo the store knows about (path, ecosystem, last scan,
+    /// fingerprint, dep count). Useful when `report`/`audit`/`graph` bails
+    /// with "no cached scan" and you've forgotten where you ran the scan
+    /// from.
+    Scans {
+        /// Emit JSON instead of the default table layout.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -242,6 +251,7 @@ async fn main() -> Result<()> {
             format,
             &store_path,
         ),
+        Cmd::Scans { json } => scans(json, &store_path),
     }
 }
 
@@ -594,6 +604,18 @@ fn graph(
         .with_context(|| format!("opening store at {}", store_path.display()))?;
     let repo_path = path.canonicalize().unwrap_or(path);
 
+    // Honest error when the repo hasn't been scanned. The graph service
+    // silently returns empty in that case, which is technically correct
+    // but not actionable — surface the "available scans" hint so users
+    // don't think the feature is broken.
+    if store.load_repo_dependencies(&repo_path)?.is_empty() {
+        anyhow::bail!(
+            "no cached scan for {}; run `packguard scan` first{}",
+            repo_path.display(),
+            available_scans_hint(&store),
+        );
+    }
+
     // Branch: contamination view overrides focus + graph.
     if let Some(advisory) = contaminated_by {
         let result =
@@ -902,6 +924,91 @@ fn graph(
     Ok(())
 }
 
+/// Dump every registered scan (path, ecosystem, last scan, dep count) so
+/// the user can see what they've already scanned when report/audit/graph
+/// bail with "no cached scan". `--json` for machine parsing.
+fn scans(as_json: bool, store_path: &Path) -> Result<()> {
+    let store = Store::open(store_path)
+        .with_context(|| format!("opening store at {}", store_path.display()))?;
+    let rows = store.scans_index()?;
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &rows
+                    .iter()
+                    .map(|r| serde_json::json!({
+                        "path": r.path,
+                        "ecosystem": r.ecosystem,
+                        "last_scan_at": r.last_scan_at,
+                        "fingerprint": r.fingerprint,
+                        "dependency_count": r.dependency_count,
+                    }))
+                    .collect::<Vec<_>>(),
+            )?
+        );
+        return Ok(());
+    }
+    if rows.is_empty() {
+        println!(
+            "{} no scans in store — run `packguard scan <path>` to register one",
+            "ⓘ".dimmed(),
+        );
+        return Ok(());
+    }
+    let mut table = comfy_table::Table::new();
+    table.set_header(vec![
+        "Path",
+        "Ecosystem",
+        "Deps",
+        "Last scan",
+        "Fingerprint",
+    ]);
+    for r in rows {
+        let fp_short: String = r.fingerprint.chars().take(12).collect();
+        table.add_row(vec![
+            r.path.display().to_string(),
+            r.ecosystem,
+            r.dependency_count.to_string(),
+            r.last_scan_at,
+            format!("{fp_short}…"),
+        ]);
+    }
+    println!("{table}");
+    Ok(())
+}
+
+/// Format an "available scans" hint for error messages when a command
+/// lands on an unknown path. Returns an empty string when the store is
+/// also empty so we don't recommend nothing.
+fn available_scans_hint(store: &Store) -> String {
+    let rows = match store.scans_index() {
+        Ok(r) => r,
+        Err(_) => return String::new(),
+    };
+    if rows.is_empty() {
+        return "\n  (no scans in store — run `packguard scan <path>` first)".to_string();
+    }
+    let mut out = String::from("\n  Available scans:\n");
+    for r in rows.iter().take(10) {
+        out.push_str(&format!(
+            "    - {} [{}] · {} deps · last scan {}\n",
+            r.path.display(),
+            r.ecosystem,
+            r.dependency_count,
+            r.last_scan_at,
+        ));
+    }
+    if rows.len() > 10 {
+        out.push_str(&format!(
+            "    … {} more (packguard scans)\n",
+            rows.len() - 10
+        ));
+    }
+    out.push_str("  Run `packguard scans` to list the full set.");
+    out
+}
+
 fn resolve_store_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(p) = explicit {
         return Ok(p);
@@ -945,15 +1052,44 @@ async fn handle_project(
     let last_fp = store.last_fingerprint(repo_root, eco.id())?;
     let unchanged = last_fp.as_deref() == Some(fingerprint.as_str());
 
-    if unchanged && !force {
+    // Schema drift detection (Polish-2, finding #4b): if the schema has
+    // evolved since this repo was last scanned, the new tables
+    // (e.g. V5's `dependency_edges`) will be empty and everything
+    // downstream — graph, compatibility tab, contamination chains — will
+    // look empty. Force a rescan in that case, even when the manifest
+    // fingerprint matches, and tell the user why.
+    let schema_drifted = if unchanged {
+        match (
+            store.latest_migration_at().ok().flatten(),
+            store.last_scan_at(repo_root, eco.id()).ok().flatten(),
+        ) {
+            (Some(migrated), Some(scanned)) => migrated > scanned,
+            _ => false,
+        }
+    } else {
+        false
+    };
+
+    if unchanged && !force && !schema_drifted {
         println!(
-            "{} {} {} — no changes since last scan (fingerprint {}…)",
+            "{} {} {} — no changes since last scan (fingerprint {}…). \
+             Pass {} to re-fetch anyway.",
             "✓".green(),
             format!("[{}]", eco.id()).dimmed(),
             project.name.as_deref().unwrap_or("<unnamed>").bold(),
             &fingerprint[..8],
+            "--force".cyan(),
         );
         return Ok(());
+    }
+    if schema_drifted {
+        println!(
+            "{} {} {} — store schema evolved since last scan, re-scanning to \
+             populate the new tables.",
+            "⚙".yellow(),
+            format!("[{}]", eco.id()).dimmed(),
+            project.name.as_deref().unwrap_or("<unnamed>").bold(),
+        );
     }
 
     let remotes = if offline {
@@ -1142,8 +1278,9 @@ fn report(
     let dependencies = store.load_repo_dependencies(&path)?;
     if dependencies.is_empty() {
         anyhow::bail!(
-            "no cached scan for {}; run `packguard scan` first",
-            path.display()
+            "no cached scan for {}; run `packguard scan` first{}",
+            path.display(),
+            available_scans_hint(&store),
         );
     }
 
@@ -1354,9 +1491,11 @@ async fn audit(
         .with_context(|| format!("opening store at {}", store_path.display()))?;
     let dependencies = store.load_repo_dependencies(&path)?;
     if dependencies.is_empty() {
+        let hint = available_scans_hint(&store);
         anyhow::bail!(
-            "no cached scan for {}; run `packguard scan` first",
-            path.display()
+            "no cached scan for {}; run `packguard scan` first{}",
+            path.display(),
+            hint,
         );
     }
 
