@@ -133,7 +133,7 @@ pub fn parse(root: &Path) -> Result<Option<Project>> {
     // Dedup by normalized name (keeps first occurrence).
     let mut seen = std::collections::BTreeSet::new();
     declared.retain(|d| seen.insert(normalize_name(&d.name)));
-    declared.sort_by(|a, b| normalize_name(&a.name).cmp(&normalize_name(&b.name)));
+    declared.sort_by_key(|a| normalize_name(&a.name));
 
     let manifest_path = if has_pyproject {
         pyproject_path

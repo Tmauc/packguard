@@ -111,7 +111,7 @@ impl PypiClient {
         S: Into<String>,
     {
         let names: Vec<String> = names.into_iter().map(Into::into).collect();
-        stream::iter(names.into_iter())
+        stream::iter(names)
             .map(|name| {
                 let client = self.clone();
                 async move {
