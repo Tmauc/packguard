@@ -175,6 +175,7 @@ function VersionsTab({ detail }: { detail: PackageDetail }) {
     <div className="space-y-4">
       <VersionTimeline
         versions={detail.versions}
+        malware={detail.malware}
         installed={detail.installed ?? undefined}
         recommended={detail.policy_trace.recommended ?? undefined}
       />
