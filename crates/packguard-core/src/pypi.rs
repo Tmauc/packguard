@@ -17,7 +17,7 @@ pub mod lockfile;
 pub mod manifest;
 
 use crate::ecosystem::Ecosystem;
-use crate::model::{Delta, Dependency, Project, RemotePackage};
+use crate::model::{CompatibilityInfo, Delta, Dependency, DependencyEdge, Project, RemotePackage};
 use crate::registry::pypi::PypiClient;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -93,7 +93,12 @@ pub fn parse(root: &Path) -> Result<Option<Project>> {
     }
 
     // Resolved versions: try uv.lock then poetry.lock then ==pins from requirements.
-    let (resolved, lock_source) = resolve_installed(root, &req_files)?;
+    let Resolution {
+        installed: resolved,
+        source: lock_source,
+        edges,
+        compatibility,
+    } = resolve_installed(root, &req_files)?;
 
     // Declared deps: pyproject first (authoritative), then fall back to
     // requirements files if no pyproject section yielded deps.
@@ -143,24 +148,41 @@ pub fn parse(root: &Path) -> Result<Option<Project>> {
         name: project_name,
         workspace: None,
         dependencies: declared,
-        edges: Vec::new(),
-        compatibility: Vec::new(),
+        edges,
+        compatibility,
     }))
 }
 
-fn resolve_installed(
-    root: &Path,
-    req_files: &[PathBuf],
-) -> Result<(BTreeMap<String, String>, Option<String>)> {
+/// Packaged result of `resolve_installed` so the call-site stays readable
+/// (and so `-D warnings` is happy — the tuple form tripped
+/// `clippy::type_complexity`).
+struct Resolution {
+    installed: BTreeMap<String, String>,
+    source: Option<String>,
+    edges: Vec<DependencyEdge>,
+    compatibility: Vec<CompatibilityInfo>,
+}
+
+fn resolve_installed(root: &Path, req_files: &[PathBuf]) -> Result<Resolution> {
     let uv_lock = root.join("uv.lock");
     if uv_lock.exists() {
-        let map = lockfile::parse_uv_lock(&uv_lock)?;
-        return Ok((map, Some("uv.lock".to_string())));
+        let graph = lockfile::parse_uv_lock(&uv_lock)?;
+        return Ok(Resolution {
+            installed: graph.installed,
+            source: Some("uv.lock".to_string()),
+            edges: graph.edges,
+            compatibility: graph.compatibility,
+        });
     }
     let poetry_lock = root.join("poetry.lock");
     if poetry_lock.exists() {
-        let map = lockfile::parse_poetry_lock(&poetry_lock)?;
-        return Ok((map, Some("poetry.lock".to_string())));
+        let graph = lockfile::parse_poetry_lock(&poetry_lock)?;
+        return Ok(Resolution {
+            installed: graph.installed,
+            source: Some("poetry.lock".to_string()),
+            edges: graph.edges,
+            compatibility: graph.compatibility,
+        });
     }
     // Declared-only: harvest `==` pins from requirements.txt files.
     let mut pinned = BTreeMap::new();
@@ -176,7 +198,12 @@ fn resolve_installed(
             }
         }
     }
-    Ok((pinned, source))
+    Ok(Resolution {
+        installed: pinned,
+        source,
+        edges: Vec::new(),
+        compatibility: Vec::new(),
+    })
 }
 
 pub struct Pypi {
