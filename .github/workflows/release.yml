@@ -135,7 +135,11 @@ jobs:
             ASSET="${STAGE}.tar.gz"
             tar czf "$ASSET" "$STAGE"
           fi
-          shasum -a 256 "$ASSET" > "${ASSET}.sha256"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ASSET" > "${ASSET}.sha256"
+          else
+            shasum -a 256 "$ASSET" > "${ASSET}.sha256"
+          fi
           echo "asset=${ASSET}" >> "$GITHUB_OUTPUT"
           echo "sha256=${ASSET}.sha256" >> "$GITHUB_OUTPUT"
 
