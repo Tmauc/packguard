@@ -43,6 +43,8 @@ fn seed_store(store_path: &Path, repo: &Path) {
                 source_lockfile: Some("package-lock.json".into()),
             },
         ],
+        edges: Vec::new(),
+        compatibility: Vec::new(),
     };
     let mut remotes = BTreeMap::new();
     remotes.insert(

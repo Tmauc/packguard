@@ -143,6 +143,8 @@ pub fn parse(root: &Path) -> Result<Option<Project>> {
         name: project_name,
         workspace: None,
         dependencies: declared,
+        edges: Vec::new(),
+        compatibility: Vec::new(),
     }))
 }
 

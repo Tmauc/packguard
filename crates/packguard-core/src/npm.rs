@@ -91,6 +91,8 @@ pub fn parse(root: &Path) -> Result<Option<Project>> {
         name: manifest.name,
         workspace: None,
         dependencies: deps,
+        edges: Vec::new(),
+        compatibility: Vec::new(),
     }))
 }
 

@@ -29,6 +29,8 @@ fn seed(store_path: &Path, repo: &Path) {
             kind: DepKind::Runtime,
             source_lockfile: Some("package-lock.json".into()),
         }],
+        edges: Vec::new(),
+        compatibility: Vec::new(),
     };
     let mut remotes = BTreeMap::new();
     remotes.insert(

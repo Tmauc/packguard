@@ -14,8 +14,9 @@ pub mod registry;
 pub use classify::classify_semver;
 pub use ecosystem::Ecosystem;
 pub use model::{
-    AffectedEvent, AffectedRange, AffectedRangeKind, AffectedSpec, Delta, DepKind, Dependency,
-    MalwareKind, MalwareReport, Project, RemotePackage, RemoteVersion, Severity, Vulnerability,
+    AffectedEvent, AffectedRange, AffectedRangeKind, AffectedSpec, CompatibilityInfo, Delta,
+    DepKind, Dependency, DependencyEdge, MalwareKind, MalwareReport, PeerDepSpec, Project,
+    RemotePackage, RemoteVersion, Severity, Vulnerability,
 };
 pub use npm::Npm;
 pub use pypi::{classify_pep440, normalize_name, Pypi};

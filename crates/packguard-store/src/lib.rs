@@ -7,8 +7,8 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use packguard_core::model::{
-    AffectedSpec, DepKind, MalwareKind, MalwareReport, Project, RemotePackage, Severity,
-    Vulnerability,
+    AffectedSpec, DepKind, MalwareKind, MalwareReport, PeerDepSpec, Project, RemotePackage,
+    Severity, Vulnerability,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::BTreeMap;
@@ -30,6 +30,35 @@ pub struct SaveStats {
     pub dependencies: usize,
     pub updated_latest: usize,
     pub persisted_versions: usize,
+    pub edges: usize,
+    pub compatibility_rows: usize,
+}
+
+/// One `dependency_edges` row as read back for graph traversals. Both
+/// `resolved_pkg_id`/`resolved_version` may be NULL when the lockfile
+/// left a peer dep unresolved — that case becomes a warning halo in the
+/// graph view rather than a violation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredEdge {
+    pub workspace_id: i64,
+    pub source_name: String,
+    pub source_version: String,
+    pub target_name: String,
+    pub target_range: String,
+    pub resolved_target_name: Option<String>,
+    pub resolved_version: Option<String>,
+    pub kind: DepKind,
+}
+
+/// One `compatibility` row: engines + peer deps for a concrete (ecosystem,
+/// package, version). Stored as the already-decoded BTreeMaps so callers
+/// don't re-parse the JSON column.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StoredCompatibility {
+    pub package_name: String,
+    pub version: String,
+    pub engines: BTreeMap<String, String>,
+    pub peer_deps: BTreeMap<String, PeerDepSpec>,
 }
 
 /// One `package_versions` row as read back by the resolver.
@@ -244,6 +273,74 @@ impl Store {
             .context("inserting dependency")?;
             stats.dependencies += 1;
         }
+
+        // Phase 5: transitive dependency edges + per-version compatibility
+        // metadata. Both are cleared for this workspace before the new rows
+        // land so that stale edges from an older lockfile never linger.
+        tx.execute(
+            "DELETE FROM dependency_edges WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .context("clearing previous dependency_edges")?;
+        for edge in &project.edges {
+            let source_pkg_id = upsert_package(&tx, project.ecosystem, &edge.source_name)?;
+            let resolved_pkg_id = edge
+                .resolved_target_version
+                .as_ref()
+                .map(|_| upsert_package(&tx, project.ecosystem, &edge.target_name))
+                .transpose()?;
+            tx.execute(
+                "INSERT INTO dependency_edges \
+                   (workspace_id, source_pkg_id, source_version, target_name, target_range, \
+                    resolved_pkg_id, resolved_version, kind) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    workspace_id,
+                    source_pkg_id,
+                    edge.source_version,
+                    edge.target_name,
+                    edge.target_range,
+                    resolved_pkg_id,
+                    edge.resolved_target_version,
+                    kind_label(edge.kind),
+                ],
+            )
+            .context("inserting dependency edge")?;
+            stats.edges += 1;
+        }
+
+        for compat in &project.compatibility {
+            let pkg_id = upsert_package(&tx, project.ecosystem, &compat.package_name)?;
+            let engines_json = if compat.engines.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&compat.engines).context("serialising engines")?)
+            };
+            let peer_deps_json = if compat.peer_deps.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&compat.peer_deps).context("serialising peer_deps")?)
+            };
+            tx.execute(
+                "INSERT INTO compatibility (pkg_id, version, peer_deps_json, engines_json) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(pkg_id, version) DO UPDATE SET \
+                   peer_deps_json = excluded.peer_deps_json, \
+                   engines_json   = excluded.engines_json",
+                params![pkg_id, compat.version, peer_deps_json, engines_json],
+            )
+            .context("upserting compatibility row")?;
+            stats.compatibility_rows += 1;
+        }
+
+        // Contamination chains cached by the graph API depend on the edge
+        // set we just replaced — drop the cache for this workspace so the
+        // next `/api/graph/contaminated` call recomputes from fresh data.
+        tx.execute(
+            "DELETE FROM contamination_cache WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .context("invalidating contamination cache")?;
 
         let diff = serde_json::to_string(&stats).context("serializing scan diff")?;
         tx.execute(
@@ -487,6 +584,166 @@ impl Store {
         }
         Ok(out)
     }
+
+    // ---- Phase 5: graph edges + compatibility + contamination cache -------
+
+    /// Every `dependency_edges` row persisted for a given repo, across
+    /// every workspace that repo owns. Used by the graph API to assemble
+    /// the node/edge set in a single query.
+    pub fn load_repo_edges(&self, repo_path: &Path) -> Result<Vec<StoredEdge>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT e.workspace_id, sp.name, e.source_version, e.target_name, \
+                        e.target_range, rp.name, e.resolved_version, e.kind \
+                 FROM dependency_edges e \
+                 JOIN workspaces w ON w.id = e.workspace_id \
+                 JOIN repos r      ON r.id = w.repo_id \
+                 JOIN packages sp  ON sp.id = e.source_pkg_id \
+                 LEFT JOIN packages rp ON rp.id = e.resolved_pkg_id \
+                 WHERE r.path = ?1",
+            )
+            .context("prepare load_repo_edges")?;
+        let rows = stmt
+            .query_map(params![repo_path.to_string_lossy().as_ref()], |row| {
+                Ok(StoredEdge {
+                    workspace_id: row.get(0)?,
+                    source_name: row.get(1)?,
+                    source_version: row.get(2)?,
+                    target_name: row.get(3)?,
+                    target_range: row.get(4)?,
+                    resolved_target_name: row.get::<_, Option<String>>(5)?,
+                    resolved_version: row.get::<_, Option<String>>(6)?,
+                    kind: kind_from_label(&row.get::<_, String>(7)?),
+                })
+            })
+            .context("query load_repo_edges")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Load compatibility metadata for `(ecosystem, name)` across every
+    /// version. Callers can filter further in memory — the row count per
+    /// package stays in the low hundreds even for tentpole libs.
+    pub fn load_compatibility(
+        &self,
+        ecosystem: &str,
+        name: &str,
+    ) -> Result<Vec<StoredCompatibility>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT c.version, c.engines_json, c.peer_deps_json \
+                 FROM compatibility c \
+                 JOIN packages p ON p.id = c.pkg_id \
+                 WHERE p.ecosystem = ?1 AND p.name = ?2",
+            )
+            .context("prepare load_compatibility")?;
+        let rows = stmt
+            .query_map(params![ecosystem, name], |row| {
+                let version: String = row.get(0)?;
+                let engines_json: Option<String> = row.get(1)?;
+                let peer_deps_json: Option<String> = row.get(2)?;
+                Ok((version, engines_json, peer_deps_json))
+            })
+            .context("query load_compatibility")?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (version, engines_json, peer_deps_json) = r?;
+            let engines = match engines_json {
+                Some(s) => serde_json::from_str(&s).unwrap_or_default(),
+                None => BTreeMap::new(),
+            };
+            let peer_deps = match peer_deps_json {
+                Some(s) => serde_json::from_str(&s).unwrap_or_default(),
+                None => BTreeMap::new(),
+            };
+            out.push(StoredCompatibility {
+                package_name: name.to_string(),
+                version,
+                engines,
+                peer_deps,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Read a cached contamination chain result. Returns `None` when no
+    /// cache row exists (the graph service recomputes and writes one).
+    pub fn load_contamination_cache(
+        &self,
+        advisory_id: &str,
+        workspace_id: i64,
+    ) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT chains_json FROM contamination_cache \
+                 WHERE advisory_id = ?1 AND workspace_id = ?2",
+                params![advisory_id, workspace_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("load contamination_cache")
+    }
+
+    pub fn store_contamination_cache(
+        &self,
+        advisory_id: &str,
+        workspace_id: i64,
+        chains_json: &str,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO contamination_cache \
+                    (advisory_id, workspace_id, chains_json, computed_at) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(advisory_id, workspace_id) DO UPDATE SET \
+                    chains_json = excluded.chains_json, \
+                    computed_at = excluded.computed_at",
+                params![
+                    advisory_id,
+                    workspace_id,
+                    chains_json,
+                    Utc::now().to_rfc3339(),
+                ],
+            )
+            .context("store contamination_cache")?;
+        Ok(())
+    }
+
+    /// Workspace rows for a given repo, so the graph endpoint can offer a
+    /// workspace filter.
+    pub fn load_workspaces_for_repo(
+        &self,
+        repo_path: &Path,
+    ) -> Result<Vec<(i64, Option<String>, PathBuf)>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT w.id, w.name, w.manifest_path \
+                 FROM workspaces w JOIN repos r ON r.id = w.repo_id \
+                 WHERE r.path = ?1",
+            )
+            .context("prepare load_workspaces_for_repo")?;
+        let rows = stmt
+            .query_map(params![repo_path.to_string_lossy().as_ref()], |row| {
+                let id: i64 = row.get(0)?;
+                let name: Option<String> = row.get(1)?;
+                let manifest: String = row.get(2)?;
+                Ok((id, name, PathBuf::from(manifest)))
+            })
+            .context("query load_workspaces_for_repo")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    // ---- end Phase 5 helpers ----------------------------------------------
 
     /// Total advisory count — cheap enough to call for the CLI status line.
     pub fn count_vulnerabilities(&self) -> Result<i64> {
@@ -937,6 +1194,8 @@ mod tests {
                     source_lockfile: Some("package-lock.json".into()),
                 },
             ],
+            edges: Vec::new(),
+            compatibility: Vec::new(),
         }
     }
 
@@ -1265,5 +1524,144 @@ mod tests {
                 .record_count,
             43_000,
         );
+    }
+
+    // ---- Phase 5: edges, compatibility, contamination cache --------------
+
+    fn sample_project_with_graph(root: &Path) -> Project {
+        Project {
+            ecosystem: "npm",
+            root: root.to_path_buf(),
+            manifest_path: root.join("package.json"),
+            name: Some("demo".into()),
+            workspace: None,
+            dependencies: vec![Dependency {
+                name: "react".into(),
+                declared_range: "^18.2.0".into(),
+                installed: Some("18.2.0".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("package-lock.json".into()),
+            }],
+            edges: vec![
+                // react@18.2.0 → loose-envify@1.4.0 (resolved)
+                packguard_core::model::DependencyEdge {
+                    source_name: "react".into(),
+                    source_version: "18.2.0".into(),
+                    target_name: "loose-envify".into(),
+                    target_range: "^1.1.0".into(),
+                    resolved_target_version: Some("1.4.0".into()),
+                    kind: DepKind::Runtime,
+                },
+                // react@18.2.0 → scheduler — unresolved peer (edge kept, warning)
+                packguard_core::model::DependencyEdge {
+                    source_name: "react".into(),
+                    source_version: "18.2.0".into(),
+                    target_name: "scheduler".into(),
+                    target_range: "^0.23.0".into(),
+                    resolved_target_version: None,
+                    kind: DepKind::Peer,
+                },
+            ],
+            compatibility: vec![packguard_core::model::CompatibilityInfo {
+                package_name: "react".into(),
+                version: "18.2.0".into(),
+                engines: {
+                    let mut m = BTreeMap::new();
+                    m.insert("node".into(), ">=14".into());
+                    m
+                },
+                peer_deps: BTreeMap::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn save_project_persists_edges_with_resolved_and_unresolved_targets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&tmp.path().join("store.db")).unwrap();
+        let repo = tmp.path().to_path_buf();
+        let project = sample_project_with_graph(&repo);
+        let stats = store
+            .save_project(&repo, &project, &sample_remotes(), "fp")
+            .unwrap();
+        assert_eq!(stats.edges, 2);
+
+        let edges = store.load_repo_edges(&repo).unwrap();
+        let by_target: std::collections::BTreeMap<_, _> =
+            edges.iter().map(|e| (e.target_name.clone(), e)).collect();
+        assert_eq!(
+            by_target["loose-envify"].resolved_version.as_deref(),
+            Some("1.4.0"),
+        );
+        assert_eq!(by_target["scheduler"].resolved_version, None);
+        assert_eq!(by_target["scheduler"].kind, DepKind::Peer);
+    }
+
+    #[test]
+    fn save_project_upserts_compatibility_rows_with_engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&tmp.path().join("store.db")).unwrap();
+        let repo = tmp.path().to_path_buf();
+        let project = sample_project_with_graph(&repo);
+        store
+            .save_project(&repo, &project, &sample_remotes(), "fp")
+            .unwrap();
+        let rows = store.load_compatibility("npm", "react").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].version, "18.2.0");
+        assert_eq!(rows[0].engines.get("node").unwrap(), ">=14");
+    }
+
+    #[test]
+    fn save_project_clears_stale_edges_between_scans() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&tmp.path().join("store.db")).unwrap();
+        let repo = tmp.path().to_path_buf();
+        let first = sample_project_with_graph(&repo);
+        store
+            .save_project(&repo, &first, &sample_remotes(), "fp-1")
+            .unwrap();
+        assert_eq!(store.load_repo_edges(&repo).unwrap().len(), 2);
+
+        // Second scan drops the peer edge.
+        let mut second = sample_project_with_graph(&repo);
+        second.edges.pop();
+        store
+            .save_project(&repo, &second, &sample_remotes(), "fp-2")
+            .unwrap();
+        let edges = store.load_repo_edges(&repo).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].target_name, "loose-envify");
+    }
+
+    #[test]
+    fn contamination_cache_roundtrip_and_invalidation_on_scan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&tmp.path().join("store.db")).unwrap();
+        let repo = tmp.path().to_path_buf();
+        let project = sample_project_with_graph(&repo);
+        store
+            .save_project(&repo, &project, &sample_remotes(), "fp-1")
+            .unwrap();
+
+        // Find the workspace id so we can stash a cache row.
+        let ws = store.load_workspaces_for_repo(&repo).unwrap();
+        let ws_id = ws[0].0;
+        store
+            .store_contamination_cache("GHSA-x", ws_id, r#"{"chains":[]}"#)
+            .unwrap();
+        assert!(store
+            .load_contamination_cache("GHSA-x", ws_id)
+            .unwrap()
+            .is_some());
+
+        // Re-saving the project must drop the cache.
+        store
+            .save_project(&repo, &project, &sample_remotes(), "fp-2")
+            .unwrap();
+        assert!(store
+            .load_contamination_cache("GHSA-x", ws_id)
+            .unwrap()
+            .is_none());
     }
 }

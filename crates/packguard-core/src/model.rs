@@ -39,6 +39,52 @@ pub struct Project {
     /// `None` = top-level project; `Some` = nested workspace under a monorepo.
     pub workspace: Option<String>,
     pub dependencies: Vec<Dependency>,
+    /// Transitive dependency edges harvested from the lockfile (`pnpm-lock`
+    /// `packages:`, `package-lock.json` full `packages:` tree, `[[package]]`
+    /// `dependencies` tables in `poetry.lock` / `uv.lock`). Empty when the
+    /// parser doesn't emit transitive data yet; callers must treat it as
+    /// additive to `dependencies`, not replacing it.
+    #[doc(alias = "transitive")]
+    pub edges: Vec<DependencyEdge>,
+    /// Per-(package, version) compatibility metadata: peer deps + engines.
+    /// One entry per node the parser resolved; entries are keyed by
+    /// `(package_name, version)` tuples upstream in `packguard-store`.
+    pub compatibility: Vec<CompatibilityInfo>,
+}
+
+/// One parent → child dependency relationship from a lockfile. Parent is
+/// identified by name + resolved version (both non-empty). Child may be
+/// unresolved (peer deps can be declared without a matching entry in the
+/// lockfile); that shows up in the graph view as a warning halo rather
+/// than an error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyEdge {
+    pub source_name: String,
+    pub source_version: String,
+    pub target_name: String,
+    pub target_range: String,
+    pub resolved_target_version: Option<String>,
+    pub kind: DepKind,
+}
+
+/// `engines` + peer deps for a concrete (package, version). `peer_deps`
+/// mirrors npm's `peerDependencies` / PyPI's implicit optional extras;
+/// `engines` captures `node`, `npm`, `python`, etc. Stored as pre-built
+/// maps so the persistence layer can serialize them to JSON columns
+/// without re-parsing.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CompatibilityInfo {
+    pub package_name: String,
+    pub version: String,
+    pub engines: std::collections::BTreeMap<String, String>,
+    pub peer_deps: std::collections::BTreeMap<String, PeerDepSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PeerDepSpec {
+    pub range: String,
+    #[serde(default)]
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -79,6 +79,8 @@ fn seed_lodash_with_high_cve(store: &mut Store, repo: &Path) {
                 source_lockfile: Some("package-lock.json".into()),
             },
         ],
+        edges: Vec::new(),
+        compatibility: Vec::new(),
     };
     let mut remotes = BTreeMap::new();
     remotes.insert(
@@ -293,6 +295,8 @@ async fn package_detail_version_rows_carry_severity_when_affected() {
                 kind: DepKind::Runtime,
                 source_lockfile: Some("package-lock.json".into()),
             }],
+            edges: Vec::new(),
+            compatibility: Vec::new(),
         };
         let remote = RemotePackage {
             name: "lodash".into(),
