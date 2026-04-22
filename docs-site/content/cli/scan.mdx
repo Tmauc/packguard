@@ -1,47 +1,83 @@
 # packguard scan
 
-Walks the repo's lockfiles, resolves every installed version against the registry, and persists the result into the local SQLite store.
+Walks a repo, discovers every scannable project recursively, resolves every installed version against the registry, and persists the result into the local SQLite store.
 
 ## Synopsis
 
 ```bash
-packguard scan [path] [--offline] [--force]
+packguard scan [path] [--no-recursive] [--depth N] [--include GLOB]… [--exclude GLOB]…
+               [--dry-run] [--yes] [--offline] [--force]
 ```
 
-## Behaviour
+## Behaviour (v0.2.0)
 
-- Walks Tier-1 ecosystems (npm, PyPI) under `path` (defaults to `.`).
-- Parses manifests + lockfiles:
-  - **npm** → `package-lock.json` v2/v3, `pnpm-lock.yaml` v6/v7/v9, `yarn.lock` (manifest-only).
-  - **PyPI** → `poetry.lock`, `uv.lock`, `requirements*.txt` (declared-only).
-- Queries the registry for the full version history + stability + deprecation + yanked flags.
-- Persists everything to SQLite at `~/.packguard/store.db` (override with `--store <path>`).
+Scan is **recursive by default** — you point it at any directory, and it finds every scannable project under it. `packguard scan` on a monorepo root is a single invocation, not one per project.
 
-A SHA-256 fingerprint of `(manifest + lockfiles)` gates the registry round-trip — re-runs that match the cached fingerprint short-circuit.
+Discovery happens in two steps:
+
+1. **Marker-driven** (fastest, most precise). If the target has a monorepo marker, PackGuard reads the declared workspaces and scans only those:
+   - `pnpm-workspace.yaml` (globs under `packages:`)
+   - `package.json` with `workspaces` (npm / yarn classic)
+   - `turbo.json`, `nx.json`, `lerna.json`, `rush.json`
+
+2. **Filesystem walk** (fallback). No marker, or the marker didn't find anything? PackGuard walks the tree for `package.json` + `pyproject.toml`, respecting `.gitignore` and skipping:
+   - `node_modules/`, `.pnpm/`, `target/`, `dist/`, `build/`, `.next/`, `.venv/`, `__pycache__/`, `vendor/`, `.git/`, `.turbo/`, `.nx/`, `.cache/`, `coverage/`
+   - Anything deeper than `--depth` (default `4`)
+
+Each discovered project is scanned independently — a parse failure on one doesn't abort the others. The final summary lists `✓` per success, `⋯` per skipped project with the reason.
+
+If `path` itself is a valid project (has a `package.json` or `pyproject.toml`), it's scanned directly and discovery is skipped — the single-project v0.1.0 behaviour is preserved when it's what you want.
+
+### Ecosystems
+
+- **npm** → `package-lock.json` v2/v3, `pnpm-lock.yaml` v6/v7/v9, `yarn.lock` (manifest-only)
+- **PyPI** → `poetry.lock`, `uv.lock`, `requirements*.txt` (declared-only)
+
+### Caching
+
+A SHA-256 fingerprint of `(manifest + lockfiles)` gates the registry round-trip per project. Re-runs that match the cached fingerprint short-circuit with `no changes since last scan`. Pass `--force` to invalidate.
 
 ## Flags
 
 | Flag | Effect |
 |---|---|
-| `--offline` | Fails cleanly when the cache was never populated for this path. No registry calls. |
-| `--force` | Invalidates the fingerprint cache and forces a fresh scan. |
+| `--no-recursive` | Pre-0.2.0 behaviour: fail with `no supported manifest at <path>` if `path` doesn't carry a manifest. Disables discovery entirely. |
+| `--depth N` | Cap the filesystem walk depth when no marker is found. Default `4`. |
+| `--include GLOB` | Widen discovery with an extra glob (repeatable). Useful for non-standard layouts. |
+| `--exclude GLOB` | Skip paths matching a glob (repeatable). Additive on top of the built-in denylist. |
+| `--dry-run` | List the projects that would be scanned, without scanning. Zero registry hits, zero store writes. |
+| `--yes` | Bypass the `>50 projects found, continue?` confirmation prompt. Use in CI. |
+| `--offline` | Fail cleanly when the cache was never populated. No registry calls. |
+| `--force` | Invalidate the fingerprint cache and force a fresh scan on every matched project. |
 | `--store <path>` | Override the SQLite store path (global flag on every command). |
 
 ## Examples
 
 ```bash
-# Scan the repo root.
-packguard scan
+# Scan a whole monorepo — one invocation, N projects.
+packguard scan .
 
-# Scan a specific workspace in a monorepo.
-packguard scan ./apps/web
+# Preview the discovery result without hitting any registry.
+packguard scan . --dry-run
 
-# Re-scan offline after a policy change — no registry hits.
-packguard scan --offline
+# Limit the walk to direct children only (skip nested monorepos).
+packguard scan . --depth 1
 
-# Force a re-scan even if the lockfile hasn't changed.
-packguard scan --force
+# Exclude a legacy project that ships an unsupported lockfile format.
+packguard scan . --exclude 'front/v1'
+
+# Scan only a specific workspace (bypass discovery).
+packguard scan ./apps/web --no-recursive
+
+# CI-friendly: non-interactive, fresh every time.
+packguard scan . --yes --force
 ```
+
+## Robustness
+
+- **Recursive mode**: one project's parse error is a red inline line; the scan continues and the process exits `0` as long as at least one project succeeded. Failed projects are listed at the bottom with their reason.
+- **Single-project mode** (explicit path with manifest, or `--no-recursive`): a parse error fails the whole command.
+- **Unsupported lockfile versions** (e.g. `package-lock.json` v1): skipped with a warning, never aborts the wider scan.
 
 ## pip declared-only mode
 
@@ -51,5 +87,6 @@ If you need full coverage on a pip-only repo, move to `pyproject.toml` + `uv.loc
 
 ## Related
 
-- [`packguard sync`](/cli/sync) — next step: refresh supply-chain intel.
 - [`packguard scans`](/cli/scans) — list every (path, ecosystem) the store knows about.
+- [`packguard sync`](/cli/sync) — next step: refresh supply-chain intel.
+- [`packguard report`](/cli/report) — evaluate stored scans against your `.packguard.yml`.

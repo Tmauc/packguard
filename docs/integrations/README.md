@@ -64,7 +64,12 @@ GitLab + GitHub snippets below both wire this up.
 ```yaml
 # .packguard.yml
 defaults:
-  offset: -1         # allow one major behind latest
+  # Three-axis offset (v0.2.0+). Non-positive integers;
+  # missing keys default to 0.
+  offset:
+    major: 0         # latest major
+    minor: -1        # one minor behind
+    patch: 0         # latest patch (security fixes)
   allow_patch: true
   stability: stable
   min_age_days: 7

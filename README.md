@@ -236,13 +236,32 @@ behind, always take patches; `stability: stable`, `min_age_days: 7`, block
 high/critical CVEs + malware + deprecated + yanked, typosquat = warn).
 Refuses to overwrite unless `--force`.
 
-### `packguard scan [path] [--offline] [--force]`
+### `packguard scan [path] [--no-recursive] [--depth N] [--include GLOB]… [--exclude GLOB]… [--dry-run] [--yes] [--offline] [--force]`
+
+**Recursive by default** (v0.2.0+). Pointed at any directory, `packguard scan`
+finds every scannable project under it:
+
+1. Marker-driven first — reads `pnpm-workspace.yaml`, `package.json.workspaces`,
+   `turbo.json` / `nx.json` / `lerna.json` / `rush.json` if present.
+2. Filesystem walk fallback, respecting `.gitignore` and skipping `node_modules`,
+   `.pnpm`, `target`, `dist`, `build`, `.next`, `.venv`, `__pycache__`, `vendor`,
+   `.git`, `.turbo`, `.nx`, `.cache`, `coverage`. Walk depth capped at `--depth 4`.
+
+If `path` itself is a valid project (has a `package.json` or `pyproject.toml`),
+it's scanned directly and discovery is skipped. Each discovered project is
+scanned independently — a parse failure on one (e.g. `package-lock.json` v1) is
+logged and the scan continues.
+
+Pass `--no-recursive` for the pre-0.2.0 single-project behaviour. Use
+`--dry-run` to preview discovery without hitting any registry. In CI,
+`--yes` bypasses the `>50 projects found` confirmation prompt.
 
 Walks the Tier 1 ecosystems (npm, PyPI), parses manifests + lockfiles, queries
 the registry for the full version history, and persists everything to SQLite.
-A SHA-256 fingerprint of (manifest + lockfiles) gates the registry round-trip;
-re-runs that match the cached fingerprint short-circuit. `--offline` errors
-cleanly when the cache was never populated.
+A SHA-256 fingerprint of (manifest + lockfiles) gates the registry round-trip
+**per project**; re-runs that match the cached fingerprint short-circuit.
+`--force` invalidates the cache. `--offline` errors cleanly when the cache
+was never populated.
 
 ### `packguard sync [--skip-osv] [--skip-ghsa] [--ghsa-cache <path>] [--all]`
 
