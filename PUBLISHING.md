@@ -95,11 +95,17 @@ halfway through, fix + rerun from the failing step.
 
    ```bash
    export CARGO_REGISTRY_TOKEN="$CRATES_IO_TOKEN"
-   for crate in core store policy intel server cli; do
-     cargo publish -p packguard-$crate
+   # Note: from v0.2.0 the binary crate is `packguard` (no `-cli`).
+   # Library crates keep the `packguard-<name>` prefix.
+   for crate in packguard-core packguard-store packguard-policy \
+                packguard-intel packguard-server packguard; do
+     cargo publish -p "$crate"
      sleep 30
    done
    ```
+
+   In CI, the workflow `gh workflow run crates-publish.yml -f dry_run=false`
+   does the same thing in the same order.
 
 6. **Update the Homebrew tap**
 
@@ -190,9 +196,11 @@ criterion met — we know the tool has real operational impact.
 
 If a published release turns out to be broken:
 
-- **crates.io**: `cargo yank --version X.Y.Z -p packguard-<crate>` for
-  each published crate. Yanking doesn't delete, it just stops fresh
-  `cargo install` from picking the version up.
+- **crates.io**: `cargo yank --version X.Y.Z <crate>` for each
+  published crate. Yanking doesn't delete, it just stops fresh
+  `cargo install` from picking the version up. Pinning users can
+  still install the yanked release with
+  `cargo install <crate> --version X.Y.Z --locked`.
 - **Docker**: retag `:latest` to the previous working version:
 
   ```bash
@@ -206,6 +214,72 @@ If a published release turns out to be broken:
 - **GitHub release**: mark as "Pre-release" so it stops showing up in
   `releases/latest` (which the installer resolves). Don't delete —
   leaves dangling links worse than a known-broken release.
+
+---
+
+## v0.2.0 — one-time crate rename (Phase 9c)
+
+**Context.** Pre-0.2.0 the binary crate lived on crates.io under
+`packguard-cli`. It produced a binary named `packguard`, which made
+`cargo install packguard` a 404 — users had to know to type
+`cargo install packguard-cli` instead. From 0.2.0 onward the crate
+itself is named `packguard`, so the obvious command works.
+
+The directory `crates/packguard-cli/` is intentionally unchanged —
+the dir name is an implementation detail and renaming it would churn
+a lot of paths (scripts, docs, historical git archaeology) for no
+observable benefit. The cargo manifest is the only file that carries
+the published crate name; that's where the change is scoped.
+
+### What to run after the 0.2.0 tag is live
+
+The regular release + crates-publish flow takes care of the new
+`packguard` crate automatically. The only new manual step is the
+one-time yank of `packguard-cli@0.1.0`:
+
+```bash
+# After packguard@0.2.0 is live on crates.io and you've smoke-tested
+# it (`cargo install packguard && packguard --version`), yank the
+# legacy publish so `cargo install packguard-cli` stops resolving to
+# a release that will never get newer versions.
+cargo yank --version 0.1.0 packguard-cli
+```
+
+**Recommendation: Option A (yank).** The yanked release stays
+installable for anyone who pins it explicitly —
+`cargo install packguard-cli --version 0.1.0 --locked` continues to
+work — but it's hidden from `cargo install packguard-cli` defaults,
+so no one accidentally gets the frozen 0.1.0 in a fresh pipeline.
+
+**Option B (don't yank)** is also fine if the caution is worth more
+than the cleanliness: you simply stop publishing under
+`packguard-cli` and document the rename loudly in the README. The
+downside is that `cargo install packguard-cli` keeps quietly working
+but pinning users there on a release that will never ship security
+intel updates.
+
+### Undoing the yank
+
+If the yank causes a regression (a downstream pin nobody flagged),
+reverse it:
+
+```bash
+cargo yank --version 0.1.0 --undo packguard-cli
+```
+
+### Checklist before tagging 0.2.0
+
+1. `./scripts/bump-version.sh 0.2.0` — bumps `Cargo.toml`, refreshes
+   `Cargo.lock`, creates a local annotated tag `v0.2.0`.
+2. `git push origin main --follow-tags` — kicks off the release
+   workflow (binaries + Docker + Homebrew).
+3. Wait for the release workflow to finish (~8 min cold; linux/arm64
+   takes the longest because of QEMU).
+4. `gh workflow run crates-publish.yml -f dry_run=false` — publishes
+   all six crates in the correct order.
+5. Verify: `cargo install packguard --features ui-embed` on a clean
+   machine, `packguard --version` prints `0.2.0`.
+6. Optional (Option A): `cargo yank --version 0.1.0 packguard-cli`.
 
 Document the rollback in a GitHub Release note on the next good tag so
 users know what happened.
