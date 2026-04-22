@@ -69,8 +69,12 @@ echo "bumping workspace: ${CURRENT_VERSION} -> ${NEW_VERSION}"
 # resolve through workspace.package.version.workspace = true.
 # BUT internal dep *version* fields (path + version = "X.Y.Z") must
 # match the workspace version too; rewrite them in place.
+#
+# Pattern is ^version = "..." with quoted value, which matches the
+# [workspace.package].version line and nothing else (version.workspace
+# = true has no quoted value). Portable across GNU and BSD sed.
 sed -i.bak -E \
-  "0,/^version[[:space:]]*=/{s/^version[[:space:]]*=[[:space:]]*\"[^\"]+\"/version = \"${NEW_VERSION}\"/;}" \
+  "s/^version = \"[^\"]+\"$/version = \"${NEW_VERSION}\"/" \
   Cargo.toml
 rm -f Cargo.toml.bak
 
