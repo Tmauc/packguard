@@ -176,6 +176,11 @@ enum Cmd {
         format: GraphFormat,
     },
     /// Scan a project, query registries, and persist the result to SQLite.
+    ///
+    /// Phase 9a: recursive auto-discovery is the default. Point at a
+    /// monorepo root and every `package.json` / `pyproject.toml` it
+    /// finds under pnpm/npm/lerna workspaces or the walk becomes its
+    /// own scan. Use `--no-recursive` for legacy single-project mode.
     Scan {
         /// Path to the project root. Defaults to the current directory.
         #[arg(default_value = ".")]
@@ -186,6 +191,30 @@ enum Cmd {
         /// Re-fetch even if the manifest fingerprint matches the stored one.
         #[arg(long)]
         force: bool,
+        /// Disable auto-discovery — scan exactly `<path>` and fail if
+        /// there is no manifest there (legacy pre-0.2.0 behaviour).
+        #[arg(long)]
+        no_recursive: bool,
+        /// Max depth for the filesystem walk when no monorepo marker
+        /// is present. Counts the root as depth 0.
+        #[arg(long, default_value_t = packguard_core::DEFAULT_MAX_DEPTH)]
+        depth: usize,
+        /// Additional glob (relative to `<path>`) to include as a
+        /// project candidate. Repeatable.
+        #[arg(long = "include", value_name = "GLOB")]
+        include_globs: Vec<String>,
+        /// Additional glob (relative to `<path>`) to exclude from the
+        /// walk. Layered on top of the built-in denylist. Repeatable.
+        #[arg(long = "exclude", value_name = "GLOB")]
+        exclude_globs: Vec<String>,
+        /// List the projects discovery would scan and exit — no
+        /// registry calls, no DB writes.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the confirmation prompt when more than 50 projects are
+        /// discovered. Useful in CI.
+        #[arg(long)]
+        yes: bool,
     },
     /// List every repo the store knows about (path, ecosystem, last scan,
     /// fingerprint, dep count). Useful when `report`/`audit`/`graph` bails
@@ -252,7 +281,29 @@ async fn main() -> Result<()> {
             path,
             offline,
             force,
-        } => scan(path, offline, force, &store_path).await,
+            no_recursive,
+            depth,
+            include_globs,
+            exclude_globs,
+            dry_run,
+            yes,
+        } => {
+            scan(
+                path,
+                ScanOptions {
+                    offline,
+                    force,
+                    no_recursive,
+                    depth,
+                    include_globs,
+                    exclude_globs,
+                    dry_run,
+                    yes,
+                },
+                &store_path,
+            )
+            .await
+        }
         Cmd::Ui {
             path,
             port,
@@ -1347,27 +1398,301 @@ fn resolve_store_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
     Ok(home.join(".packguard").join("store.db"))
 }
 
-async fn scan(path: PathBuf, offline: bool, force: bool, store_path: &Path) -> Result<()> {
+#[derive(Debug, Clone)]
+struct ScanOptions {
+    offline: bool,
+    force: bool,
+    no_recursive: bool,
+    depth: usize,
+    include_globs: Vec<String>,
+    exclude_globs: Vec<String>,
+    dry_run: bool,
+    yes: bool,
+}
+
+/// Short summary returned by `handle_project` so the caller can print
+/// the per-project progress line without re-traversing the project.
+#[derive(Debug, Clone, Copy, Default)]
+struct ScanProjectSummary {
+    deps: usize,
+    skipped_unchanged: bool,
+}
+
+async fn scan(path: PathBuf, opts: ScanOptions, store_path: &Path) -> Result<()> {
+    use packguard_core::DiscoveryOptions;
+
+    let discovery_opts = DiscoveryOptions {
+        max_depth: opts.depth,
+        no_recursive: opts.no_recursive,
+        include_globs: opts.include_globs.clone(),
+        exclude_globs: opts.exclude_globs.clone(),
+    };
+
+    if !path.exists() {
+        anyhow::bail!("path does not exist: {}", path.display());
+    }
+
+    println!(
+        "{} Discovering projects under {} …",
+        "🔍".dimmed(),
+        path.display().to_string().bold(),
+    );
+    let outcome = packguard_core::discover(&path, &discovery_opts)
+        .with_context(|| format!("discovering projects under {}", path.display()))?;
+
+    for warn in &outcome.warnings {
+        eprintln!("{} {}", "warn".yellow(), warn);
+    }
+
+    if outcome.projects.is_empty() {
+        if opts.no_recursive {
+            anyhow::bail!(
+                "no supported manifest at {} (try dropping --no-recursive)",
+                path.display(),
+            );
+        }
+        anyhow::bail!(
+            "no scannable projects found under {}. \
+             Point at a project root, or pass `--include '<glob>'` to widen discovery.",
+            path.display(),
+        );
+    }
+
+    // Pretty discovery summary.
+    print_discovery_summary(&outcome);
+
+    if opts.dry_run {
+        println!(
+            "\n{} {} project{} would be scanned.",
+            "→".dimmed(),
+            outcome.projects.len().to_string().bold(),
+            if outcome.projects.len() == 1 { "" } else { "s" },
+        );
+        return Ok(());
+    }
+
+    if outcome.is_large() && !opts.yes && !prompt_continue(outcome.projects.len())? {
+        println!("{} aborted.", "✕".red());
+        return Ok(());
+    }
+
     let ecosystems = default_ecosystems()?;
     let mut store = Store::open(store_path)
         .with_context(|| format!("opening store at {}", store_path.display()))?;
-    let mut any_detected = false;
 
-    for eco in &ecosystems {
-        let projects = eco.detect(&path)?;
-        if projects.is_empty() {
-            continue;
+    let multi = outcome.projects.len() > 1;
+    let mut scanned = 0usize;
+    let mut skipped = 0usize;
+    let mut failed: Vec<(PathBuf, anyhow::Error)> = Vec::new();
+
+    if multi {
+        println!("\n{}", "Scanning…".bold());
+    }
+
+    for discovered in &outcome.projects {
+        let label = project_label(discovered);
+        let mut any_eco_hit = false;
+
+        for eco in &ecosystems {
+            let projects = match eco.detect(&discovered.path) {
+                Ok(p) => p,
+                Err(err) => {
+                    eprintln!(
+                        "{} {} detect failed: {:#}",
+                        "warn".yellow(),
+                        format!("[{}]", eco.id()).dimmed(),
+                        err,
+                    );
+                    continue;
+                }
+            };
+            if projects.is_empty() {
+                continue;
+            }
+            any_eco_hit = true;
+            for project in projects {
+                let outcome = handle_project(
+                    &mut store,
+                    &**eco,
+                    &project,
+                    &discovered.path,
+                    opts.offline,
+                    opts.force,
+                    multi,
+                )
+                .await;
+                match outcome {
+                    Ok(summary) => {
+                        if multi {
+                            let marker = discovered
+                                .source
+                                .marker_label()
+                                .map(|m| format!(" · {m}"))
+                                .unwrap_or_default();
+                            let status = if summary.skipped_unchanged {
+                                "↺ cached".dimmed().to_string()
+                            } else {
+                                format!("{} deps", summary.deps)
+                            };
+                            println!(
+                                "  {} {}  {}  ({}{})",
+                                "✓".green(),
+                                label.clone().bold(),
+                                status,
+                                eco.id(),
+                                marker,
+                            );
+                        }
+                        if summary.skipped_unchanged {
+                            skipped += 1;
+                        } else {
+                            scanned += 1;
+                        }
+                    }
+                    Err(err) => {
+                        if multi {
+                            println!("  {} {}  — {:#}", "✗".red(), label.clone().bold(), err);
+                        }
+                        failed.push((discovered.path.clone(), err));
+                    }
+                }
+            }
         }
-        any_detected = true;
-        for project in projects {
-            handle_project(&mut store, &**eco, &project, &path, offline, force).await?;
+
+        if !any_eco_hit && multi {
+            // Discovery said "candidate" (e.g. an --include glob) but
+            // no ecosystem actually knew how to parse it. Warn softly.
+            eprintln!(
+                "  {} {}  — no ecosystem recognised the manifest",
+                "⋯".yellow(),
+                label.clone(),
+            );
         }
     }
 
-    if !any_detected {
-        anyhow::bail!("no supported manifest found at {}", path.display());
+    if multi {
+        let total = outcome.projects.len();
+        println!(
+            "\n{} project{} scanned{}. Run `{}` or `{}`.",
+            scanned.to_string().bold(),
+            if total == 1 { "" } else { "s" },
+            if skipped > 0 {
+                format!(", {skipped} unchanged")
+            } else {
+                String::new()
+            },
+            "packguard report".cyan(),
+            "packguard ui".cyan(),
+        );
+        if !failed.is_empty() {
+            anyhow::bail!(
+                "{} project{} failed to scan (see above)",
+                failed.len(),
+                if failed.len() == 1 { "" } else { "s" },
+            );
+        }
     }
+
     Ok(())
+}
+
+fn print_discovery_summary(outcome: &packguard_core::DiscoveryOutcome) {
+    use packguard_core::ProjectSource;
+
+    // Single-project-at-root cases (legacy `--no-recursive` or the
+    // repo just happens to have one manifest at the root). Skip the
+    // noisy "walked filesystem" header.
+    let single_root = outcome.projects.len() == 1
+        && outcome.projects[0].relative.as_os_str().is_empty()
+        && outcome.markers_found.is_empty();
+
+    // Header: marker(s) used, or "walk only".
+    if single_root {
+        // Nothing to say — the scan command itself will print a line
+        // per project below, and for a single project that's enough.
+    } else if outcome.markers_found.is_empty() {
+        println!(
+            "{} walked filesystem — {} candidate{} found",
+            "→".dimmed(),
+            outcome.projects.len().to_string().bold(),
+            if outcome.projects.len() == 1 { "" } else { "s" },
+        );
+    } else {
+        let marker_hits = outcome
+            .projects
+            .iter()
+            .filter(|p| p.source.marker_label().is_some())
+            .count();
+        let walk_hits = outcome.projects.len() - marker_hits;
+        println!(
+            "{} markers: {} — {} project{} from markers",
+            "→".dimmed(),
+            outcome.marker_summary().bold(),
+            marker_hits.to_string().bold(),
+            if marker_hits == 1 { "" } else { "s" },
+        );
+        if walk_hits > 0 {
+            println!(
+                "{} {} additional project{} found by filesystem walk",
+                "→".dimmed(),
+                walk_hits.to_string().bold(),
+                if walk_hits == 1 { "" } else { "s" },
+            );
+        }
+    }
+
+    // Only list projects when we have more than one — keeps the
+    // single-project case as quiet as before.
+    if outcome.projects.len() > 1 {
+        println!();
+        let name_width = outcome
+            .projects
+            .iter()
+            .map(|p| project_label(p).chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(20);
+        for p in &outcome.projects {
+            let label = project_label(p);
+            let pad = name_width.saturating_sub(label.chars().count());
+            let spaces = " ".repeat(pad + 2);
+            let source = match &p.source {
+                ProjectSource::PnpmWorkspace => "pnpm-workspace.yaml".to_string(),
+                ProjectSource::NpmWorkspaces => "package.json#workspaces".to_string(),
+                ProjectSource::LernaPackages => "lerna.json".to_string(),
+                ProjectSource::Walk => "walk".to_string(),
+                ProjectSource::RootManifest => "root".to_string(),
+                ProjectSource::Legacy => "legacy".to_string(),
+            };
+            println!("    {}{}({})", label.bold(), spaces, source.dimmed());
+        }
+    }
+}
+
+fn project_label(p: &packguard_core::DiscoveredProject) -> String {
+    if p.relative.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        p.relative.display().to_string()
+    }
+}
+
+fn prompt_continue(count: usize) -> Result<bool> {
+    use std::io::{self, BufRead, Write};
+    eprint!(
+        "\n{} Discovered {} projects (>{}). Continue? [y/N] ",
+        "?".yellow(),
+        count,
+        packguard_core::LARGE_COUNT_THRESHOLD,
+    );
+    io::stderr().flush().ok();
+    let stdin = io::stdin();
+    let mut line = String::new();
+    stdin.lock().read_line(&mut line)?;
+    Ok(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 async fn handle_project(
@@ -1377,7 +1702,8 @@ async fn handle_project(
     repo_root: &Path,
     offline: bool,
     force: bool,
-) -> Result<()> {
+    compact: bool,
+) -> Result<ScanProjectSummary> {
     let fingerprint = fingerprint_project(project)?;
     let last_fp = store.last_fingerprint(repo_root, eco.id())?;
     let unchanged = last_fp.as_deref() == Some(fingerprint.as_str());
@@ -1401,18 +1727,23 @@ async fn handle_project(
     };
 
     if unchanged && !force && !schema_drifted {
-        println!(
-            "{} {} {} — no changes since last scan (fingerprint {}…). \
-             Pass {} to re-fetch anyway.",
-            "✓".green(),
-            format!("[{}]", eco.id()).dimmed(),
-            project.name.as_deref().unwrap_or("<unnamed>").bold(),
-            &fingerprint[..8],
-            "--force".cyan(),
-        );
-        return Ok(());
+        if !compact {
+            println!(
+                "{} {} {} — no changes since last scan (fingerprint {}…). \
+                 Pass {} to re-fetch anyway.",
+                "✓".green(),
+                format!("[{}]", eco.id()).dimmed(),
+                project.name.as_deref().unwrap_or("<unnamed>").bold(),
+                &fingerprint[..8],
+                "--force".cyan(),
+            );
+        }
+        return Ok(ScanProjectSummary {
+            deps: project.dependencies.len(),
+            skipped_unchanged: true,
+        });
     }
-    if schema_drifted {
+    if schema_drifted && !compact {
         println!(
             "{} {} {} — store schema evolved since last scan, re-scanning to \
              populate the new tables.",
@@ -1457,8 +1788,13 @@ async fn handle_project(
     let stats = store.save_project(repo_root, project, &remotes, &fingerprint)?;
     tracing::debug!(?stats, "persisted project");
 
-    render_project(eco, project, &remotes);
-    Ok(())
+    if !compact {
+        render_project(eco, project, &remotes);
+    }
+    Ok(ScanProjectSummary {
+        deps: project.dependencies.len(),
+        skipped_unchanged: false,
+    })
 }
 
 fn fingerprint_project(project: &Project) -> Result<String> {
