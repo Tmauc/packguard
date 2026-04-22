@@ -220,9 +220,11 @@ By default the store lives at `~/.packguard/store.db`. Override with the global
 ### `packguard init [path] [--force]`
 
 Detects supported ecosystems under `path` and writes
-`<path>/.packguard.yml` with the conservative defaults template (`offset: -1`,
-`stability: stable`, `min_age_days: 7`, block high/critical CVEs + malware +
-deprecated + yanked, typosquat = warn). Refuses to overwrite unless `--force`.
+`<path>/.packguard.yml` with the conservative defaults template
+(`offset: { major: 0, minor: -1, patch: 0 }` — latest major, one minor
+behind, always take patches; `stability: stable`, `min_age_days: 7`, block
+high/critical CVEs + malware + deprecated + yanked, typosquat = warn).
+Refuses to overwrite unless `--force`.
 
 ### `packguard scan [path] [--offline] [--force]`
 
@@ -336,9 +338,17 @@ hint on those errors. `--json` for scripting.
 
 Full reference in CONTEXT.md §6. Short tour:
 
+**v0.2.0 breaking change** — `offset` is now a three-axis object
+(`major` / `minor` / `patch`). The old scalar form (`offset: -1`) is
+rejected at parse time with a migration hint. Full semantics and worked
+examples live at [Offset policy](https://packguard-docs.vercel.app/concepts/offset-policy).
+
 ```yaml
 defaults:
-  offset: -1              # stay one major behind latest
+  offset:
+    major: 0              # stay on the latest major
+    minor: -1             # … one minor behind
+    patch: 0              # … always pick the latest patch
   allow_patch: true
   allow_security_patch: true
   stability: stable       # exclude prereleases
@@ -352,21 +362,23 @@ defaults:
 
 overrides:
   - match: "react"          # exact name
-    offset: 0
+    offset: { major: 0, minor: 0, patch: 0 }   # always latest
   - match: "lodash"
     pin: "4.17.21"          # hard pin
   - match: "@babel/*"       # glob
-    offset: -2
+    offset: { major: -1 }
 
 groups:
   - name: security-critical
     match: ["jsonwebtoken", "bcrypt*", "@auth/*"]
-    offset: 0
+    offset: { major: 0, minor: 0, patch: 0 }
     min_age_days: 0
 ```
 
 Resolution cascade: `defaults` → every matching `group` → every matching
-`override`, later layers strictly overriding per-field.
+`override`, later layers strictly overriding per-field. The resolver then
+walks the three offset axes in order (major → minor → patch), surfacing
+`InsufficientCandidates` with a per-axis reason when history is too narrow.
 
 ---
 

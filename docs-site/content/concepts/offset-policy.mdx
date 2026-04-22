@@ -2,13 +2,73 @@
 
 Most governance tools have two default modes: pin everything (Dependabot-style "every update is a PR") or update everything (Renovate-style "stay on HEAD"). Both are defensible. Neither matches how most teams actually ship.
 
-PackGuard's model is different — **offset**. You declare *how far behind* `latest` each package is allowed to drift, and the scanner classifies every installed version against that rule.
+PackGuard's model is different — **offset**. You declare *how far behind* `latest` each package is allowed to drift, independently on each of the three semver axes (**major**, **minor**, **patch**), and the scanner classifies every installed version against that rule.
 
-## The `.packguard.yml`
+## The three-axis offset (v0.2.0)
+
+Offset is an object with three non-positive integer keys. Missing keys default to `0`. The canonical shape:
+
+```yaml
+offset:
+  major: 0      # "stay on the latest major"
+  minor: -1     # "… one minor behind"
+  patch: 0      # "… always pick the latest patch"
+```
+
+That example — `{ major: 0, minor: -1, patch: 0 }` — is the default `packguard init` writes. It encodes the security posture most teams converge on:
+
+- **Patches** are overwhelmingly bug and security fixes → always take them.
+- **Minors** sometimes carry regressions → let them bake for one cycle.
+- **Majors** ship breaking changes → staying on the latest is the fastest way to get newer fixes, as long as you actively track upgrades.
+
+### How resolution works
+
+Given `latest = X.Y.Z` (after the stability and `min_age_days` filters have pruned prereleases / fresh releases):
+
+```
+target_major = X - |offset.major|
+candidates   = versions where version.major == target_major
+
+if offset.minor != 0:
+  max_minor    = max(minor over candidates)
+  target_minor = max_minor - |offset.minor|
+  candidates   = candidates where version.minor == target_minor
+else:
+  candidates   = candidates where version.minor == max_minor
+
+if offset.patch != 0:
+  max_patch    = max(patch over candidates)
+  target_patch = max_patch - |offset.patch|
+  recommended  = max version at (target_major, target_minor, target_patch)
+else:
+  recommended  = max version at (target_major, target_minor, *)
+```
+
+If any axis overshoots what the registry actually published — e.g. `{ minor: -3 }` on a major that only has one minor — the classifier returns `InsufficientCandidates` with a per-axis reason. That's surfaced in `packguard report` output and in the dashboard "Policy eval" cascade trace.
+
+### Worked examples (React history: 12 versions across 16 → 19)
+
+Fixture: `16.14.0`, `17.0.0`, `17.0.2`, `18.0.0`, `18.2.0`, `18.3.1`, `19.0.0`, `19.1.0`, `19.2.0`, `19.2.5` (prereleases elided).
+
+| Offset                              | Recommended       |
+| ----------------------------------- | ----------------- |
+| `{ major: 0, minor: 0, patch: 0 }`  | `19.2.5`          |
+| `{ major: 0, minor: -1, patch: 0 }` | `19.1.0`          |
+| `{ major: -1 }`                     | `18.3.1`          |
+| `{ major: -2 }`                     | `17.0.2`          |
+| `{ major: 0, patch: -1 }`           | Insufficient (no `19.2.4`) |
+| `{ minor: -99 }`                    | Insufficient (`offset.minor=99 exceeds latest minor 2 on major 19`) |
+
+The cascade is deterministic. If two teams write the same policy they get the same answer on the same registry history, always.
+
+## Full `.packguard.yml`
 
 ```yaml
 defaults:
-  offset: -1              # stay one major behind latest
+  offset:
+    major: 0
+    minor: -1
+    patch: 0
   allow_patch: true
   allow_security_patch: true
   stability: stable       # exclude prereleases from consideration
@@ -22,20 +82,41 @@ defaults:
 
 overrides:
   - match: "react"
-    offset: 0             # React must be on latest
+    offset: { major: 0, minor: 0, patch: 0 }    # always latest
   - match: "lodash"
-    pin: "4.17.21"        # hard pin, no drift allowed
-  - match: "@babel/*"     # glob — apply to every Babel scoped package
-    offset: -2
+    pin: "4.17.21"                              # hard pin, no drift allowed
+  - match: "@babel/*"                           # glob — apply to every Babel scoped package
+    offset: { major: -1 }
 
 groups:
   - name: security-critical
     match: ["jsonwebtoken", "bcrypt*", "@auth/*"]
-    offset: 0
+    offset: { major: 0, minor: 0, patch: 0 }    # always latest
     min_age_days: 0
 ```
 
 Resolution cascade: `defaults` → every matching `group` → every matching `override`. Later layers strictly override per-field. A package can match multiple groups — later matches win, which is why `overrides` (applied last) give you the last word.
+
+## Migrating from v0.1.x scalar offsets
+
+The pre-0.2.0 scalar form `offset: -1` is **no longer accepted**. `packguard scan` / `report` / `audit` will error out at parse time with a rewrite hint:
+
+```
+Error: policy `offset` must be an object with major/minor/patch keys,
+       got scalar `-1`.
+       Rewrite as `offset: { major: -1, minor: 0, patch: 0 }` (or the
+       long form). See https://packguard-docs.vercel.app/concepts/offset-policy
+```
+
+Translation table for the common cases:
+
+| v0.1.x      | v0.2.0+                                |
+| ----------- | -------------------------------------- |
+| `offset: 0` | `offset: { major: 0 }`                 |
+| `offset: -1` | `offset: { major: -1 }`               |
+| `offset: -2` | `offset: { major: -2 }`               |
+
+That's the minimum-change migration. Consider switching to `{ major: 0, minor: -1, patch: 0 }` — the new `packguard init` default — if you want the security-fix-flow described above.
 
 ## Why offset instead of pin-or-latest
 
@@ -43,13 +124,13 @@ Resolution cascade: `defaults` → every matching `group` → every matching `ov
 
 **Update-everything (Renovate-style)** — aggressive auto-merge is great until a breaking minor sneaks through. And you can't ask "are we drifted?" of the codebase — every repo is always on HEAD, by definition.
 
-**Offset (PackGuard)** — you declare the bar ("one major behind latest is fine"), and the CI gate tells you when a workspace has drifted below it. The drift signal is the thing you actually care about, expressed as a policy, not as a PR stream.
+**Offset (PackGuard)** — you declare the bar ("one minor behind, always take patches"), and the CI gate tells you when a workspace has drifted below it. The drift signal is the thing you actually care about, expressed as a policy, not as a PR stream.
 
 ## What offset measures
 
-Offset compares *what's installed* against *what's available on the registry right now*. For a package on `^4.17.21` with `latest = 4.17.23`, the installed delta is `0 minor · 2 patch` — that's compliant under `offset: -1` + `allow_patch: true`.
+Offset compares *what's installed* against *what's available on the registry right now*. For a package on `^4.17.21` with `latest = 4.17.23`, the installed delta is `0 minor · 2 patch` — that's compliant under `{ major: 0, minor: -1, patch: 0 }`.
 
-For a package on `^2.0.0` with `latest = 5.4.0`, the installed delta is `3 major · … · …` — that's a `violation` under `offset: -1`.
+For a package on `^2.0.0` with `latest = 5.4.0`, the installed delta is `3 major · … · …` — that's a `violation` under `{ major: -1 }` (the installed package is too old for the policy).
 
 The classifier uses the full version history returned by the registry, so the answer doesn't depend on what your lockfile *was* last quarter; it depends on what ships *today*.
 

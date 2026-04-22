@@ -25,7 +25,11 @@ Every CVE that matches the installed version. Severity badge + advisory id + ran
 
 ### Policy eval
 
-What the effective policy says about this row. Shows the `defaults → groups → overrides` cascade the evaluator walked, which rule fired, and what the final verdict was. Also shows the *hypothetical* verdict if you tweaked a field — useful when drafting a policy change.
+What the effective policy says about this row. Three panels:
+
+- **Offset — three-axis cascade** displays the resolved `major` / `minor` / `patch` axes in signed form (the shape you write in YAML). Overrides from the `defaults → groups → overrides` cascade are already merged in.
+- **Cascade trace** is an ordered list of the per-axis decisions the resolver took — e.g. *"offset.major=0 → target major=19 (latest=19)"*, *"offset.minor=1 → target minor=1 (max on 19: 2)"*, *"remediation: picked 19.1.0"*. When a package pins or the history is too narrow, the trace explains which axis exhausted the pool.
+- **Other rules** shows `pin` / `stability` / `min_age_days` / the final `recommended` version.
 
 ### Compatibility
 

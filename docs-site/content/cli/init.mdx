@@ -12,7 +12,8 @@ packguard init [path] [--force] [--with-ci gitlab|github|jenkins]
 
 - Detects supported ecosystems under `path` (defaults to `.`).
 - Writes `<path>/.packguard.yml` with the conservative defaults template:
-  - `offset: -1`, `allow_patch: true`, `stability: stable`, `min_age_days: 7`
+  - `offset: { major: 0, minor: -1, patch: 0 }` — latest major, one minor behind, always take patches (the canonical security posture; see [Offset policy](/concepts/offset-policy))
+  - `allow_patch: true`, `stability: stable`, `min_age_days: 7`
   - `block.cve_severity: [high, critical]`, `block.malware: true`, `block.deprecated: true`, `block.yanked: true`
   - `block.typosquat: warn`
 - Refuses to overwrite an existing `.packguard.yml` unless `--force` is passed.

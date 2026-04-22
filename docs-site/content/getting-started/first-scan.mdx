@@ -23,7 +23,7 @@ That's it. The store lives at `~/.packguard/store.db` by default — override wi
 
 ## What each step does
 
-**`init`** drops a `.packguard.yml` with `offset: -1`, `stability: stable`, `min_age_days: 7`, and blocking on high/critical CVEs + malware + deprecated + yanked. Typosquat defaults to `warn` (noisy signal, human-in-the-loop review).
+**`init`** drops a `.packguard.yml` with `offset: { major: 0, minor: -1, patch: 0 }` (latest major, one minor behind, always take patches), `stability: stable`, `min_age_days: 7`, and blocking on high/critical CVEs + malware + deprecated + yanked. Typosquat defaults to `warn` (noisy signal, human-in-the-loop review).
 
 **`scan`** parses `package-lock.json` / `pnpm-lock.yaml` / `poetry.lock` / `uv.lock`, hits the registry for full version history + stability metadata, and persists everything into the store. A SHA-256 fingerprint of `(manifest + lockfiles)` short-circuits unchanged re-runs.
 
