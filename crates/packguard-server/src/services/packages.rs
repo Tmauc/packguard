@@ -12,8 +12,8 @@ use anyhow::Result;
 use packguard_core::{MalwareKind, Severity};
 use packguard_intel::match_vulnerabilities;
 use packguard_policy::{
-    compute_recommended_version_full, evaluate_dependency_full, Compliance, Dialect, Policy,
-    Stability,
+    build_offset_cascade_trace, compute_recommended_version_full, evaluate_dependency_full,
+    Compliance, Dialect, Policy, Stability,
 };
 use packguard_store::Store;
 
@@ -188,8 +188,16 @@ pub fn detail(store: &Store, ecosystem: &str, name: &str) -> Result<Option<Packa
         dialect,
         now,
     );
+    let cascade_trace = build_offset_cascade_trace(
+        &resolved,
+        &releases,
+        &vulns_by_version,
+        &malware_core,
+        dialect,
+        now,
+    );
     let policy_trace = PolicyTrace {
-        offset: resolved.offset,
+        offset: resolved.offset.into(),
         pin: resolved.pin.clone(),
         stability: match resolved.stability {
             Stability::Stable => "stable",
@@ -203,6 +211,7 @@ pub fn detail(store: &Store, ecosystem: &str, name: &str) -> Result<Option<Packa
             installed.as_deref(),
             recommended.as_deref(),
         ),
+        cascade: cascade_trace.lines,
     };
 
     Ok(Some(PackageDetail {

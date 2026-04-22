@@ -414,11 +414,19 @@ function MalwareTab({ reports }: { reports: MalwareEntry[] }) {
 
 function PolicyTab({ detail }: { detail: PackageDetail }) {
   const p = detail.policy_trace;
+  // Display axes as signed integers (YAML form) — the wire shape is the
+  // absolute distance, but users think in negative-deltas-from-latest.
+  const signed = (n: number) => (n === 0 ? "0" : `-${n}`);
+  const offsetAxes: { label: string; value: string }[] = [
+    { label: "major", value: signed(p.offset.major) },
+    { label: "minor", value: signed(p.offset.minor) },
+    { label: "patch", value: signed(p.offset.patch) },
+  ];
   const rules: { label: string; value: string }[] = [
-    { label: "offset", value: String(p.offset) },
     { label: "pin", value: p.pin ?? "—" },
     { label: "stability", value: p.stability },
     { label: "min_age_days", value: String(p.min_age_days) },
+    { label: "recommended", value: p.recommended ?? "—" },
   ];
   return (
     <div className="space-y-3">
@@ -433,7 +441,38 @@ function PolicyTab({ detail }: { detail: PackageDetail }) {
       </div>
       <div className="rounded-md border border-zinc-200 bg-white p-3">
         <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
-          Resolved rules for <span className="font-mono">{detail.name}</span>
+          Offset — three-axis cascade
+        </div>
+        <dl className="grid grid-cols-3 gap-2 text-sm">
+          {offsetAxes.map((r) => (
+            <div key={r.label}>
+              <dt className="text-xs text-zinc-500">{r.label}</dt>
+              <dd className="font-mono text-zinc-900">{r.value}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+      {p.cascade.length > 0 && (
+        <div className="rounded-md border border-zinc-200 bg-white p-3">
+          <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
+            Cascade trace
+          </div>
+          <ol className="space-y-1 text-sm text-zinc-700">
+            {p.cascade.map((line, i) => (
+              <li
+                key={i}
+                className="flex gap-2 font-mono text-xs leading-relaxed"
+              >
+                <span className="text-zinc-400">{i + 1}.</span>
+                <span>{line}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+      <div className="rounded-md border border-zinc-200 bg-white p-3">
+        <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
+          Other rules for <span className="font-mono">{detail.name}</span>
         </div>
         <dl className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
           {rules.map((r) => (

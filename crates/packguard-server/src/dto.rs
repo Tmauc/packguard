@@ -201,11 +201,33 @@ pub struct MalwareEntry {
     pub reported_at: Option<String>,
 }
 
+/// Three-axis offset, mirrors `packguard_policy::Offset`. Each axis is
+/// a non-negative distance below the latest `{major,minor,patch}` — so
+/// `-1` in YAML surfaces here as `1`. All zero means "always latest".
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "PolicyOffset.ts")]
+pub struct PolicyOffset {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl From<packguard_policy::Offset> for PolicyOffset {
+    fn from(o: packguard_policy::Offset) -> Self {
+        Self {
+            major: o.major,
+            minor: o.minor,
+            patch: o.patch,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export_to = "PolicyTrace.ts")]
 pub struct PolicyTrace {
-    /// Offset in majors below latest (0 = latest allowed).
-    pub offset: u32,
+    /// Three-axis offset the resolver used for this package. Displayed in
+    /// the dashboard "Policy eval" tab.
+    pub offset: PolicyOffset,
     pub pin: Option<String>,
     /// "stable" | "pre" | "any".
     pub stability: String,
@@ -216,6 +238,10 @@ pub struct PolicyTrace {
     pub recommended: Option<String>,
     /// Human-readable one-liner — same wording as the CLI report uses.
     pub reason: String,
+    /// Phase 9b — per-axis cascade: one line per step the resolver took
+    /// ("offset.major=0 (target major=19) → offset.minor=-1 (target
+    /// minor=1) → picked 19.1.0"). Empty when `pin` short-circuits.
+    pub cascade: Vec<String>,
 }
 
 // ---- Policy ----------------------------------------------------------------

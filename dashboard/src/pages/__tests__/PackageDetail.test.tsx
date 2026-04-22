@@ -68,12 +68,17 @@ function fixture(overrides: Partial<PackageDetail> = {}): PackageDetail {
     ],
     malware: [],
     policy_trace: {
-      offset: 1,
+      offset: { major: 1, minor: 0, patch: 0 },
       pin: null,
       stability: "stable",
       min_age_days: 7,
       recommended: "4.17.21",
       reason: "installed 4.17.20 has a blocking CVE — upgrade to 4.17.21",
+      cascade: [
+        "offset.major=1 → target major=4 (latest=5)",
+        "offset.minor=0 → keep latest minor",
+        "remediation: picked 4.17.21",
+      ],
     },
     ...overrides,
   };
@@ -124,6 +129,25 @@ describe("PackageDetailPage", () => {
     await user.click(screen.getByRole("button", { name: /^Policy/i }));
     expect(
       screen.getByText(/blocking CVE — upgrade to 4\.17\.21/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the three-axis offset cascade in the Policy tab", async () => {
+    wrap(fixture());
+    const user = userEvent.setup();
+    await screen.findByText("lodash");
+    await user.click(screen.getByRole("button", { name: /^Policy/i }));
+    // Three axis labels.
+    expect(screen.getByText("major")).toBeInTheDocument();
+    expect(screen.getByText("minor")).toBeInTheDocument();
+    expect(screen.getByText("patch")).toBeInTheDocument();
+    // Cascade trace is rendered one line per step.
+    expect(screen.getByText("Cascade trace")).toBeInTheDocument();
+    expect(
+      screen.getByText(/offset\.major=1 → target major=4/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/remediation: picked 4\.17\.21/i),
     ).toBeInTheDocument();
   });
 

@@ -56,7 +56,7 @@ function wrap(initialEntries: string[] = [SCOPED_URL]) {
 }
 
 const DOC: PolicyDocument = {
-  yaml: "defaults:\n  offset: -1\n",
+  yaml: "defaults:\n  offset:\n    major: 0\n    minor: -1\n",
   from_file: true,
 };
 
@@ -71,7 +71,7 @@ describe("PoliciesPage", () => {
     (api.policies as ReturnType<typeof vi.fn>).mockResolvedValue(DOC);
     wrap();
     const editor = (await screen.findByTestId("policy-editor")) as HTMLTextAreaElement;
-    expect(editor.value).toContain("offset: -1");
+    expect(editor.value).toContain("minor: -1");
     // Buttons reflect the non-dirty state.
     expect(screen.getByRole("button", { name: /Preview impact/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^Save$/i })).toBeDisabled();
@@ -83,7 +83,7 @@ describe("PoliciesPage", () => {
     const user = userEvent.setup();
     const editor = (await screen.findByTestId("policy-editor")) as HTMLTextAreaElement;
     await user.clear(editor);
-    await user.type(editor, "defaults:\n  offset: 0\n");
+    await user.type(editor, "defaults:\n  offset:\n    major: 0\n");
     expect(screen.getByRole("button", { name: /Preview impact/i })).toBeEnabled();
     expect(screen.getByRole("button", { name: /^Save$/i })).toBeEnabled();
     expect(screen.getByText(/unsaved/i)).toBeInTheDocument();
@@ -133,18 +133,18 @@ describe("PoliciesPage", () => {
   it("calls savePolicy with the current draft when Save is clicked", async () => {
     (api.policies as ReturnType<typeof vi.fn>).mockResolvedValue(DOC);
     (api.savePolicy as ReturnType<typeof vi.fn>).mockResolvedValue({
-      yaml: "defaults:\n  offset: 0\n",
+      yaml: "defaults:\n  offset:\n    major: 0\n",
       from_file: true,
     } satisfies PolicyDocument);
     wrap();
     const user = userEvent.setup();
     const editor = (await screen.findByTestId("policy-editor")) as HTMLTextAreaElement;
     await user.clear(editor);
-    await user.type(editor, "defaults:\n  offset: 0\n");
+    await user.type(editor, "defaults:\n  offset:\n    major: 0\n");
     await user.click(screen.getByRole("button", { name: /^Save$/i }));
     await waitFor(() => {
       expect(api.savePolicy).toHaveBeenCalledWith(
-        expect.stringContaining("offset: 0"),
+        expect.stringContaining("major: 0"),
         "/tmp/ws-a",
       );
     });
@@ -163,7 +163,7 @@ describe("PoliciesPage", () => {
   it("reloads the editor when the scope flips to a different workspace", async () => {
     (api.policies as ReturnType<typeof vi.fn>).mockImplementation((project?: string) =>
       Promise.resolve({
-        yaml: `# ${project ?? "none"}\ndefaults:\n  offset: -1\n`,
+        yaml: `# ${project ?? "none"}\ndefaults:\n  offset:\n    minor: -1\n`,
         from_file: true,
       } satisfies PolicyDocument),
     );

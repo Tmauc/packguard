@@ -268,8 +268,19 @@ async fn package_detail_policy_trace_recommends_a_safe_upgrade() {
     // the registry didn't publish it, so policy recommends `None`. We still
     // want the reason string to mention the CVE so users know why.
     let trace = &body["policy_trace"];
-    assert!(trace["offset"].is_number());
+    // Phase 9b — offset is a three-axis object.
+    let offset = &trace["offset"];
+    assert!(offset.is_object(), "expected offset object: {offset}");
+    assert!(offset["major"].is_number());
+    assert!(offset["minor"].is_number());
+    assert!(offset["patch"].is_number());
     assert_eq!(trace["stability"], "stable");
+    // Cascade lines surface the resolver's decision for the UI.
+    assert!(
+        trace["cascade"].is_array(),
+        "cascade must be an array: {}",
+        trace["cascade"]
+    );
     let reason = trace["reason"].as_str().unwrap();
     assert!(
         reason.contains("CVE") || reason.contains("blocked") || reason.contains("candidate"),
@@ -387,12 +398,16 @@ async fn policies_returns_conservative_defaults_when_no_file() {
 #[tokio::test]
 async fn policies_returns_repo_file_when_present() {
     let h = spawn(|_, repo| {
-        std::fs::write(repo.join(".packguard.yml"), "defaults:\n  offset: 0\n").unwrap();
+        std::fs::write(
+            repo.join(".packguard.yml"),
+            "defaults:\n  offset: { major: 0 }\n",
+        )
+        .unwrap();
     })
     .await;
     let body = get_json(&h, "/api/policies").await;
     assert_eq!(body["from_file"], true);
-    assert!(body["yaml"].as_str().unwrap().contains("offset: 0"));
+    assert!(body["yaml"].as_str().unwrap().contains("major: 0"));
 }
 
 // ---------- /api/policies/dry-run + PUT /api/policies -----------------------
@@ -434,7 +449,8 @@ async fn post_json_body(
 #[tokio::test]
 async fn policies_dry_run_returns_counts_against_current_and_candidate() {
     let h = spawn(seed_lodash_with_high_cve).await;
-    let candidate = "defaults:\n  offset: 0\n  block:\n    cve_severity: [critical, high]\n";
+    let candidate =
+        "defaults:\n  offset: { major: 0 }\n  block:\n    cve_severity: [critical, high]\n";
     let (status, body) = post_json_body(
         &h,
         "/api/policies/dry-run",
@@ -454,7 +470,7 @@ async fn policies_dry_run_surfaces_compliance_delta_when_policy_relaxes() {
     let h = spawn(seed_lodash_with_high_cve).await;
     // Candidate policy removes the CVE block → lodash flips from violation to
     // whatever the non-CVE evaluation returns (warning, most likely).
-    let candidate = "defaults:\n  offset: 0\n  block: {}\n";
+    let candidate = "defaults:\n  offset: { major: 0 }\n  block: {}\n";
     let (_, body) = post_json_body(
         &h,
         "/api/policies/dry-run",
@@ -475,7 +491,10 @@ async fn policies_dry_run_rejects_bad_yaml_with_line_info() {
     let (status, body) = post_json_body(
         &h,
         "/api/policies/dry-run",
-        serde_json::json!({ "yaml": "defaults:\n  offset: -1\n    bad_indent: true\n" }),
+        // Missing close-brace → YAML parse error with line info.
+        serde_json::json!({
+            "yaml": "defaults:\n  offset: { major: -1\n  stability: stable\n"
+        }),
     )
     .await;
     assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
@@ -490,7 +509,7 @@ async fn policies_dry_run_rejects_bad_yaml_with_line_info() {
 #[tokio::test]
 async fn policies_put_writes_the_file_and_returns_the_new_document() {
     let h = spawn(|_, _| {}).await;
-    let yaml = "defaults:\n  offset: 0\n  min_age_days: 3\n";
+    let yaml = "defaults:\n  offset: { major: 0 }\n  min_age_days: 3\n";
     let (status, body) = put_json(&h, "/api/policies", serde_json::json!({ "yaml": yaml })).await;
     assert_eq!(status, reqwest::StatusCode::OK);
     assert_eq!(body["from_file"], true);
@@ -504,7 +523,11 @@ async fn policies_put_writes_the_file_and_returns_the_new_document() {
 #[tokio::test]
 async fn policies_put_rejects_invalid_yaml_without_clobbering_disk() {
     let h = spawn(|_, repo| {
-        std::fs::write(repo.join(".packguard.yml"), "defaults:\n  offset: 0\n").unwrap();
+        std::fs::write(
+            repo.join(".packguard.yml"),
+            "defaults:\n  offset: { major: 0 }\n",
+        )
+        .unwrap();
     })
     .await;
     let (status, _) = put_json(
@@ -516,7 +539,7 @@ async fn policies_put_rejects_invalid_yaml_without_clobbering_disk() {
     assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
     // Existing file must still be there.
     let fresh = get_json(&h, "/api/policies").await;
-    assert!(fresh["yaml"].as_str().unwrap().contains("offset: 0"));
+    assert!(fresh["yaml"].as_str().unwrap().contains("major: 0"));
 }
 
 // ---------- /api/scan + /api/jobs ------------------------------------------
