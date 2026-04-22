@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import Hero3D from '@/components/Hero3D'
+import { BrandMark, SiteNav } from '@/components/SiteNav'
 
 const VALUE_PROPS = [
   {
@@ -89,66 +90,7 @@ const INSTALL_SNIPPETS: ReadonlyArray<{
   },
 ]
 
-function BrandMark() {
-  return (
-    <Link href="/" className="flex items-center gap-2.5 text-slate-ink">
-      <svg width="24" height="24" viewBox="0 0 32 32" aria-hidden>
-        <rect width="32" height="32" rx="7" fill="#0B6B3A" />
-        <path
-          d="M16 6 L24 9.5 V16.5 C24 20.9 20.4 24.5 16 26 C11.6 24.5 8 20.9 8 16.5 V9.5 L16 6 Z"
-          fill="none"
-          stroke="#FBFAF7"
-          strokeWidth="2"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M12 16 L15 19 L20 14"
-          stroke="#FBFAF7"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-      <span className="font-semibold tracking-tight">PackGuard</span>
-    </Link>
-  )
-}
-
-function TopNav() {
-  return (
-    <nav className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-5 sm:px-6">
-      <BrandMark />
-      <div className="hidden items-center gap-7 text-[14px] text-mute md:flex">
-        <Link href="/getting-started/install" className="hover:text-slate-ink">
-          Install
-        </Link>
-        <Link href="/concepts/offset-policy" className="hover:text-slate-ink">
-          Concepts
-        </Link>
-        <Link href="/cli/scan" className="hover:text-slate-ink">
-          CLI
-        </Link>
-        <Link href="/dashboard/overview" className="hover:text-slate-ink">
-          Dashboard
-        </Link>
-        <a
-          href="https://github.com/Tmauc/packguard"
-          className="hover:text-slate-ink"
-          rel="noopener noreferrer"
-        >
-          GitHub
-        </a>
-      </div>
-      <Link
-        href="/getting-started/install"
-        className="inline-flex items-center gap-1.5 text-[14px] text-mute hover:text-slate-ink md:hidden"
-      >
-        Docs
-        <span aria-hidden>→</span>
-      </Link>
-    </nav>
-  )
-}
+// BrandMark + SiteNav moved to components/SiteNav.tsx so /live can reuse them.
 
 function TerminalCard({
   label,
@@ -454,7 +396,7 @@ function LandingFooter() {
 export default function Landing() {
   return (
     <main className="min-h-screen">
-      <TopNav />
+      <SiteNav />
       <Hero />
       <ValueProps />
       <Features />
