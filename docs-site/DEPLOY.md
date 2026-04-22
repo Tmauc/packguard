@@ -28,7 +28,7 @@ Vercel was picked because Next.js 16 + Turbopack is a first-class target there a
 
 4. **Pick a canonical domain**
 
-   - For now the briefing says `packguard-docs.vercel.app` is enough. That's Vercel's default production URL — no extra configuration needed.
+   - For now the briefing says `packguard-doc.vercel.app` is enough. That's Vercel's default production URL — no extra configuration needed.
    - If you want a custom domain later (e.g. `docs.packguard.dev`), `Project Settings → Domains → Add`. Vercel handles the TLS cert.
 
 ## Per-PR preview URLs
