@@ -36,6 +36,188 @@ body {
 body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  position: relative;
+}
+
+/* ------------------------------------------------------------------
+ * Atmosphere — paper-grain noise overlay
+ * Subtle. Almost invisible on bright screens, gives depth on retina.
+ * Fixed to viewport so it doesn't thrash layout during scroll.
+ * ---------------------------------------------------------------- */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1000;
+  opacity: 0.035;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.1' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.06 0 0 0 0 0.09 0 0 0 0 0.12 0 0 0 0.9 0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 200px 200px;
+}
+
+/* ------------------------------------------------------------------
+ * Typography utilities
+ * ---------------------------------------------------------------- */
+.font-editorial {
+  font-family: var(--font-editorial), 'Instrument Serif', Georgia, 'Times New Roman', serif;
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+}
+
+.font-editorial-roman {
+  font-family: var(--font-editorial), 'Instrument Serif', Georgia, serif;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.tracking-editorial {
+  letter-spacing: -0.03em;
+}
+
+.micro-caps {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-mute);
+  font-weight: 500;
+}
+
+.section-numeral {
+  font-family: var(--font-editorial), 'Instrument Serif', Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  color: var(--color-mute);
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.vertical-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--color-mute);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------
+ * Dashed canvas frame (landing 3D container)
+ * Technical-drawing vibe: dashed border + corner ticks in slate-ink.
+ * ---------------------------------------------------------------- */
+.canvas-frame {
+  position: relative;
+  border: 1px dashed var(--color-divider-strong);
+  border-radius: 12px;
+}
+.canvas-frame::before,
+.canvas-frame::after {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-style: solid;
+  border-color: var(--color-slate-ink);
+  border-width: 1.5px;
+}
+.canvas-frame::before {
+  top: -1px;
+  left: -1px;
+  border-right: none;
+  border-bottom: none;
+}
+.canvas-frame::after {
+  bottom: -1px;
+  right: -1px;
+  border-left: none;
+  border-top: none;
+}
+
+/* ------------------------------------------------------------------
+ * Terminal cards (install CTA snippets)
+ * ---------------------------------------------------------------- */
+.terminal-card {
+  border-radius: 10px;
+  border: 1px solid var(--color-slate-ink);
+  background: var(--color-slate-ink);
+  color: var(--color-warm-white);
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.7;
+  box-shadow:
+    0 1px 0 rgba(15, 20, 25, 0.04),
+    0 8px 28px -20px rgba(15, 20, 25, 0.45);
+}
+.terminal-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-warm-white) 10%, transparent);
+  color: color-mix(in srgb, var(--color-warm-white) 55%, transparent);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.terminal-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: var(--color-shield-green);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-warm-white) 15%, transparent);
+}
+.terminal-body {
+  padding: 16px 18px 18px;
+  white-space: pre;
+  overflow-x: auto;
+}
+.terminal-body .comment {
+  color: color-mix(in srgb, var(--color-warm-white) 40%, transparent);
+}
+.terminal-body .flag {
+  color: color-mix(in srgb, var(--color-shield-green-soft) 90%, transparent);
+}
+
+/* ------------------------------------------------------------------
+ * Motion — page-load stagger.
+ * Words + blocks fade up. Cut cleanly by prefers-reduced-motion.
+ * ---------------------------------------------------------------- */
+.reveal-word {
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(14px);
+  animation: reveal-up 0.55s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+  animation-delay: calc(var(--i, 0) * 55ms + 100ms);
+}
+.reveal-block {
+  opacity: 0;
+  transform: translateY(10px);
+  animation: reveal-up 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+  animation-delay: var(--delay, 0ms);
+  animation-fill-mode: forwards;
+}
+@keyframes reveal-up {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal-word,
+  .reveal-block {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  body::before {
+    display: none;
+  }
 }
 
 /* ------------------------------------------------------------------
@@ -46,18 +228,16 @@ html[data-theme='light'] {
   --nextra-primary-hue: 150deg;
   --nextra-primary-saturation: 70%;
   --nextra-primary-lightness: 32%;
-  --nextra-bg: 251 250 247; /* warm-white rgb */
+  --nextra-bg: 251 250 247;
   --nextra-border: 237 234 227;
 }
 
-/* Display tracking — tighter on big headings, looser on body. */
 h1,
 h2,
 h3 {
   letter-spacing: -0.02em;
 }
 
-/* Inline code inside prose — warm tint, not cold gray. */
 .nextra-content :not(pre) > code {
   background: var(--color-divider);
   color: var(--color-slate-ink);
@@ -68,7 +248,6 @@ h3 {
   font-size: 0.88em;
 }
 
-/* Links — shield-green. */
 .nextra-content a {
   color: var(--color-shield-green);
   text-decoration-color: color-mix(in srgb, var(--color-shield-green) 30%, transparent);
@@ -78,12 +257,10 @@ h3 {
   text-decoration-color: var(--color-shield-green);
 }
 
-/* First-heading emphasis — editorial feel. */
 .nextra-content h1 {
   font-weight: 600;
 }
 
-/* Subtle divider for first H2 after H1 intro. */
 .nextra-content h1 + p {
   color: var(--color-mute);
   font-size: 1.075rem;
