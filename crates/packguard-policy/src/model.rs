@@ -11,6 +11,51 @@ pub enum Stability {
     Prerelease,
 }
 
+/// Phase 9b — offset is a three-axis object: one distance below the latest
+/// major, minor, and patch respectively. Non-positive integers only (0 or
+/// negative). Stored as unsigned magnitudes because "ahead of latest"
+/// doesn't make sense.
+///
+/// YAML shape (object-only — scalar `offset: -1` is rejected at parse time):
+///
+/// ```yaml
+/// offset:
+///   major: 0
+///   minor: -1
+///   patch: 0
+/// ```
+///
+/// Each key is optional; missing keys default to 0. The field order in
+/// the struct is the cascade order the resolver walks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct Offset {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl Offset {
+    pub const ZERO: Offset = Offset {
+        major: 0,
+        minor: 0,
+        patch: 0,
+    };
+
+    /// Convenience for tests / internal use — construction from the three
+    /// signed axes, taking the absolute value exactly like the parser.
+    pub fn from_axes(major: i64, minor: i64, patch: i64) -> Self {
+        Self {
+            major: major.unsigned_abs().min(u32::MAX as u64) as u32,
+            minor: minor.unsigned_abs().min(u32::MAX as u64) as u32,
+            patch: patch.unsigned_abs().min(u32::MAX as u64) as u32,
+        }
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.major == 0 && self.minor == 0 && self.patch == 0
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BlockRule {
     #[serde(default)]
@@ -41,10 +86,11 @@ pub enum TyposquatPolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyDefaults {
-    /// Distance from `latest.major`. Stored as a positive u32 (e.g. YAML
-    /// `offset: -1` parses to 1). 0 means "latest major is allowed".
+    /// Three-axis distance from `latest.{major,minor,patch}`. Each axis is
+    /// stored as a positive u32 (YAML `-1` → `1`); all zero means
+    /// "always pick the very latest".
     #[serde(default, deserialize_with = "crate::parse::deserialize_offset")]
-    pub offset: u32,
+    pub offset: Offset,
     #[serde(default = "default_true")]
     pub allow_patch: bool,
     #[serde(default = "default_true")]
@@ -66,7 +112,7 @@ fn default_true() -> bool {
 impl Default for PolicyDefaults {
     fn default() -> Self {
         Self {
-            offset: 0,
+            offset: Offset::ZERO,
             allow_patch: true,
             allow_security_patch: true,
             stability: Stability::Stable,
@@ -84,7 +130,7 @@ pub struct OverrideRule {
     #[serde(rename = "match")]
     pub match_glob: String,
     #[serde(default, deserialize_with = "crate::parse::deserialize_offset_opt")]
-    pub offset: Option<u32>,
+    pub offset: Option<Offset>,
     #[serde(default)]
     pub pin: Option<String>,
     #[serde(default)]
@@ -105,7 +151,7 @@ pub struct GroupRule {
     )]
     pub match_globs: Vec<String>,
     #[serde(default, deserialize_with = "crate::parse::deserialize_offset_opt")]
-    pub offset: Option<u32>,
+    pub offset: Option<Offset>,
     #[serde(default)]
     pub pin: Option<String>,
     #[serde(default)]
@@ -129,7 +175,7 @@ pub struct Policy {
 /// Effective rule after defaults → group → override merging.
 #[derive(Debug, Clone)]
 pub struct ResolvedPolicy {
-    pub offset: u32,
+    pub offset: Offset,
     pub pin: Option<String>,
     pub allow_patch: bool,
     pub allow_security_patch: bool,

@@ -11,11 +11,13 @@ pub enum Dialect {
     Pep440,
 }
 
-/// Extracted information we care about across dialects.
+/// Extracted information we care about across dialects. Phase 9b adds
+/// `patch` so the resolver can cascade major → minor → patch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionMeta {
     pub major: u64,
     pub minor: u64,
+    pub patch: u64,
     pub is_prerelease: bool,
 }
 
@@ -25,6 +27,7 @@ impl Dialect {
             Dialect::Semver => semver::Version::parse(raw).ok().map(|v| VersionMeta {
                 major: v.major,
                 minor: v.minor,
+                patch: v.patch,
                 is_prerelease: !v.pre.is_empty(),
             }),
             Dialect::Pep440 => pep440_rs::Version::from_str(raw).ok().map(|v| {
@@ -32,6 +35,7 @@ impl Dialect {
                 VersionMeta {
                     major: release.first().copied().unwrap_or(0),
                     minor: release.get(1).copied().unwrap_or(0),
+                    patch: release.get(2).copied().unwrap_or(0),
                     is_prerelease: v.is_pre() || v.is_dev(),
                 }
             }),
@@ -73,6 +77,7 @@ mod tests {
         let m = Dialect::Semver.meta("1.2.3-alpha").unwrap();
         assert_eq!(m.major, 1);
         assert_eq!(m.minor, 2);
+        assert_eq!(m.patch, 3);
         assert!(m.is_prerelease);
     }
 
@@ -80,10 +85,12 @@ mod tests {
     fn pep440_meta() {
         let m = Dialect::Pep440.meta("2.0.0a1").unwrap();
         assert_eq!(m.major, 2);
+        assert_eq!(m.patch, 0);
         assert!(m.is_prerelease);
         let m = Dialect::Pep440.meta("4.2.7").unwrap();
         assert_eq!(m.major, 4);
         assert_eq!(m.minor, 2);
+        assert_eq!(m.patch, 7);
         assert!(!m.is_prerelease);
     }
 

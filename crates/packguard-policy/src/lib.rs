@@ -12,14 +12,14 @@ mod resolve;
 
 pub use dialect::{Dialect, VersionMeta};
 pub use model::{
-    BlockRule, Compliance, GroupRule, OverrideRule, Policy, PolicyDefaults, ReleaseInfo,
+    BlockRule, Compliance, GroupRule, Offset, OverrideRule, Policy, PolicyDefaults, ReleaseInfo,
     ResolvedPolicy, Stability, TyposquatPolicy,
 };
 pub use parse::{load_policy, parse_policy, CONSERVATIVE_DEFAULTS_YAML};
 pub use resolve::{
-    compute_recommended_version, compute_recommended_version_full,
+    build_offset_cascade_trace, compute_recommended_version, compute_recommended_version_full,
     compute_recommended_version_with_vulns, evaluate_dependency, evaluate_dependency_full,
-    evaluate_dependency_with_vulns, VulnsByVersion,
+    evaluate_dependency_with_vulns, OffsetCascadeTrace, VulnsByVersion,
 };
 
 #[cfg(test)]
@@ -47,7 +47,7 @@ mod tests {
 
     #[test]
     fn offset_zero_recommends_latest_minor_patch() {
-        let p = parse_policy("defaults:\n  offset: 0\n  stability: stable\n").unwrap();
+        let p = parse_policy("defaults:\n  offset: { major: 0 }\n  stability: stable\n").unwrap();
         let r = compute_recommended_version(
             &p.resolve("react"),
             &rels(&[
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn offset_one_stays_one_major_behind() {
-        let p = parse_policy("defaults:\n  offset: -1\n  stability: stable\n").unwrap();
+        let p = parse_policy("defaults:\n  offset: { major: -1 }\n  stability: stable\n").unwrap();
         let r = compute_recommended_version(
             &p.resolve("react"),
             &rels(&[
@@ -83,7 +83,7 @@ mod tests {
     fn pin_wins_over_offset() {
         let p = parse_policy(
             r#"
-defaults: { offset: -1 }
+defaults: { offset: { major: -1 } }
 overrides:
   - match: lodash
     pin: 4.17.21
@@ -105,7 +105,7 @@ overrides:
 
     #[test]
     fn stability_stable_excludes_prereleases() {
-        let p = parse_policy("defaults: { offset: 0, stability: stable }").unwrap();
+        let p = parse_policy("defaults: { offset: { major: 0 }, stability: stable }").unwrap();
         let r = compute_recommended_version(
             &p.resolve("foo"),
             &rels(&[
@@ -120,7 +120,7 @@ overrides:
 
     #[test]
     fn min_age_days_excludes_fresh_releases() {
-        let p = parse_policy("defaults: { offset: 0, min_age_days: 7 }").unwrap();
+        let p = parse_policy("defaults: { offset: { major: 0 }, min_age_days: 7 }").unwrap();
         let r = compute_recommended_version(
             &p.resolve("foo"),
             &rels(&[
@@ -137,37 +137,37 @@ overrides:
     fn glob_overrides_select_the_right_rule() {
         let p = parse_policy(
             r#"
-defaults: { offset: -1 }
+defaults: { offset: { major: -1 } }
 overrides:
   - match: "@babel/*"
-    offset: -2
+    offset: { major: -2 }
 "#,
         )
         .unwrap();
         let resolved = p.resolve("@babel/core");
-        assert_eq!(resolved.offset, 2);
+        assert_eq!(resolved.offset, Offset::from_axes(-2, 0, 0));
         let resolved_other = p.resolve("react");
-        assert_eq!(resolved_other.offset, 1);
+        assert_eq!(resolved_other.offset, Offset::from_axes(-1, 0, 0));
     }
 
     #[test]
     fn group_rule_applies_when_name_matches() {
         let p = parse_policy(
             r#"
-defaults: { offset: -1, min_age_days: 7 }
+defaults: { offset: { major: -1 }, min_age_days: 7 }
 groups:
   - name: security-critical
     match: ["jsonwebtoken", "bcrypt*", "@auth/*"]
-    offset: 0
+    offset: { major: 0 }
     min_age_days: 0
 "#,
         )
         .unwrap();
         let r = p.resolve("bcrypt-node");
-        assert_eq!(r.offset, 0);
+        assert_eq!(r.offset, Offset::ZERO);
         assert_eq!(r.min_age_days, 0);
         let r = p.resolve("react");
-        assert_eq!(r.offset, 1);
+        assert_eq!(r.offset, Offset::from_axes(-1, 0, 0));
         assert_eq!(r.min_age_days, 7);
     }
 
@@ -175,18 +175,18 @@ groups:
     fn overrides_beat_groups() {
         let p = parse_policy(
             r#"
-defaults: { offset: -1 }
+defaults: { offset: { major: -1 } }
 groups:
   - name: g
     match: ["lodash"]
-    offset: 0
+    offset: { major: 0 }
 overrides:
   - match: lodash
-    offset: -3
+    offset: { major: -3 }
 "#,
         )
         .unwrap();
-        assert_eq!(p.resolve("lodash").offset, 3);
+        assert_eq!(p.resolve("lodash").offset, Offset::from_axes(-3, 0, 0));
     }
 
     #[test]
@@ -215,7 +215,7 @@ overrides:
 
     #[test]
     fn evaluate_reports_warning_on_behind() {
-        let p = parse_policy("defaults: { offset: 0 }").unwrap();
+        let p = parse_policy("defaults: { offset: { major: 0 } }").unwrap();
         let c = evaluate_dependency(
             "foo",
             Some("1.0.0"),
@@ -232,7 +232,7 @@ overrides:
 
     #[test]
     fn evaluate_is_compliant_when_installed_matches_recommendation() {
-        let p = parse_policy("defaults: { offset: -1 }").unwrap();
+        let p = parse_policy("defaults: { offset: { major: -1 } }").unwrap();
         let c = evaluate_dependency(
             "react",
             Some("18.3.0"),
@@ -250,20 +250,22 @@ overrides:
     #[test]
     fn empty_yaml_produces_conservative_defaults() {
         let p = parse_policy("").unwrap();
-        assert_eq!(p.defaults.offset, 0);
+        assert_eq!(p.defaults.offset, Offset::ZERO);
     }
 
     #[test]
     fn conservative_defaults_yaml_parses() {
         let p = parse_policy(CONSERVATIVE_DEFAULTS_YAML).unwrap();
-        assert_eq!(p.defaults.offset, 1);
+        // Phase 9b default: stay on latest major, one minor behind, always
+        // pick the latest patch — the canonical security posture.
+        assert_eq!(p.defaults.offset, Offset::from_axes(0, -1, 0));
         assert_eq!(p.defaults.stability, Stability::Stable);
         assert_eq!(p.defaults.min_age_days, 7);
     }
 
     #[test]
     fn pep440_dialect_computes_recommended() {
-        let p = parse_policy("defaults: { offset: 0 }").unwrap();
+        let p = parse_policy("defaults: { offset: { major: 0 } }").unwrap();
         let r = compute_recommended_version(
             &p.resolve("django"),
             &rels(&[
@@ -282,7 +284,7 @@ overrides:
         // offset=-1 asks for the major *below* the latest one. If the store
         // only holds the latest version, no candidate survives → the new
         // status variant tells the user to rescan for history.
-        let p = parse_policy("defaults: { offset: -1 }").unwrap();
+        let p = parse_policy("defaults: { offset: { major: -1 } }").unwrap();
         let c = evaluate_dependency(
             "react",
             Some("18.3.0"),
@@ -299,7 +301,7 @@ overrides:
 
     #[test]
     fn insufficient_candidates_on_empty_history() {
-        let p = parse_policy("defaults: { offset: 0 }").unwrap();
+        let p = parse_policy("defaults: { offset: { major: 0 } }").unwrap();
         let c = evaluate_dependency(
             "react",
             Some("18.3.0"),
@@ -338,7 +340,7 @@ overrides:
         let p = parse_policy(
             r#"
 defaults:
-  offset: 0
+  offset: { major: 0 }
   block:
     cve_severity: [high, critical]
 "#,
@@ -375,7 +377,7 @@ defaults:
         let p = parse_policy(
             r#"
 defaults:
-  offset: 0
+  offset: { major: 0 }
   block:
     cve_severity: [critical]
 "#,
@@ -410,7 +412,7 @@ defaults:
         let p = parse_policy(
             r#"
 defaults:
-  offset: 0
+  offset: { major: 0 }
   block:
     cve_severity: [high, critical]
 "#,
@@ -458,7 +460,7 @@ defaults:
 
     #[test]
     fn pep440_prerelease_excluded_by_default() {
-        let p = parse_policy("defaults: { offset: 0, stability: stable }").unwrap();
+        let p = parse_policy("defaults: { offset: { major: 0 }, stability: stable }").unwrap();
         let r = compute_recommended_version(
             &p.resolve("foo"),
             &rels(&[
