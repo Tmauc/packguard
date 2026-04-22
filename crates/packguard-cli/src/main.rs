@@ -9,8 +9,7 @@ use packguard_core::Severity;
 use packguard_core::{default_ecosystems, Ecosystem};
 use packguard_intel::{match_vulnerabilities, MatchedVuln};
 use packguard_policy::{
-    evaluate_dependency_full, parse_policy, Compliance, Dialect, Policy, ReleaseInfo,
-    VulnsByVersion,
+    evaluate_dependency_full, Compliance, Dialect, Policy, ReleaseInfo, VulnsByVersion,
 };
 use packguard_store::Store;
 use sha2::{Digest, Sha256};
@@ -69,6 +68,12 @@ enum Cmd {
         /// Exit with status 1 when at least one blocking violation exists.
         #[arg(long)]
         fail_on_violation: bool,
+        /// Phase 10b — print the resolved policy with per-key provenance
+        /// (which file / line each value came from) and exit, instead of
+        /// rendering the package table. Useful for debugging monorepo
+        /// policy cascades.
+        #[arg(long)]
+        show_policy: bool,
     },
     /// List every matched vulnerability for the cached scan at `path`.
     Audit {
@@ -273,8 +278,12 @@ async fn main() -> Result<()> {
             project,
             format,
             fail_on_violation,
+            show_policy,
         } => {
             let resolved = resolve_project_for_command(path.or(project), &store_path, "report")?;
+            if show_policy {
+                return render_show_policy(&resolved);
+            }
             report(resolved, format, fail_on_violation, &store_path)
         }
         Cmd::Scan {
@@ -2825,17 +2834,128 @@ fn new_audit_table() -> Table {
 // `render_audit_json_full` / `render_audit_sarif_full` in 2.5.4.)
 
 fn load_project_policy(path: &Path) -> Result<Policy> {
-    let candidate = path.join(".packguard.yml");
-    if !candidate.exists() {
-        tracing::debug!(
-            "no .packguard.yml at {}; using built-in defaults",
-            path.display()
-        );
-        return parse_policy(packguard_policy::CONSERVATIVE_DEFAULTS_YAML);
+    Ok(load_project_policy_resolved(path)?.policy)
+}
+
+/// Phase 10b — full cascade resolve, including the sources chain + per-key
+/// provenance. Used by the `--show-policy` flag and by the normal `report`
+/// flow (which just takes `.policy` from the result).
+fn load_project_policy_resolved(path: &Path) -> Result<packguard_policy::ResolvedPolicyFile> {
+    packguard_policy::resolve_policy_cascade(path)
+        .with_context(|| format!("resolving policy cascade for {}", path.display()))
+}
+
+/// Phase 10b — `packguard report --show-policy <path>` output. Sources list
+/// first (merge order, lowest → highest priority), then the effective
+/// policy serialised as YAML with a provenance comment on each tracked key.
+fn render_show_policy(path: &Path) -> Result<()> {
+    let resolved = load_project_policy_resolved(path)?;
+    println!("# Effective policy for {}", path.display());
+    println!("# Sources (merge order — later wins):");
+    for (i, src) in resolved.sources.iter().enumerate() {
+        println!("#   [{i}] {}", src.label);
     }
-    let text = std::fs::read_to_string(&candidate)
-        .with_context(|| format!("reading {}", candidate.display()))?;
-    parse_policy(&text)
+    println!();
+    render_provenance_table(&resolved);
+    Ok(())
+}
+
+fn render_provenance_table(resolved: &packguard_policy::ResolvedPolicyFile) {
+    let policy = &resolved.policy;
+    let rows: Vec<(&'static str, String)> = vec![
+        (
+            "defaults.offset.major",
+            signed_axis(policy.defaults.offset.major),
+        ),
+        (
+            "defaults.offset.minor",
+            signed_axis(policy.defaults.offset.minor),
+        ),
+        (
+            "defaults.offset.patch",
+            signed_axis(policy.defaults.offset.patch),
+        ),
+        (
+            "defaults.allow_patch",
+            policy.defaults.allow_patch.to_string(),
+        ),
+        (
+            "defaults.allow_security_patch",
+            policy.defaults.allow_security_patch.to_string(),
+        ),
+        (
+            "defaults.stability",
+            match policy.defaults.stability {
+                packguard_policy::Stability::Stable => "stable".into(),
+                packguard_policy::Stability::Prerelease => "prerelease".into(),
+            },
+        ),
+        (
+            "defaults.min_age_days",
+            policy.defaults.min_age_days.to_string(),
+        ),
+        (
+            "defaults.pin",
+            policy.defaults.pin.as_deref().unwrap_or("—").to_string(),
+        ),
+        (
+            "defaults.block.cve_severity",
+            format!("[{}]", policy.defaults.block.cve_severity.join(", ")),
+        ),
+        (
+            "defaults.block.malware",
+            policy.defaults.block.malware.to_string(),
+        ),
+        (
+            "defaults.block.deprecated",
+            policy.defaults.block.deprecated.to_string(),
+        ),
+        (
+            "defaults.block.yanked",
+            policy.defaults.block.yanked.to_string(),
+        ),
+        (
+            "defaults.block.typosquat",
+            match policy.defaults.block.typosquat {
+                packguard_policy::TyposquatPolicy::Strict => "strict".into(),
+                packguard_policy::TyposquatPolicy::Warn => "warn".into(),
+                packguard_policy::TyposquatPolicy::Off => "off".into(),
+            },
+        ),
+        ("overrides", format!("{} rule(s)", policy.overrides.len())),
+        ("groups", format!("{} rule(s)", policy.groups.len())),
+    ];
+    let key_width = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    let val_width = rows.iter().map(|(_, v)| v.len()).max().unwrap_or(0).min(24);
+    for (key, value) in rows {
+        let prov = resolved
+            .provenance
+            .keys
+            .get(key)
+            .map(|entry| format_provenance(entry, resolved))
+            .unwrap_or_else(|| "(unset — falls through to downstream default)".to_string());
+        println!("{key:<key_width$}  = {value:<val_width$}  ({prov})");
+    }
+}
+
+fn signed_axis(magnitude: u32) -> String {
+    if magnitude == 0 {
+        "0".to_string()
+    } else {
+        format!("-{magnitude}")
+    }
+}
+
+fn format_provenance(
+    entry: &packguard_policy::ProvenanceEntry,
+    resolved: &packguard_policy::ResolvedPolicyFile,
+) -> String {
+    let source = &resolved.sources[entry.source_index];
+    match (entry.line, &source.path) {
+        (Some(line), Some(_)) => format!("from {}:L{line}", source.label),
+        (None, Some(_)) => format!("from {}", source.label),
+        (_, None) => format!("from {}", source.label),
+    }
 }
 
 fn summarize(rows: &[ReportRow]) -> ReportSummary {

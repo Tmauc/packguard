@@ -38,16 +38,15 @@ pub fn current_policy_or_default() -> Result<Policy> {
     parse_policy(CONSERVATIVE_DEFAULTS_YAML)
 }
 
-/// Same as `current_policy_or_default` but honoured the on-disk file when
-/// present. Reserved for the per-repo evaluation path.
+/// Same as `current_policy_or_default` but honours the full Phase 10b
+/// cascade — built-in → ~/.packguard.yml → <repo root>/.packguard.yml →
+/// intermediate dirs → <repo_path>/.packguard.yml, deep-merged. The caller
+/// gets only the resolved `Policy`; if they need provenance, use the
+/// `packguard-policy::resolve_policy_cascade` helper directly.
 pub fn current_policy_for(repo_path: &Path) -> Result<Policy> {
-    let candidate = repo_path.join(".packguard.yml");
-    if candidate.exists() {
-        let yaml = std::fs::read_to_string(&candidate)
-            .with_context(|| format!("reading {}", candidate.display()))?;
-        return parse_policy(&yaml);
-    }
-    current_policy_or_default()
+    let resolved = packguard_policy::resolve_policy_cascade(repo_path)
+        .with_context(|| format!("resolving policy cascade for {}", repo_path.display()))?;
+    Ok(resolved.policy)
 }
 
 /// Parse `yaml` and return a user-facing error string (including the 1-based
