@@ -1,14 +1,26 @@
 @import 'tailwindcss';
 
+/* ------------------------------------------------------------------
+ * Direction B — Living dependency graph
+ * ---------------------------------------------------------------- */
 @theme {
   --color-warm-white: #fbfaf7;
   --color-slate-ink: #0f1419;
   --color-mute: #5a6472;
   --color-divider: #edeae3;
+  --color-divider-strong: #d9d4c6;
+
   --color-shield-green: #0b6b3a;
   --color-shield-green-soft: #e6f2ec;
   --color-ember-red: #c4442b;
   --color-ember-red-soft: #fbe9e4;
+
+  /* ecosystem hues — desaturated from the dashboard palette */
+  --color-eco-npm: #2e6bd4;
+  --color-eco-pypi: #2f855a;
+  --color-eco-malware: #7c4dcc;
+  --color-eco-typosquat: #b04289;
+  --color-eco-cve: #c4442b;
 
   --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, 'SF Mono', Menlo, monospace;
@@ -24,4 +36,55 @@ body {
 body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* ------------------------------------------------------------------
+ * Nextra theme-docs overrides — light-only, Direction B palette
+ * ---------------------------------------------------------------- */
+:root,
+html[data-theme='light'] {
+  --nextra-primary-hue: 150deg;
+  --nextra-primary-saturation: 70%;
+  --nextra-primary-lightness: 32%;
+  --nextra-bg: 251 250 247; /* warm-white rgb */
+  --nextra-border: 237 234 227;
+}
+
+/* Display tracking — tighter on big headings, looser on body. */
+h1,
+h2,
+h3 {
+  letter-spacing: -0.02em;
+}
+
+/* Inline code inside prose — warm tint, not cold gray. */
+.nextra-content :not(pre) > code {
+  background: var(--color-divider);
+  color: var(--color-slate-ink);
+  font-weight: 500;
+  padding: 0.08em 0.38em;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+}
+
+/* Links — shield-green. */
+.nextra-content a {
+  color: var(--color-shield-green);
+  text-decoration-color: color-mix(in srgb, var(--color-shield-green) 30%, transparent);
+  text-underline-offset: 3px;
+}
+.nextra-content a:hover {
+  text-decoration-color: var(--color-shield-green);
+}
+
+/* First-heading emphasis — editorial feel. */
+.nextra-content h1 {
+  font-weight: 600;
+}
+
+/* Subtle divider for first H2 after H1 intro. */
+.nextra-content h1 + p {
+  color: var(--color-mute);
+  font-size: 1.075rem;
 }

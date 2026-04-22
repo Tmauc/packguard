@@ -15,6 +15,9 @@ export const metadata: Metadata = {
   description:
     'Local, multi-repo, multi-ecosystem package version governance. Offset policy engine, supply-chain intel (CVE / malware / typosquat), dependency graph — one Rust binary, no cloud.',
   metadataBase: new URL('https://packguard-docs.vercel.app'),
+  icons: {
+    icon: [{ url: '/favicon.svg', type: 'image/svg+xml' }],
+  },
   openGraph: {
     title: 'PackGuard',
     description: 'Local package version governance with a native offset policy engine.',
