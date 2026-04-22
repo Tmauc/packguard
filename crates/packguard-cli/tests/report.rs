@@ -118,6 +118,11 @@ fn report_table_includes_ecosystem_and_policy_column() {
     assert!(stdout.contains("react"), "stdout: {stdout}");
     assert!(stdout.contains("Policy"), "stdout: {stdout}");
     assert!(stdout.contains("Summary"), "stdout: {stdout}");
+    // Phase 10c — pedagogical footer bridging report → audit.
+    assert!(
+        stdout.contains("packguard audit"),
+        "stdout missing audit footer: {stdout}"
+    );
 }
 
 #[test]

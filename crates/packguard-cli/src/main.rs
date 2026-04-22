@@ -2179,6 +2179,20 @@ async fn audit(
         );
     }
 
+    // Phase 10c — pre-run guidance when the store has no advisory data.
+    // The audit will run correctly (possibly with live OSV fallback) but
+    // the user should know the local cache is empty so they can `sync`.
+    let cached_advisories = store.count_vulnerabilities()?;
+    if cached_advisories == 0 {
+        eprintln!(
+            "{} Store has 0 advisories — nothing local to match against your scans.\n  \
+             Run {} to fetch the CVE database (OSV + GHSA),\n  \
+             then re-run audit.",
+            "⚠".yellow().bold(),
+            "'packguard sync'".bold(),
+        );
+    }
+
     // Normalize the filter to a Severity set. Unknown strings are ignored.
     let filter_set: Vec<Severity> = severity_filter
         .iter()
@@ -2418,11 +2432,25 @@ async fn audit(
                 render_typosquat_section(&typosquat_rows);
             }
             if rows.is_empty() && malware_rows.is_empty() && typosquat_rows.is_empty() {
-                println!(
-                    "{} {}",
-                    "✓".green(),
-                    "no risks detected for the requested focus".bold()
-                );
+                // Phase 10c — distinguish "empty store (nothing to match
+                // against)" from "store has advisories and none hit".
+                // The pre-run stderr warning already fired on the empty
+                // case, so we only double down on the clean message.
+                if cached_advisories > 0 {
+                    println!(
+                        "{} No matches — your installed versions are clean against the \
+                         {} cached advisor{} in the store.",
+                        "✓".green().bold(),
+                        cached_advisories,
+                        if cached_advisories == 1 { "y" } else { "ies" },
+                    );
+                } else {
+                    println!(
+                        "{} {}",
+                        "✓".green(),
+                        "no risks detected for the requested focus".bold()
+                    );
+                }
             }
         }
         ReportFormat::Json => render_audit_json_full(
@@ -3090,7 +3118,23 @@ fn render_table(rows: &[ReportRow], summary: &ReportSummary, path: &Path) {
             format!("⚠️  {} typosquat suspect(s)", summary.typosquat_suspects).yellow(),
         );
     }
-    let _ = path;
+
+    // Phase 10c — pedagogical footer that bridges report ↔ audit and
+    // points users at --show-policy when the cascade is the reason for
+    // insufficient candidates.
+    println!();
+    println!(
+        "→ Run {} to see CVE/malware details for this scan.",
+        "'packguard audit'".bold()
+    );
+    if summary.insufficient > 0 {
+        println!(
+            "→ {} packages show 'insufficient'. Run {} to see which \
+             rule prevents resolution.",
+            summary.insufficient,
+            format!("'packguard report {} --show-policy'", path.display()).bold(),
+        );
+    }
 }
 
 fn vuln_violation_message(package: &str, vulns: &[MatchedVuln]) -> String {

@@ -208,6 +208,69 @@ fn audit_sarif_emits_results() {
 }
 
 #[test]
+fn audit_warns_when_store_has_no_advisories_cached() {
+    // Phase 10c — scan is cached but no `packguard sync` has been run, so
+    // the store's vulnerabilities table is empty. Audit must surface a
+    // stderr warning pointing the user at `sync` before re-running audit.
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store.db");
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    // Seed a scan without any advisories.
+    {
+        let mut s = Store::open(&store).unwrap();
+        let project = Project {
+            ecosystem: "npm",
+            root: repo.clone(),
+            manifest_path: repo.join("package.json"),
+            name: Some("demo".into()),
+            workspace: None,
+            dependencies: vec![Dependency {
+                name: "lodash".into(),
+                declared_range: "^4.17.0".into(),
+                installed: Some("4.17.21".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("package-lock.json".into()),
+            }],
+            edges: Vec::new(),
+            compatibility: Vec::new(),
+        };
+        let mut remotes = BTreeMap::new();
+        remotes.insert(
+            "lodash".into(),
+            RemotePackage {
+                name: "lodash".into(),
+                latest: Some("4.17.21".into()),
+                latest_published_at: Some("2024-06-01T00:00:00Z".into()),
+                versions: vec![],
+            },
+        );
+        s.save_project(&repo, &project, &remotes, "fp-1").unwrap();
+    }
+    let out = Command::new(bin())
+        .arg("--store")
+        .arg(&store)
+        .args(["audit", "--no-live-fallback"])
+        .arg(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "audit should exit 0 when store is empty; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Store has 0 advisories"),
+        "missing pre-run sync hint: {stderr}"
+    );
+    assert!(
+        stderr.contains("packguard sync"),
+        "missing sync pointer: {stderr}"
+    );
+}
+
+#[test]
 fn report_includes_cve_column_and_footer() {
     let env = env();
     // Default policy already blocks high severity CVEs → compliance row will
