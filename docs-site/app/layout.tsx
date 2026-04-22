@@ -24,6 +24,20 @@ export const metadata: Metadata = {
     url: '/',
     siteName: 'PackGuard',
     type: 'website',
+    images: [
+      {
+        url: '/screenshots/overview.png',
+        width: 1440,
+        height: 900,
+        alt: 'PackGuard dashboard Overview',
+      },
+    ],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'PackGuard',
+    description: 'Local package version governance with a native offset policy engine.',
+    images: ['/screenshots/overview.png'],
   },
 }
 
