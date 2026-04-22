@@ -238,9 +238,12 @@ pub struct PolicyTrace {
     pub recommended: Option<String>,
     /// Human-readable one-liner — same wording as the CLI report uses.
     pub reason: String,
-    /// Phase 9b — per-axis cascade: one line per step the resolver took
-    /// ("offset.major=0 (target major=19) → offset.minor=-1 (target
-    /// minor=1) → picked 19.1.0"). Empty when `pin` short-circuits.
+    /// Phase 10a — lex-bound trace: one line per axis describing its
+    /// contribution to the effective inclusive upper bound, plus lines
+    /// for the merged bound and the picked remediation. Example:
+    /// `offset.major=-1 → (18, ∞, ∞)` / `offset.minor=0 → inactive` /
+    /// `effective bound = (18, ∞, ∞)` / `max version ≤ bound = 18.3.1`.
+    /// Empty when `pin` short-circuits.
     pub cascade: Vec<String>,
 }
 
