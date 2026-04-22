@@ -1,0 +1,1498 @@
+{
+  "scanned_at": "2026-04-22T09:02:53.606Z",
+  "packguard_version": "0.1.0",
+  "target": {
+    "name": "docs-site",
+    "ecosystems": [
+      "npm"
+    ],
+    "package_manager": "pnpm"
+  },
+  "summary": {
+    "total_packages": 16,
+    "by_status": {
+      "compliant": 0,
+      "warning": 13,
+      "violation": 1,
+      "cve-violation": 0,
+      "malware": 0,
+      "typosquat": 1,
+      "insufficient": 1
+    },
+    "cve_by_severity": {
+      "critical": 0,
+      "high": 0,
+      "low": 0,
+      "medium": 0,
+      "unknown": 0
+    },
+    "malware_confirmed": 0,
+    "typosquat_suspects": 1
+  },
+  "report": {
+    "rows": [
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "10.7.7",
+        "kind": "dep",
+        "latest": "10.7.7",
+        "latest_published_at": "2025-11-13T06:05:07.719Z",
+        "message": "@react-three/drei: installed 10.7.7 is ahead of policy-allowed 9.122.0",
+        "package": "@react-three/drei",
+        "status": "warning",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "9.6.0",
+        "kind": "dep",
+        "latest": "9.6.0",
+        "latest_published_at": "2026-04-13T17:23:27.674Z",
+        "message": "@react-three/fiber: installed 9.6.0 is ahead of policy-allowed 8.18.0",
+        "package": "@react-three/fiber",
+        "status": "warning",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "4.2.4",
+        "kind": "dev",
+        "latest": "4.2.4",
+        "latest_published_at": "2026-04-21T13:16:10.817Z",
+        "message": "@tailwindcss/postcss: policy filters (stability / min_age_days / offset / cve / malware) dropped all 784 known versions",
+        "package": "@tailwindcss/postcss",
+        "status": "insufficient",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "22.9.0",
+        "kind": "dev",
+        "latest": "25.6.0",
+        "latest_published_at": "2026-04-10T03:39:59.421Z",
+        "message": "@types/node: installed 22.9.0 is behind policy-allowed 24.12.2",
+        "package": "@types/node",
+        "status": "violation",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "19.0.14",
+        "kind": "dev",
+        "latest": "19.2.14",
+        "latest_published_at": "2026-02-11T11:44:58.515Z",
+        "message": "@types/react: installed 19.0.14 is ahead of policy-allowed 18.3.28",
+        "package": "@types/react",
+        "status": "warning",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "19.0.4",
+        "kind": "dev",
+        "latest": "19.2.3",
+        "latest_published_at": "2025-11-12T04:37:39.524Z",
+        "message": "@types/react-dom: installed 19.0.4 is ahead of policy-allowed 18.3.7",
+        "package": "@types/react-dom",
+        "status": "warning",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "0.184.0",
+        "kind": "dev",
+        "latest": "0.184.0",
+        "latest_published_at": "2026-04-16T19:29:34.603Z",
+        "message": "@types/three: installed 0.184.0 is ahead of policy-allowed 0.183.1",
+        "package": "@types/three",
+        "status": "warning",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "4.0.3",
+        "kind": "dev",
+        "latest": "4.0.3",
+        "latest_published_at": "2021-04-24T03:06:31.539Z",
+        "message": "gray-matter: installed 4.0.3 is ahead of policy-allowed 3.1.1",
+        "package": "gray-matter",
+        "status": "warning",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "16.2.4",
+        "kind": "dep",
+        "latest": "16.2.4",
+        "latest_published_at": "2026-04-15T22:33:47.905Z",
+        "message": "next: installed 16.2.4 is ahead of policy-allowed 15.5.15",
+        "package": "next",
+        "status": "warning",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "4.6.1",
+        "kind": "dep",
+        "latest": "4.6.1",
+        "latest_published_at": "2025-12-04T10:30:07.201Z",
+        "message": "nextra: 1 typosquat suspicion(s)",
+        "package": "nextra",
+        "status": "typosquat",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "4.6.1",
+        "kind": "dep",
+        "latest": "4.6.1",
+        "latest_published_at": "2025-12-04T10:29:50.601Z",
+        "message": "nextra-theme-docs: installed 4.6.1 is ahead of policy-allowed 3.3.1",
+        "package": "nextra-theme-docs",
+        "status": "warning",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "19.1.1",
+        "kind": "dep",
+        "latest": "19.2.5",
+        "latest_published_at": "2026-04-08T18:39:24.455Z",
+        "message": "react: installed 19.1.1 is ahead of policy-allowed 18.3.1",
+        "package": "react",
+        "status": "warning",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "19.1.1",
+        "kind": "dep",
+        "latest": "19.2.5",
+        "latest_published_at": "2026-04-08T18:39:31.423Z",
+        "message": "react-dom: installed 19.1.1 is ahead of policy-allowed 18.3.1",
+        "package": "react-dom",
+        "status": "warning",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "4.2.4",
+        "kind": "dev",
+        "latest": "4.2.4",
+        "latest_published_at": "2026-04-21T13:15:55.494Z",
+        "message": "tailwindcss: installed 4.2.4 is ahead of policy-allowed 3.4.19",
+        "package": "tailwindcss",
+        "status": "warning",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "0.184.0",
+        "kind": "dep",
+        "latest": "0.184.0",
+        "latest_published_at": "2026-04-16T16:27:55.636Z",
+        "message": "three: installed 0.184.0 is ahead of policy-allowed 0.183.2",
+        "package": "three",
+        "status": "warning",
+        "workspace": "packguard-docs"
+      },
+      {
+        "cve_ids": [],
+        "ecosystem": "npm",
+        "installed": "5.7.2",
+        "kind": "dev",
+        "latest": "6.0.3",
+        "latest_published_at": "2026-04-16T23:38:27.905Z",
+        "message": "typescript: installed 5.7.2 is behind policy-allowed 5.9.3",
+        "package": "typescript",
+        "status": "warning",
+        "workspace": "packguard-docs"
+      }
+    ],
+    "summary": {
+      "compliant": 0,
+      "insufficient": 1,
+      "malware": {
+        "confirmed": 0,
+        "suspected_typosquat": 1
+      },
+      "violations": 1,
+      "vulnerabilities": {
+        "critical": 0,
+        "high": 0,
+        "low": 0,
+        "medium": 0,
+        "unknown": 0
+      },
+      "warnings": 14
+    }
+  },
+  "audit": {
+    "cve": {
+      "matches": [],
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "low": 0,
+        "medium": 0,
+        "unknown": 0
+      }
+    },
+    "malware": [],
+    "typosquat": [
+      {
+        "ecosystem": "npm",
+        "evidence": {
+          "distance": 2,
+          "reason": "edit distance 2",
+          "resembles": "next",
+          "score": 0.5
+        },
+        "package": "nextra",
+        "summary": "Possible typosquat of `next` (edit distance 2)"
+      }
+    ]
+  },
+  "graph": {
+    "nodes": [
+      {
+        "id": "npm:@react-three/drei@10.7.7",
+        "ecosystem": "npm",
+        "name": "@react-three/drei",
+        "version": "10.7.7",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@react-three/fiber@9.6.0",
+        "ecosystem": "npm",
+        "name": "@react-three/fiber",
+        "version": "9.6.0",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@tailwindcss/postcss@4.2.4",
+        "ecosystem": "npm",
+        "name": "@tailwindcss/postcss",
+        "version": "4.2.4",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@types/node@22.9.0",
+        "ecosystem": "npm",
+        "name": "@types/node",
+        "version": "22.9.0",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@types/react-dom@19.0.4",
+        "ecosystem": "npm",
+        "name": "@types/react-dom",
+        "version": "19.0.4",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@types/react@19.0.14",
+        "ecosystem": "npm",
+        "name": "@types/react",
+        "version": "19.0.14",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@types/three@0.184.0",
+        "ecosystem": "npm",
+        "name": "@types/three",
+        "version": "0.184.0",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:gray-matter@4.0.3",
+        "ecosystem": "npm",
+        "name": "gray-matter",
+        "version": "4.0.3",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:next@16.2.4",
+        "ecosystem": "npm",
+        "name": "next",
+        "version": "16.2.4",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:nextra-theme-docs@4.6.1",
+        "ecosystem": "npm",
+        "name": "nextra-theme-docs",
+        "version": "4.6.1",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:nextra@4.6.1",
+        "ecosystem": "npm",
+        "name": "nextra",
+        "version": "4.6.1",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": true,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:react-dom@19.1.1",
+        "ecosystem": "npm",
+        "name": "react-dom",
+        "version": "19.1.1",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:react@19.1.1",
+        "ecosystem": "npm",
+        "name": "react",
+        "version": "19.1.1",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:tailwindcss@4.2.4",
+        "ecosystem": "npm",
+        "name": "tailwindcss",
+        "version": "4.2.4",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:three@0.184.0",
+        "ecosystem": "npm",
+        "name": "three",
+        "version": "0.184.0",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:typescript@5.7.2",
+        "ecosystem": "npm",
+        "name": "typescript",
+        "version": "5.7.2",
+        "is_root": true,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@babel/core@unresolved",
+        "ecosystem": "npm",
+        "name": "@babel/core",
+        "version": "unresolved",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": true
+      },
+      {
+        "id": "npm:@opentelemetry/api@unresolved",
+        "ecosystem": "npm",
+        "name": "@opentelemetry/api",
+        "version": "unresolved",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": true
+      },
+      {
+        "id": "npm:@playwright/test@unresolved",
+        "ecosystem": "npm",
+        "name": "@playwright/test",
+        "version": "unresolved",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": true
+      },
+      {
+        "id": "npm:acorn@8.16.0",
+        "ecosystem": "npm",
+        "name": "acorn",
+        "version": "8.16.0",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": true,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:babel-plugin-macros@unresolved",
+        "ecosystem": "npm",
+        "name": "babel-plugin-macros",
+        "version": "unresolved",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": true
+      },
+      {
+        "id": "npm:babel-plugin-react-compiler@unresolved",
+        "ecosystem": "npm",
+        "name": "babel-plugin-react-compiler",
+        "version": "unresolved",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": true
+      },
+      {
+        "id": "npm:bail@2.0.2",
+        "ecosystem": "npm",
+        "name": "bail",
+        "version": "2.0.2",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": true,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:clsx@2.1.1",
+        "ecosystem": "npm",
+        "name": "clsx",
+        "version": "2.1.1",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": true,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:expo-asset@unresolved",
+        "ecosystem": "npm",
+        "name": "expo-asset",
+        "version": "unresolved",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": true
+      },
+      {
+        "id": "npm:expo-file-system@unresolved",
+        "ecosystem": "npm",
+        "name": "expo-file-system",
+        "version": "unresolved",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": true
+      },
+      {
+        "id": "npm:expo-gl@unresolved",
+        "ecosystem": "npm",
+        "name": "expo-gl",
+        "version": "unresolved",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": true
+      },
+      {
+        "id": "npm:expo@unresolved",
+        "ecosystem": "npm",
+        "name": "expo",
+        "version": "unresolved",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": true
+      },
+      {
+        "id": "npm:format@0.2.2",
+        "ecosystem": "npm",
+        "name": "format",
+        "version": "0.2.2",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": true,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:immer@unresolved",
+        "ecosystem": "npm",
+        "name": "immer",
+        "version": "unresolved",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": true
+      },
+      {
+        "id": "npm:jiti@2.6.1",
+        "ecosystem": "npm",
+        "name": "jiti",
+        "version": "2.6.1",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": true,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:katex@0.16.45",
+        "ecosystem": "npm",
+        "name": "katex",
+        "version": "0.16.45",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": true,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:parse5@7.3.0",
+        "ecosystem": "npm",
+        "name": "parse5",
+        "version": "7.3.0",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": true,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:react-native@unresolved",
+        "ecosystem": "npm",
+        "name": "react-native",
+        "version": "unresolved",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": true
+      },
+      {
+        "id": "npm:regex@6.1.0",
+        "ecosystem": "npm",
+        "name": "regex",
+        "version": "6.1.0",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": true,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:sass@unresolved",
+        "ecosystem": "npm",
+        "name": "sass",
+        "version": "unresolved",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": true
+      },
+      {
+        "id": "npm:slash@5.1.0",
+        "ecosystem": "npm",
+        "name": "slash",
+        "version": "5.1.0",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": true,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:supports-color@unresolved",
+        "ecosystem": "npm",
+        "name": "supports-color",
+        "version": "unresolved",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": true
+      },
+      {
+        "id": "npm:title@4.0.1",
+        "ecosystem": "npm",
+        "name": "title",
+        "version": "4.0.1",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": true,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:vfile@6.0.3",
+        "ecosystem": "npm",
+        "name": "vfile",
+        "version": "6.0.3",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": true,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@alloc/quick-lru@5.2.0",
+        "ecosystem": "npm",
+        "name": "@alloc/quick-lru",
+        "version": "5.2.0",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@babel/runtime@7.29.2",
+        "ecosystem": "npm",
+        "name": "@babel/runtime",
+        "version": "7.29.2",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@dimforge/rapier3d-compat@0.12.0",
+        "ecosystem": "npm",
+        "name": "@dimforge/rapier3d-compat",
+        "version": "0.12.0",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@formatjs/intl-localematcher@0.6.2",
+        "ecosystem": "npm",
+        "name": "@formatjs/intl-localematcher",
+        "version": "0.6.2",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@headlessui/react@2.2.9",
+        "ecosystem": "npm",
+        "name": "@headlessui/react",
+        "version": "2.2.9",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@mdx-js/mdx@3.1.1",
+        "ecosystem": "npm",
+        "name": "@mdx-js/mdx",
+        "version": "3.1.1",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@mediapipe/tasks-vision@0.10.17",
+        "ecosystem": "npm",
+        "name": "@mediapipe/tasks-vision",
+        "version": "0.10.17",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@monogrid/gainmap-js@3.4.0",
+        "ecosystem": "npm",
+        "name": "@monogrid/gainmap-js",
+        "version": "3.4.0",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@napi-rs/simple-git@0.1.22",
+        "ecosystem": "npm",
+        "name": "@napi-rs/simple-git",
+        "version": "0.1.22",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@next/env@16.2.4",
+        "ecosystem": "npm",
+        "name": "@next/env",
+        "version": "16.2.4",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@next/swc-darwin-arm64@16.2.4",
+        "ecosystem": "npm",
+        "name": "@next/swc-darwin-arm64",
+        "version": "16.2.4",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@next/swc-darwin-x64@16.2.4",
+        "ecosystem": "npm",
+        "name": "@next/swc-darwin-x64",
+        "version": "16.2.4",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@next/swc-linux-arm64-gnu@16.2.4",
+        "ecosystem": "npm",
+        "name": "@next/swc-linux-arm64-gnu",
+        "version": "16.2.4",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@next/swc-linux-arm64-musl@16.2.4",
+        "ecosystem": "npm",
+        "name": "@next/swc-linux-arm64-musl",
+        "version": "16.2.4",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@next/swc-linux-x64-gnu@16.2.4",
+        "ecosystem": "npm",
+        "name": "@next/swc-linux-x64-gnu",
+        "version": "16.2.4",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@next/swc-linux-x64-musl@16.2.4",
+        "ecosystem": "npm",
+        "name": "@next/swc-linux-x64-musl",
+        "version": "16.2.4",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@next/swc-win32-arm64-msvc@16.2.4",
+        "ecosystem": "npm",
+        "name": "@next/swc-win32-arm64-msvc",
+        "version": "16.2.4",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@next/swc-win32-x64-msvc@16.2.4",
+        "ecosystem": "npm",
+        "name": "@next/swc-win32-x64-msvc",
+        "version": "16.2.4",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@shikijs/twoslash@3.23.0",
+        "ecosystem": "npm",
+        "name": "@shikijs/twoslash",
+        "version": "3.23.0",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      },
+      {
+        "id": "npm:@swc/helpers@0.5.15",
+        "ecosystem": "npm",
+        "name": "@swc/helpers",
+        "version": "0.5.15",
+        "is_root": false,
+        "cve_severity": null,
+        "has_malware": false,
+        "has_typosquat": false,
+        "compliance": null,
+        "is_unresolved": false
+      }
+    ],
+    "edges": [
+      {
+        "source": "npm:@react-three/drei@10.7.7",
+        "target": "npm:@react-three/fiber@9.6.0",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/drei@10.7.7",
+        "target": "npm:react@19.1.1",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/drei@10.7.7",
+        "target": "npm:react-dom@19.1.1",
+        "kind": "optional",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/drei@10.7.7",
+        "target": "npm:three@0.184.0",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/drei@10.7.7",
+        "target": "npm:@babel/runtime@7.29.2",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/drei@10.7.7",
+        "target": "npm:@mediapipe/tasks-vision@0.10.17",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/drei@10.7.7",
+        "target": "npm:@monogrid/gainmap-js@3.4.0",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/drei@10.7.7",
+        "target": "npm:@react-three/fiber@9.6.0",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/drei@10.7.7",
+        "target": "npm:react@19.1.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/drei@10.7.7",
+        "target": "npm:three@0.184.0",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/drei@10.7.7",
+        "target": "npm:react-dom@19.1.1",
+        "kind": "optional",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/fiber@9.6.0",
+        "target": "npm:expo@unresolved",
+        "kind": "optional",
+        "unresolved": true
+      },
+      {
+        "source": "npm:@react-three/fiber@9.6.0",
+        "target": "npm:expo-asset@unresolved",
+        "kind": "optional",
+        "unresolved": true
+      },
+      {
+        "source": "npm:@react-three/fiber@9.6.0",
+        "target": "npm:expo-file-system@unresolved",
+        "kind": "optional",
+        "unresolved": true
+      },
+      {
+        "source": "npm:@react-three/fiber@9.6.0",
+        "target": "npm:expo-gl@unresolved",
+        "kind": "optional",
+        "unresolved": true
+      },
+      {
+        "source": "npm:@react-three/fiber@9.6.0",
+        "target": "npm:react@19.1.1",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/fiber@9.6.0",
+        "target": "npm:react-dom@19.1.1",
+        "kind": "optional",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/fiber@9.6.0",
+        "target": "npm:react-native@unresolved",
+        "kind": "optional",
+        "unresolved": true
+      },
+      {
+        "source": "npm:@react-three/fiber@9.6.0",
+        "target": "npm:three@0.184.0",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/fiber@9.6.0",
+        "target": "npm:@babel/runtime@7.29.2",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/fiber@9.6.0",
+        "target": "npm:react@19.1.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/fiber@9.6.0",
+        "target": "npm:three@0.184.0",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@react-three/fiber@9.6.0",
+        "target": "npm:react-dom@19.1.1",
+        "kind": "optional",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@tailwindcss/postcss@4.2.4",
+        "target": "npm:@alloc/quick-lru@5.2.0",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@tailwindcss/postcss@4.2.4",
+        "target": "npm:tailwindcss@4.2.4",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@types/react-dom@19.0.4",
+        "target": "npm:@types/react@19.0.14",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@types/react-dom@19.0.4",
+        "target": "npm:@types/react@19.0.14",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@types/three@0.184.0",
+        "target": "npm:@dimforge/rapier3d-compat@0.12.0",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:@opentelemetry/api@unresolved",
+        "kind": "optional",
+        "unresolved": true
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:@playwright/test@unresolved",
+        "kind": "optional",
+        "unresolved": true
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:babel-plugin-react-compiler@unresolved",
+        "kind": "optional",
+        "unresolved": true
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:react@19.1.1",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:react-dom@19.1.1",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:sass@unresolved",
+        "kind": "optional",
+        "unresolved": true
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:@next/env@16.2.4",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:@swc/helpers@0.5.15",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:react@19.1.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:react-dom@19.1.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:@next/swc-darwin-arm64@16.2.4",
+        "kind": "optional",
+        "unresolved": false
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:@next/swc-darwin-x64@16.2.4",
+        "kind": "optional",
+        "unresolved": false
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:@next/swc-linux-arm64-gnu@16.2.4",
+        "kind": "optional",
+        "unresolved": false
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:@next/swc-linux-arm64-musl@16.2.4",
+        "kind": "optional",
+        "unresolved": false
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:@next/swc-linux-x64-gnu@16.2.4",
+        "kind": "optional",
+        "unresolved": false
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:@next/swc-linux-x64-musl@16.2.4",
+        "kind": "optional",
+        "unresolved": false
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:@next/swc-win32-arm64-msvc@16.2.4",
+        "kind": "optional",
+        "unresolved": false
+      },
+      {
+        "source": "npm:next@16.2.4",
+        "target": "npm:@next/swc-win32-x64-msvc@16.2.4",
+        "kind": "optional",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:next@16.2.4",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:react@19.1.1",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:react-dom@19.1.1",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:@formatjs/intl-localematcher@0.6.2",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:@headlessui/react@2.2.9",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:@mdx-js/mdx@3.1.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:@napi-rs/simple-git@0.1.22",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:@shikijs/twoslash@3.23.0",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:clsx@2.1.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:katex@0.16.45",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:next@16.2.4",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:react@19.1.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:react-dom@19.1.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:slash@5.1.0",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra@4.6.1",
+        "target": "npm:title@4.0.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra-theme-docs@4.6.1",
+        "target": "npm:next@16.2.4",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra-theme-docs@4.6.1",
+        "target": "npm:nextra@4.6.1",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra-theme-docs@4.6.1",
+        "target": "npm:react@19.1.1",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra-theme-docs@4.6.1",
+        "target": "npm:react-dom@19.1.1",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra-theme-docs@4.6.1",
+        "target": "npm:@headlessui/react@2.2.9",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra-theme-docs@4.6.1",
+        "target": "npm:clsx@2.1.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra-theme-docs@4.6.1",
+        "target": "npm:next@16.2.4",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra-theme-docs@4.6.1",
+        "target": "npm:nextra@4.6.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra-theme-docs@4.6.1",
+        "target": "npm:react@19.1.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:nextra-theme-docs@4.6.1",
+        "target": "npm:react-dom@19.1.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:react-dom@19.1.1",
+        "target": "npm:react@19.1.1",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:react-dom@19.1.1",
+        "target": "npm:react@19.1.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@monogrid/gainmap-js@3.4.0",
+        "target": "npm:three@0.184.0",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@monogrid/gainmap-js@3.4.0",
+        "target": "npm:three@0.184.0",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@headlessui/react@2.2.9",
+        "target": "npm:react@19.1.1",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@headlessui/react@2.2.9",
+        "target": "npm:react-dom@19.1.1",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@headlessui/react@2.2.9",
+        "target": "npm:react@19.1.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@headlessui/react@2.2.9",
+        "target": "npm:react-dom@19.1.1",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@mdx-js/mdx@3.1.1",
+        "target": "npm:acorn@8.16.0",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@mdx-js/mdx@3.1.1",
+        "target": "npm:vfile@6.0.3",
+        "kind": "runtime",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@shikijs/twoslash@3.23.0",
+        "target": "npm:typescript@5.7.2",
+        "kind": "peer",
+        "unresolved": false
+      },
+      {
+        "source": "npm:@shikijs/twoslash@3.23.0",
+        "target": "npm:typescript@5.7.2",
+        "kind": "runtime",
+        "unresolved": false
+      }
+    ],
+    "total_nodes": 612,
+    "total_edges": 1299,
+    "oversize_warning": false
+  }
+}
