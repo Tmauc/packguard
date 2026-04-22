@@ -8,7 +8,7 @@ repository.workspace = true
 description = "PackGuard SQLite store: migrations, persistence, fingerprinting."
 
 [dependencies]
-packguard-core = { path = "../packguard-core", version = "0.1.0" }
+packguard-core = { path = "../packguard-core", version = "0.2.0" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 rusqlite = { workspace = true }

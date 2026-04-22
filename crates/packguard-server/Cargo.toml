@@ -8,10 +8,10 @@ repository.workspace = true
 description = "PackGuard HTTP server: REST API + job runner backing the dashboard."
 
 [dependencies]
-packguard-core = { path = "../packguard-core", version = "0.1.0" }
-packguard-store = { path = "../packguard-store", version = "0.1.0" }
-packguard-policy = { path = "../packguard-policy", version = "0.1.0" }
-packguard-intel = { path = "../packguard-intel", version = "0.1.0" }
+packguard-core = { path = "../packguard-core", version = "0.2.0" }
+packguard-store = { path = "../packguard-store", version = "0.2.0" }
+packguard-policy = { path = "../packguard-policy", version = "0.2.0" }
+packguard-intel = { path = "../packguard-intel", version = "0.2.0" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
