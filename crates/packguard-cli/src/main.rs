@@ -1591,6 +1591,11 @@ async fn scan(path: PathBuf, opts: ScanOptions, store_path: &Path) -> Result<()>
                 if failed.len() == 1 { "" } else { "s" },
             );
         }
+    } else if let Some((_, err)) = failed.into_iter().next() {
+        // Single-project mode: we suppressed the per-project line
+        // (compact=false means handle_project would have printed its
+        // own status), so surface the failure as a normal error.
+        return Err(err);
     }
 
     Ok(())

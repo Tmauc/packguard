@@ -55,5 +55,26 @@ fn scan_errors_cleanly_on_unknown_path() {
         .expect("run packguard");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no scannable projects"), "stderr: {stderr}");
+}
+
+#[test]
+fn scan_no_recursive_errors_cleanly_on_unknown_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("store.db");
+    let empty = dir.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let output = Command::new(bin())
+        .arg("--store")
+        .arg(&store)
+        .args(["scan", "--no-recursive"])
+        .arg(&empty)
+        .output()
+        .expect("run packguard");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Legacy error shape: the message explicitly tells the user to
+    // drop --no-recursive.
     assert!(stderr.contains("no supported manifest"), "stderr: {stderr}");
+    assert!(stderr.contains("--no-recursive"), "stderr: {stderr}");
 }
