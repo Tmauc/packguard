@@ -8,6 +8,7 @@ Evaluates every installed dependency against `.packguard.yml` and prints a compl
 packguard report [path] \
   [--format table|json|sarif] \
   [--fail-on-violation] \
+  [--show-policy] \
   [--project <workspace>]
 ```
 
@@ -34,7 +35,10 @@ supply-chain: 🏴‍☠️ 0 malware confirmed · ⚠ 1 typosquat suspect
 |---|---|
 | `--format table\|json\|sarif` | Default `table`. |
 | `--fail-on-violation` | Exit 2 when any row is `violation`, `cve-violation`, or `malware`. |
+| `--show-policy` | Print the resolved policy with per-key provenance (which `.packguard.yml` and line set each value) and exit. See [Policy cascade](/concepts/offset-policy#policy-cascade-across-a-monorepo). |
 | `--project <path>` | Scope to a single workspace in a monorepo. |
+
+Past the table, the command prints a pedagogical footer bridging to `packguard audit` — and when packages surface as `insufficient`, it points you at `--show-policy` so you can see which cascade layer is constraining resolution.
 
 ## Examples
 

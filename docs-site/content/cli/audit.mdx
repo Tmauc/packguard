@@ -49,6 +49,22 @@ packguard audit --fail-on critical --fail-on-malware
 packguard audit --format sarif > packguard.sarif
 ```
 
+## Empty store — the first-run hint
+
+When the SQLite store hasn't been hydrated yet (no `packguard sync` ever ran), the vulnerability table is empty. Audit still runs — it just has nothing locally to match against — and emits a pedagogical stderr warning before the table:
+
+```
+⚠ Store has 0 advisories — nothing local to match against your scans.
+  Run 'packguard sync' to fetch the CVE database (OSV + GHSA),
+  then re-run audit.
+```
+
+Exit code stays `0` (the warning is guidance, not a failure). Once advisories are cached, a **clean** run prints a one-line reassurance instead of the old ambiguous "no risks detected":
+
+```
+✓ No matches — your installed versions are clean against the 27934 cached advisories in the store.
+```
+
 ## OSV live fallback
 
 Without `--no-live-fallback`, packages not covered by the cached OSV dump trigger a `POST /v1/query` against `api.osv.dev` (24h TTL per package). This closes the gap for long-tail packages that haven't appeared in the dump yet.
