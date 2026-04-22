@@ -1,0 +1,73 @@
+# Per-project scoping
+
+Monorepos break every tool that assumes "one repo, one dependency tree". PackGuard is workspace-aware from the scanner all the way to the UI — every list-returning endpoint threads a `?project=<path>` query param, and the dashboard header has a dropdown that writes that param without unmounting the route.
+
+## The workspace boundary
+
+A "workspace" in PackGuard is a path that owns a manifest + a lockfile. In practice that's:
+
+- A `package.json` sitting next to a `package-lock.json` / `pnpm-lock.yaml`.
+- A `pyproject.toml` sitting next to a `poetry.lock` / `uv.lock`.
+- Or a `requirements*.txt` on its own (declared-only mode).
+
+`packguard scan <path>` walks the path recursively and records one entry per (workspace, ecosystem) pair in the store. A monorepo with an app-web, an app-api, and a worker-ingest ends up with three entries per ecosystem — and the Overview donuts reflect that.
+
+## The scope selector
+
+![Header workspace selector open — aggregate · incentive · vesta](/screenshots/phase7-selector-open.png)
+
+The header dropdown in the dashboard is the user-visible lever. Switching scope:
+
+- writes `?project=<path>` into the URL,
+- re-runs the current page's React Query fetches against the new scope,
+- persists the picked workspace into `localStorage` so the next session resumes there.
+
+Bookmarking a URL with `?project=...` bookmarks the scope too. Two browser tabs → two workspaces → one store.
+
+![Overview scoped side-by-side — 91 deps vs 27 deps, same store, two tabs](/screenshots/phase7-isolation-sidebyside.png)
+
+## The CLI mirror
+
+Every list-returning CLI command accepts the same selector as a flag:
+
+```bash
+packguard report . --project ./apps/web
+packguard audit . --project ./apps/api
+packguard graph . --project ./apps/worker-ingest
+```
+
+With no `--project` flag, the CLI falls back to the most-recent scan path and prints an explicit banner on stderr:
+
+```
+warning: --project not specified, defaulting to the most recent scan (apps/api).
+         available scans: apps/web, apps/api, apps/worker-ingest
+         pass --project <path> to scope to a different workspace.
+```
+
+## Per-workspace `.packguard.yml`
+
+![Policies — empty state without scope vs CodeMirror editor when a workspace is picked](/screenshots/phase7-policies-empty-vs-scoped.png)
+
+Each workspace can own its own `.packguard.yml`. When none is present at the workspace root, PackGuard uses the conservative defaults baked into the binary. When one is present, it's the only policy evaluated for that scope — there's no cross-workspace inheritance by design.
+
+That keeps the policy locally legible. A dev opening `apps/web/.packguard.yml` sees exactly what CI will enforce for that workspace, without having to chase a parent `.packguard.yml` three directories up.
+
+## The `Used by` drill-down
+
+![Compatibility tab — Used by · per-workspace drill-down](/screenshots/phase7-compat-drilldown.png)
+
+In a monorepo, a single package version can be installed across multiple workspaces at different depths in the graph. The package-detail **Compatibility** tab groups installations by workspace + shows the dependency path from each workspace's root down to the package — useful when triaging *"this CVE — how many of our apps have to move?"*.
+
+## Cross-workspace operations
+
+A few operations are intentionally *not* scoped:
+
+- **`sync`** — intel refresh is ecosystem-wide, not workspace-specific. Running it once populates the cache for every workspace that touches npm / PyPI.
+- **`scans`** — the "list what I know about" command returns every (path, ecosystem) pair regardless of scope. That's how you discover what workspaces exist in the store.
+- **The Overview aggregate view** — without a `?project=` param, the page shows the roll-up across every workspace in the store. Useful for platform / security-team dashboards; noisy for product teams.
+
+## Related
+
+- [Dashboard: Overview](/dashboard/overview) — scope badge top-right of every page.
+- [`packguard scans`](/cli/scans) — enumerates every (path, ecosystem) the store knows about.
+- [Dashboard: Policies](/dashboard/policies) — the workspace-aware YAML editor.

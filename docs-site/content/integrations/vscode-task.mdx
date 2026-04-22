@@ -1,0 +1,97 @@
+# VSCode task
+
+Two command-palette entries that let any dev run `packguard audit` and open the dashboard on the current folder without leaving the editor.
+
+## `.vscode/tasks.json`
+
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "PackGuard: audit current workspace",
+      "type": "shell",
+      "command": "packguard",
+      "args": [
+        "audit",
+        "${workspaceFolder}",
+        "--fail-on",
+        "high"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "PackGuard: open dashboard",
+      "type": "shell",
+      "command": "packguard",
+      "args": ["ui", "${workspaceFolder}"],
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated"
+      }
+    }
+  ]
+}
+```
+
+- **Audit task** — `Cmd/Ctrl + Shift + P → Run Task → PackGuard: audit current workspace`. Output lands in an isolated terminal panel, not the main one, so it doesn't clobber whatever was running.
+- **Dashboard task** — kicks off `packguard ui` in the background and (on most systems) auto-opens the browser. Useful when digging into a vulnerability spotted by the audit task.
+
+## Optional: problem matcher for inline diagnostics
+
+If you want VSCode to underline the offending package in `package-lock.json` or `pyproject.toml`, add a SARIF step + a SARIF viewer extension such as [`Microsoft.sarif-viewer`](https://marketplace.visualstudio.com/items?itemName=MS-SarifVSCode.sarif-viewer):
+
+```json
+{
+  "label": "PackGuard: generate SARIF",
+  "type": "shell",
+  "command": "packguard",
+  "args": [
+    "report",
+    "${workspaceFolder}",
+    "--format",
+    "sarif"
+  ],
+  "options": {
+    "shell": { "executable": "/bin/bash", "args": ["-lc"] }
+  },
+  "group": "test",
+  "presentation": { "reveal": "silent" },
+  "problemMatcher": {
+    "owner": "packguard",
+    "fileLocation": "absolute",
+    "pattern": [
+      {
+        "regexp": "^(.+):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+        "file": 1, "line": 2, "column": 3, "severity": 4, "message": 5
+      }
+    ]
+  }
+}
+```
+
+The SARIF viewer then renders each PackGuard finding as a navigable diagnostic with the CVE id, severity, and upgrade hint.
+
+## Keybindings
+
+If you want one-key audits, bind the audit task to a shortcut in `keybindings.json`:
+
+```json
+{
+  "key": "cmd+alt+p",
+  "command": "workbench.action.tasks.runTask",
+  "args": "PackGuard: audit current workspace"
+}
+```
+
+## Related
+
+- [`packguard audit`](/cli/audit) — the command the task runs.
+- [`packguard ui`](/cli/ui) — the dashboard the second task opens.

@@ -1,0 +1,48 @@
+# packguard sync
+
+Refreshes every supply-chain intel feed: CVE + GHSA + malware + typosquat reference lists.
+
+## Synopsis
+
+```bash
+packguard sync [--skip-osv] [--skip-ghsa] [--ghsa-cache <path>] [--all]
+```
+
+## What it pulls
+
+**OSV dumps** for npm and PyPI (`https://osv-vulnerabilities.storage.googleapis.com/{eco}/all.zip`). Conditional GET via `If-None-Match` / `If-Modified-Since`, so a no-op pull is a 304 and returns in ~500ms. Dump entries with `MAL-*` ids or `database_specific.severity = malicious` are routed to `malware_reports`; everything else lands in `vulnerabilities`.
+
+**GitHub Advisory Database** via `git clone --depth 1` then `git pull --ff-only` of `github/advisory-database`. Only `advisories/github-reviewed/` is parsed. Aliases ensure OSV + GHSA dedupe cleanly at match time.
+
+**Typosquat top-N reference list** — hugovk's `top-pypi-packages` JSON for PyPI (7-day TTL, cached at `~/.packguard/cache/reference/pypi-top-packages.json`). The npm baseline is embedded in the binary (~200 canonical names); drop your own file at the same cache path to extend it.
+
+After the reference lists are loaded, every watched package is re-scored — Levenshtein ≤ 2 + character swaps + prefix/suffix patterns → persisted as `malware_reports` rows with `source = typosquat-heuristic`.
+
+## Flags
+
+| Flag | Effect |
+|---|---|
+| `--skip-osv` | Skip the OSV dump fetch (useful when iterating on GHSA parsing). |
+| `--skip-ghsa` | Skip the GitHub Advisory clone. |
+| `--ghsa-cache <path>` | Override the local GHSA clone path (default `~/.packguard/cache/ghsa/`). |
+| `--all` | Persist every advisory in the dump — even for packages not currently in the store. Useful for CI warm-up; balloons the DB from ~hundreds to ~hundreds of thousands of rows. |
+
+## Typical run
+
+```bash
+packguard sync
+# 2026-04-22T10:14:02  osv/npm     → updated 412 entries · 5.4 MB (cached)
+# 2026-04-22T10:14:05  osv/pypi    → 304 not modified (cache hit)
+# 2026-04-22T10:14:06  ghsa        → fast-forwarded 142 commits
+# 2026-04-22T10:14:11  typosquat   → reloaded top-5000 pypi list
+# 2026-04-22T10:14:11  scored 118 packages → 0 malware matches · 1 typosquat suspect
+```
+
+## Cadence
+
+A nightly `packguard sync` is enough in 99% of cases. OSV publishes on a multi-hour cadence; GHSA merges several times a day. Running `sync` per-PR burns network for almost no new data — most teams schedule it daily on the default branch and let PR runs reuse yesterday's cache.
+
+## Related
+
+- [Supply-chain intel](/concepts/supply-chain) — how the four sources combine.
+- [`packguard audit`](/cli/audit) — reads the intel `sync` populates.

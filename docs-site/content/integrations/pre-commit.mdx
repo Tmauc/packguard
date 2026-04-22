@@ -1,0 +1,73 @@
+# pre-commit hook
+
+Blocks a commit that would introduce a critical CVE or known malware. Runs against the working tree, not the staged diff, so the author sees the problem before the change lands locally — not 20 minutes later when CI rejects the MR.
+
+## With `pre-commit` (python)
+
+```yaml
+# .pre-commit-config.yaml
+
+repos:
+  - repo: local
+    hooks:
+      - id: packguard
+        name: packguard audit
+        entry: packguard audit . --fail-on critical --fail-on-malware
+        language: system
+        # Re-run only when lockfiles change — the scan is expensive
+        # and rarely relevant for an unrelated source-code change.
+        files: '(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|poetry\.lock|uv\.lock|requirements.*\.txt)$'
+        pass_filenames: false
+```
+
+First commit + `pre-commit install`; after that, the hook fires on every `git commit` that touches a lockfile.
+
+## Without `pre-commit` (vanilla git hook)
+
+If the repo doesn't use `pre-commit`, a plain `.git/hooks/pre-commit` works the same way:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Only run when a lockfile is part of the change — skip otherwise to
+# keep source-only commits fast.
+if ! git diff --cached --name-only | grep -qE '(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|poetry\.lock|uv\.lock|requirements.*\.txt)$'; then
+  exit 0
+fi
+
+if ! command -v packguard >/dev/null 2>&1; then
+  printf '::warning:: packguard not on PATH — skipping.\n' >&2
+  exit 0   # don't block contributors who haven't installed it yet
+fi
+
+packguard audit . --fail-on critical --fail-on-malware
+```
+
+Save as `.git/hooks/pre-commit`, `chmod +x`, done. Consider committing this snippet under `scripts/setup-hooks.sh` so new clones wire the hook in one command.
+
+## Expected behaviour
+
+| Scenario | Hook exit | What you see |
+|---|---|---|
+| No lockfile in staged diff | 0 | Hook is a no-op |
+| Lockfile changed, policy OK | 0 | `packguard audit` prints a one-line summary |
+| Lockfile changed, blocking CVE | 2 | Commit refused, advisory printed inline |
+| `packguard` not installed | 0 (vanilla) / 1 (pre-commit local) | Warning on stderr |
+
+The hook is strict by default — `--fail-on critical --fail-on-malware` — because "warn only" pre-commit hooks are almost always ignored. If your team needs a softer hook, swap the entry for:
+
+```yaml
+entry: packguard report . --fail-on-violation
+```
+
+`report` respects the full `block:` section of `.packguard.yml`, so you centralize the gating policy in one place.
+
+## Tip: keep the hook fast
+
+The first audit after a lockfile change takes 5-20s (scan + policy evaluation). Subsequent audits on the same tree are ~200ms. If that's too slow, the hook can fall back to `packguard audit . --offline`, which skips any registry calls entirely — you lose "installed is one minor behind latest" hints, but the CVE gate still works.
+
+## Related
+
+- [`packguard audit`](/cli/audit) — the command the hook runs.
+- [GitHub Actions](/integrations/github-actions) — the CI gate that catches what pre-commit hooks don't.

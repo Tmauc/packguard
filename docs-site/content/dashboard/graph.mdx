@@ -1,0 +1,49 @@
+# Graph
+
+Cytoscape-rendered transitive dependency graph — dagre + cose-bilkent layouts, URL-driven filters, focus-CVE contamination mode.
+
+## Default view
+
+![Graph — default view across the workspace](/screenshots/graph-default.png)
+
+Dagre layout with the workspace root on the left and leaves on the right. Node fills encode ecosystem (npm blue / pypi green / malware purple / typosquat magenta / CVE ember). Edge styles encode kind (runtime solid / dev stroked / peer dashed / optional dotted).
+
+## Filters
+
+| Control | Effect |
+|---|---|
+| **Kind** | Toggle runtime / dev / peer / optional edges. Defaults to runtime only. |
+| **Depth** | Limit the BFS depth from workspace roots. Default 3. |
+| **Layout** | dagre (DAG-style) / cose-bilkent (force-directed). |
+| **Search** | Highlights any node whose name substring-matches. |
+
+Every filter is in the URL, so a shared link reproduces the same view.
+
+## Focus-CVE contamination mode
+
+![Graph focus — CVE contamination chain to lodash](/screenshots/graph-focus-lodash.png)
+
+Paste a CVE id (or any advisory alias) into the search bar and click **Trace**. The graph:
+
+1. Looks up every `(ecosystem, name, version)` touched by the advisory in the local store.
+2. Runs the inverse contamination BFS — same algorithm as [`packguard graph --contaminated-by`](/cli/graph).
+3. Highlights every root-to-leaf chain in ember red, dims everything else.
+
+The banner at the top tells you how many packages were hit and how many chains were surfaced — `CVE-2026-4800: 1 package hit · 3 contamination chains · cached`.
+
+Cache is per-advisory, 15 minutes — a subsequent trace of the same CVE is instant.
+
+## Empty state
+
+A freshly-scanned workspace with zero transitive edges (yarn.lock-only, or pip declared-only with no lock) shows a banner pointing at the limitation. The scanner will surface the workspace roots and their direct deps but can't render transitive chains without a real lockfile.
+
+## Performance
+
+- ~5000 nodes renders in well under a second on a mid-range laptop.
+- Above that, the dashboard warns and suggests toggling off peer + optional edges to slim the graph before rendering.
+- The BFS cache is shared with the CLI — same store, same traversal, same result.
+
+## Related
+
+- [`packguard graph`](/cli/graph) — CLI equivalent, same data, multiple formats.
+- [Supply-chain intel](/concepts/supply-chain) — how advisories reach the store the graph reads.

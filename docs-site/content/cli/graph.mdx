@@ -1,0 +1,72 @@
+# packguard graph
+
+Emits the transitive dependency graph for the last scan in ASCII, Graphviz DOT, or JSON.
+
+## Synopsis
+
+```bash
+packguard graph [path] \
+  [--workspace <path>] \
+  [--focus <ecosystem:name@version>] \
+  [--contaminated-by <CVE|GHSA|alias>] \
+  [--format ascii|dot|json] \
+  [--max-depth <N>] \
+  [--kind runtime,dev,peer,optional]
+```
+
+## What it reads
+
+Pure store-backed — no registry calls. Edges come from lockfiles parsed during `scan`:
+
+- `package-lock.json` v2/v3
+- `pnpm-lock.yaml` v6/v7/v9 (including the v9 snapshot format)
+- `poetry.lock`
+- `uv.lock`
+
+`yarn.lock` transitive edges are not yet harvested (top-level manifest only — same limit that applies to `scan`).
+
+## Formats
+
+| Format | Example |
+|---|---|
+| `ascii` (default) | Indented tree with per-node risk suffixes: `(high CVE)`, `(malware)`, `(unresolved peer)`. |
+| `dot` | Graphviz `digraph` with ecosystem-coloured fills + red borders on CVE hits. Pipe into `dot -Tsvg`. |
+| `json` | Raw `GraphResponse` (or `ContaminationResult` when `--contaminated-by` is set). Same DTOs `ts-rs` exports for the dashboard. |
+
+## Examples
+
+```bash
+# Tree view of the last scan.
+packguard graph path/to/repo
+
+# Subtree rooted at a specific package.
+packguard graph path/to/repo --focus npm:react@18.3.1
+
+# All contamination chains for a CVE — same BFS + cache as the dashboard.
+packguard graph path/to/repo --contaminated-by CVE-2026-4800
+
+# Pipe into Graphviz.
+packguard graph path/to/repo --format dot | dot -Tsvg -o deps.svg
+
+# Machine-readable (ts-rs DTOs, stable across releases).
+packguard graph path/to/repo --format json
+```
+
+## Contamination — what the BFS does
+
+`--contaminated-by <advisory>` runs the inverse contamination BFS:
+
+1. Looks up every `(eco, name, version)` touched by the advisory.
+2. Walks *backwards* through the dependency graph, collecting every path from a workspace root down to the vulnerable leaf.
+3. Returns one chain per root — not just the shortest.
+
+The same cache the `/graph` dashboard page uses is shared with the CLI, so an identical query in the UI and on the terminal returns the same chains.
+
+## Why a CLI graph, not just the dashboard
+
+CI is the usual answer. When a pipeline fails because a new CVE lit up, you want to pull the chain into the error message rather than say "go open the dashboard". `--format json` + `jq` gives you the contamination path from the same store the dashboard reads.
+
+## Related
+
+- [Dashboard: Graph](/dashboard/graph) — the interactive view of the same data.
+- [Per-project scoping](/concepts/per-project) — how `--workspace` scopes the traversal.

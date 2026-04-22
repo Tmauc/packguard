@@ -1,0 +1,66 @@
+# Offset policy
+
+Most governance tools have two default modes: pin everything (Dependabot-style "every update is a PR") or update everything (Renovate-style "stay on HEAD"). Both are defensible. Neither matches how most teams actually ship.
+
+PackGuard's model is different — **offset**. You declare *how far behind* `latest` each package is allowed to drift, and the scanner classifies every installed version against that rule.
+
+## The `.packguard.yml`
+
+```yaml
+defaults:
+  offset: -1              # stay one major behind latest
+  allow_patch: true
+  allow_security_patch: true
+  stability: stable       # exclude prereleases from consideration
+  min_age_days: 7         # ignore releases younger than a week
+  block:
+    cve_severity: [high, critical]   # installed match → cve-violation
+    malware: true                    # MAL-* / GHSA malware → malware
+    deprecated: true
+    yanked: true
+    typosquat: warn                  # warn | strict | off
+
+overrides:
+  - match: "react"
+    offset: 0             # React must be on latest
+  - match: "lodash"
+    pin: "4.17.21"        # hard pin, no drift allowed
+  - match: "@babel/*"     # glob — apply to every Babel scoped package
+    offset: -2
+
+groups:
+  - name: security-critical
+    match: ["jsonwebtoken", "bcrypt*", "@auth/*"]
+    offset: 0
+    min_age_days: 0
+```
+
+Resolution cascade: `defaults` → every matching `group` → every matching `override`. Later layers strictly override per-field. A package can match multiple groups — later matches win, which is why `overrides` (applied last) give you the last word.
+
+## Why offset instead of pin-or-latest
+
+**Pin-everything (Dependabot-style)** — every minor bump is a PR. Teams stop reading them. You end up running versions that are months out of date because no one wants to review 40 Dependabot PRs on a Friday.
+
+**Update-everything (Renovate-style)** — aggressive auto-merge is great until a breaking minor sneaks through. And you can't ask "are we drifted?" of the codebase — every repo is always on HEAD, by definition.
+
+**Offset (PackGuard)** — you declare the bar ("one major behind latest is fine"), and the CI gate tells you when a workspace has drifted below it. The drift signal is the thing you actually care about, expressed as a policy, not as a PR stream.
+
+## What offset measures
+
+Offset compares *what's installed* against *what's available on the registry right now*. For a package on `^4.17.21` with `latest = 4.17.23`, the installed delta is `0 minor · 2 patch` — that's compliant under `offset: -1` + `allow_patch: true`.
+
+For a package on `^2.0.0` with `latest = 5.4.0`, the installed delta is `3 major · … · …` — that's a `violation` under `offset: -1`.
+
+The classifier uses the full version history returned by the registry, so the answer doesn't depend on what your lockfile *was* last quarter; it depends on what ships *today*.
+
+## What the policy does NOT do
+
+PackGuard is a **governance + auditing** tool, not a resolver. It won't bump your lockfile for you — it'll fail CI when a lockfile drifts past policy, and leave the upgrade work to you (or to Renovate / Dependabot / a human).
+
+That separation is intentional: the tools that pick *which* version to install are different from the tools that decide *whether a version is allowed*. Most teams end up wanting both, but the concerns don't belong in the same binary.
+
+## Related
+
+- [Per-project scoping](/concepts/per-project) — how `.packguard.yml` works across a monorepo.
+- [`packguard init`](/cli/init) — generates the policy skeleton.
+- [`packguard report`](/cli/report) — evaluates installed versions against the policy.

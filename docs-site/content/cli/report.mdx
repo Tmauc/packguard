@@ -1,0 +1,68 @@
+# packguard report
+
+Evaluates every installed dependency against `.packguard.yml` and prints a compliance table. Reads **only** the local store — zero network calls.
+
+## Synopsis
+
+```bash
+packguard report [path] \
+  [--format table|json|sarif] \
+  [--fail-on-violation] \
+  [--project <workspace>]
+```
+
+## Output shape
+
+Compliance table grouped by ecosystem → workspace → package:
+
+| Column | Values |
+|---|---|
+| `Policy` | `compliant` · `warning` · `violation` · `cve-violation` · `malware` · `typosquat` · `insufficient` |
+| `Risk` | Combined badges: `2🔴 · 1🟠 · 1🏴‍☠️ · ⚠` — CVE counts + malware confirmed + typosquat suspects |
+
+**Footer** — summary line:
+
+```
+compliant 19 · warnings 80 · violations 9 · insufficient 10
+vulnerabilities: 4 critical · 4 high · 0 medium · 0 low
+supply-chain: 🏴‍☠️ 0 malware confirmed · ⚠ 1 typosquat suspect
+```
+
+## Flags
+
+| Flag | Effect |
+|---|---|
+| `--format table\|json\|sarif` | Default `table`. |
+| `--fail-on-violation` | Exit 2 when any row is `violation`, `cve-violation`, or `malware`. |
+| `--project <path>` | Scope to a single workspace in a monorepo. |
+
+## Examples
+
+```bash
+# Human-readable, all scopes.
+packguard report
+
+# CI gate — fail on any blocking policy hit.
+packguard report --fail-on-violation
+
+# SARIF for inline annotations in the Security tab.
+packguard report --format sarif > packguard.sarif
+
+# Scope to a single workspace.
+packguard report --project ./apps/web
+```
+
+## `report` vs `audit`
+
+Two commands, two questions:
+
+- **`audit`** — *"what are the known risks?"* Lists every CVE, malware, typosquat hit.
+- **`report`** — *"how do those risks interact with our policy?"* Evaluates every row against `.packguard.yml` and flags the ones that violate the configured block rules.
+
+A package with a `high`-severity CVE shows up in both, but `audit` says "this CVE exists" and `report` says "this CVE is blocking under your current `block.cve_severity`". For CI gating, `report --fail-on-violation` is usually what you want — it lets you tune the bar by editing YAML instead of toggling CLI flags.
+
+## Related
+
+- [Offset policy](/concepts/offset-policy) — the `.packguard.yml` reference.
+- [`packguard audit`](/cli/audit) — the raw risk view.
+- [Per-project scoping](/concepts/per-project) — how `--project` works in a monorepo.

@@ -1,0 +1,53 @@
+# Package detail
+
+Six tabs that answer every question you can ask about one package at one version.
+
+![Package detail — pillow](/screenshots/detail.png)
+
+## The six tabs
+
+### Versions
+
+visx-rendered timeline of the full version history the registry returned, with the installed version highlighted. Hover a dot to see release date + stability flag. The fastest way to answer *"how stale is this?"*.
+
+### Vulnerabilities
+
+Every CVE that matches the installed version. Severity badge + advisory id + range that triggered the match + fix version (when known). Links out to OSV + GHSA + NVD for each row.
+
+### Malware
+
+`malware_reports` hits for this `(ecosystem, name, version)`. One row per source:
+
+- `osv-mal` — OSV `MAL-*` entry
+- `ghsa-malware` — GHSA advisory flagged malware
+- `socket.dev` — Socket alert tagged `malware` / `backdoor`
+- `typosquat-heuristic` — local heuristic suspicion (usually *not* confirmed malware)
+
+### Policy eval
+
+What the effective policy says about this row. Shows the `defaults → groups → overrides` cascade the evaluator walked, which rule fired, and what the final verdict was. Also shows the *hypothetical* verdict if you tweaked a field — useful when drafting a policy change.
+
+### Compatibility
+
+![Compatibility tab — lodash](/screenshots/compat-lodash.png)
+
+"Which of our workspaces installs this package, and through which chain?" — per-workspace drill-down with the dependency path from each workspace's root down to this package.
+
+In a monorepo, a shared transitive dep (think `lodash`) lights up every workspace that pulls it in. The tab answers *"how many apps have to move?"* at a glance.
+
+### Changelog
+
+Registry-provided changelog when available; falls back to a link-out when the registry only exposes per-release metadata. Not every package has good changelog coverage — that's upstream's problem.
+
+## URL shape
+
+```
+/packages/:ecosystem/:name
+```
+
+The active tab is `?tab=<name>` — bookmarkable and linkable. Useful when referencing a specific view in a Slack thread or an MR description.
+
+## Related
+
+- [Packages](/dashboard/packages) — the table that opens detail pages.
+- [Graph](/dashboard/graph) — see this package's place in the full tree.

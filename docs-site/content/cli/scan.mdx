@@ -1,0 +1,55 @@
+# packguard scan
+
+Walks the repo's lockfiles, resolves every installed version against the registry, and persists the result into the local SQLite store.
+
+## Synopsis
+
+```bash
+packguard scan [path] [--offline] [--force]
+```
+
+## Behaviour
+
+- Walks Tier-1 ecosystems (npm, PyPI) under `path` (defaults to `.`).
+- Parses manifests + lockfiles:
+  - **npm** → `package-lock.json` v2/v3, `pnpm-lock.yaml` v6/v7/v9, `yarn.lock` (manifest-only).
+  - **PyPI** → `poetry.lock`, `uv.lock`, `requirements*.txt` (declared-only).
+- Queries the registry for the full version history + stability + deprecation + yanked flags.
+- Persists everything to SQLite at `~/.packguard/store.db` (override with `--store <path>`).
+
+A SHA-256 fingerprint of `(manifest + lockfiles)` gates the registry round-trip — re-runs that match the cached fingerprint short-circuit.
+
+## Flags
+
+| Flag | Effect |
+|---|---|
+| `--offline` | Fails cleanly when the cache was never populated for this path. No registry calls. |
+| `--force` | Invalidates the fingerprint cache and forces a fresh scan. |
+| `--store <path>` | Override the SQLite store path (global flag on every command). |
+
+## Examples
+
+```bash
+# Scan the repo root.
+packguard scan
+
+# Scan a specific workspace in a monorepo.
+packguard scan ./apps/web
+
+# Re-scan offline after a policy change — no registry hits.
+packguard scan --offline
+
+# Force a re-scan even if the lockfile hasn't changed.
+packguard scan --force
+```
+
+## pip declared-only mode
+
+pip doesn't ship a native lockfile. PackGuard parses `requirements*.txt` in best-effort PEP 508 and only treats a requirement as **installed** when it uses an exact pin (`pkg==1.2.3`). Loose ranges like `flake8>=7.0` stay at `installed = None` and classify as `Unknown` / `Warning`.
+
+If you need full coverage on a pip-only repo, move to `pyproject.toml` + `uv.lock`, or run `pip-compile --generate-hashes` to produce a lockfile-equivalent.
+
+## Related
+
+- [`packguard sync`](/cli/sync) — next step: refresh supply-chain intel.
+- [`packguard scans`](/cli/scans) — list every (path, ecosystem) the store knows about.

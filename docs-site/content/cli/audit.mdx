@@ -1,0 +1,66 @@
+# packguard audit
+
+Reads the store and prints every matched risk for each installed dependency — CVEs, malware findings, typosquat suspects.
+
+## Synopsis
+
+```bash
+packguard audit [path] \
+  [--focus cve|malware|typosquat|all] \
+  [--fail-on <severity>] \
+  [--fail-on-malware] \
+  [--severity <level>] \
+  [--no-live-fallback] \
+  [--format table|json|sarif]
+```
+
+## Output — three sections
+
+**CVE** — table with package · installed version · advisory id (CVE preferred) · severity · affected range · fix version.
+
+**Malware** — table with package · installed version · source (`osv-mal`, `ghsa-malware`, `socket.dev`) · advisory ref · evidence summary.
+
+**Typosquat** — package · the legitimate name it resembles · edit distance · score (0.0–1.0) · reason (swap / edit / prefix / suffix).
+
+## Flags
+
+| Flag | Effect |
+|---|---|
+| `--focus cve\|malware\|typosquat\|all` | Restrict the output to one section. Default: `all`. |
+| `--fail-on <sev>` | Exit 2 when any CVE row is at or above `<sev>` (`low`/`medium`/`high`/`critical`). |
+| `--fail-on-malware` | Exit 2 on any malware row. Orthogonal to `--fail-on`. |
+| `--severity <level>` | Filter output to rows at or above `<level>`. Does not affect exit code. |
+| `--no-live-fallback` | Skip the OSV `/v1/query` fallback. Strict offline. |
+| `--format table\|json\|sarif` | Default `table`. SARIF emits both CVE + malware under `packguard.cve` / `packguard.malware` rules. |
+
+## Examples
+
+```bash
+# Full audit, human-readable.
+packguard audit
+
+# Only malware, fail the pipeline on any hit.
+packguard audit --focus malware --fail-on-malware
+
+# CI gate: fail on critical CVE or any malware.
+packguard audit --fail-on critical --fail-on-malware
+
+# SARIF for GitHub's Security tab.
+packguard audit --format sarif > packguard.sarif
+```
+
+## OSV live fallback
+
+Without `--no-live-fallback`, packages not covered by the cached OSV dump trigger a `POST /v1/query` against `api.osv.dev` (24h TTL per package). This closes the gap for long-tail packages that haven't appeared in the dump yet.
+
+Use `--no-live-fallback` on air-gapped runners or when you want strict offline semantics.
+
+## Socket.dev
+
+When `PACKGUARD_SOCKET_TOKEN` is set, every installed `(eco, name, version)` is queried against [socket.dev](https://socket.dev). Alerts tagged `malware` / `backdoor` feed the Malware section; everything else (install scripts, obfuscated files, …) surfaces as informational `ScannerSignal`. Token-less runs skip Socket silently.
+
+## Related
+
+- [`packguard report`](/cli/report) — policy-compliance view on the same store.
+- [Supply-chain intel](/concepts/supply-chain) — how each finding is sourced.
+- [GitHub Actions recipe](/integrations/github-actions) — SARIF + fail-on-violation wiring.

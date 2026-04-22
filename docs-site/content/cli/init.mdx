@@ -1,0 +1,45 @@
+# packguard init
+
+Initializes a repo with a conservative `.packguard.yml` and (optionally) a ready-to-paste CI pipeline snippet.
+
+## Synopsis
+
+```bash
+packguard init [path] [--force] [--with-ci gitlab|github|jenkins]
+```
+
+## What it does
+
+- Detects supported ecosystems under `path` (defaults to `.`).
+- Writes `<path>/.packguard.yml` with the conservative defaults template:
+  - `offset: -1`, `allow_patch: true`, `stability: stable`, `min_age_days: 7`
+  - `block.cve_severity: [high, critical]`, `block.malware: true`, `block.deprecated: true`, `block.yanked: true`
+  - `block.typosquat: warn`
+- Refuses to overwrite an existing `.packguard.yml` unless `--force` is passed.
+
+With `--with-ci`, also writes a pipeline snippet into `.packguard/ci/<vcs>.yml` that you can copy into your pipeline layout.
+
+## Examples
+
+```bash
+# Scaffold a fresh policy at the repo root.
+packguard init
+
+# Scaffold + a GitHub Actions snippet.
+packguard init --with-ci github
+# ⇒ wrote .packguard.yml
+# ⇒ wrote .packguard/ci/github.yml
+# ⇒ full recipe: docs/integrations/github-actions.md
+
+# Overwrite an existing policy (destructive).
+packguard init --force
+```
+
+## Why a template, not an interactive wizard
+
+Editing a YAML file with meaningful defaults is a smaller cognitive load than answering six questions in sequence. The template is also a reference in itself — comment blocks inside the scaffold point at each major decision (`block:`, `overrides:`, `groups:`).
+
+## Related
+
+- [Offset policy](/concepts/offset-policy) — the full `.packguard.yml` reference.
+- [Integrations](/integrations/github-actions) — copy-paste CI recipes that assume `packguard init --with-ci` was run.

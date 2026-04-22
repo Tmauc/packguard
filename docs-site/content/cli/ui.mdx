@@ -1,0 +1,43 @@
+# packguard ui
+
+Boots the local dashboard — REST API + embedded Vite bundle — against the current store.
+
+## Synopsis
+
+```bash
+packguard ui [path] [--port <N>] [--host <H>] [--no-open]
+```
+
+## What it does
+
+- Starts an axum server on `127.0.0.1:5174` by default.
+- Serves `/api/*` — every list + detail endpoint the dashboard consumes.
+- Serves `/` — the built Vite bundle (in a release build compiled with `--features ui-embed`).
+- Auto-opens your default browser to the served URL.
+- Ctrl+C triggers a graceful shutdown — in-flight jobs get a 5s window to finish.
+
+## Flags
+
+| Flag | Effect |
+|---|---|
+| `--port <N>` | Override the port. Default `5174`. |
+| `--host <H>` | Override the bind host. Default `127.0.0.1`. Use `0.0.0.0` to expose on your LAN (don't do this on an untrusted network). |
+| `--no-open` | Suppress the auto-open. Useful in headless environments or inside containers. |
+
+## Debug vs release
+
+- **Debug** (`cargo run -p packguard-cli -- ui`) only serves `/api/*`. Run `pnpm --dir dashboard dev` alongside it so Vite on `:5173` proxies `/api/*` for hot-reload during development.
+- **Release with `--features ui-embed`** serves both the API *and* the embedded Vite bundle — the same binary you install via `brew`, `install.sh`, `cargo install --features ui-embed`, or the Docker image.
+
+## Store selection
+
+`packguard ui` reads the same SQLite store every other command writes to — `~/.packguard/store.db` by default, override with the global `--store <path>` flag. If you ran `packguard scan` with a non-default store, pass the same flag to `ui` or the dashboard will come up empty.
+
+## Multi-workspace
+
+A single `packguard ui` instance serves every workspace in the store — the header dropdown (see [Per-project scoping](/concepts/per-project)) switches scope without unmounting the page. No need to boot one UI per workspace.
+
+## Related
+
+- [Dashboard: Overview](/dashboard/overview) — the landing page once the UI is up.
+- [`packguard scan`](/cli/scan) — populate the store before running `ui`.

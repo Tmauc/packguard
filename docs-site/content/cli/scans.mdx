@@ -1,0 +1,46 @@
+# packguard scans
+
+Lists every `(path, ecosystem)` the local store knows about.
+
+## Synopsis
+
+```bash
+packguard scans [--json]
+```
+
+## When to use it
+
+`report`, `audit`, and `graph` all need a scan in the store for the path they're given. When one of them bails with:
+
+```
+error: no cached scan found for /some/path.
+       available scans: ./apps/web, ./apps/api
+       run `packguard scan <path>` or pass --project <path>.
+```
+
+— `packguard scans` is the quick way to see what *is* in the store, rather than guessing. Same rows feed that stderr hint.
+
+## Examples
+
+```bash
+# Human-readable table.
+packguard scans
+
+# Machine-readable — same DTOs the dashboard uses.
+packguard scans --json
+```
+
+## Sample output
+
+```
+path                ecosystem   packages   last scan
+./apps/web          npm         91         2026-04-20T19:24:19Z
+./apps/api          pypi        27         2026-04-20T19:24:22Z
+./apps/worker       npm         42         2026-04-20T19:24:25Z
+./apps/worker       pypi        18         2026-04-20T19:24:26Z
+```
+
+## Related
+
+- [`packguard scan`](/cli/scan) — populates rows in this list.
+- [Per-project scoping](/concepts/per-project) — how monorepos get multiple rows per ecosystem.

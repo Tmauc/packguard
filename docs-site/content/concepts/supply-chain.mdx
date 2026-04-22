@@ -1,0 +1,70 @@
+# Supply-chain intel
+
+Offset policy answers *"is this version allowed by our drift rule?"* — supply-chain intel answers *"is this version compromised?"*. The two live side by side because a package that's perfectly on-policy can still be a shipped-CVE / known-malware / typosquat.
+
+## The four signal sources
+
+| Source | Activation | What it adds |
+|---|---|---|
+| OSV.dev dumps | always (via `packguard sync`) | CVE + MAL records for npm + PyPI |
+| GitHub Advisory Database | always (git clone via `sync`) | Deduplicated against OSV via advisory aliases |
+| OSV `/v1/query` API | default; opt-out `--no-live-fallback` | Per-(name, version) fallback when the cache is cold (24h TTL) |
+| Typosquat heuristic | always (reference lists refresh every 7d) | Levenshtein ≤ 2, swaps, prefix/suffix patterns |
+| Socket.dev | `PACKGUARD_SOCKET_TOKEN=…` | Per-version scanner alerts (malware, install scripts, obfuscated files, …) |
+
+All four sources fan into the same local SQLite store. `audit` + `report` read from that store — no network hits at evaluation time, unless the OSV live fallback fires for a package we've never seen.
+
+## CVE matching — dialect-aware
+
+Registries disagree on version syntax. npm uses semver; PyPI uses PEP 440; OSV describes ranges as `{ introduced, fixed }` events. The matcher translates both sides into a common space before comparing, so `pillow >=10.0, <10.3.1` correctly matches against `10.2.0` on PyPI even though neither one is semver.
+
+That's why bare string matching on advisory `affected` fields doesn't work — PackGuard does the ecosystem-aware comparison once, at sync time, against the full version history it already pulled during scan.
+
+## Malware — separate table, separate gate
+
+OSV flags certain entries with `database_specific.severity = malicious` or `MAL-*` ids. These are *not* CVEs — they're "this package (at these versions) is actively malicious". PackGuard routes them to a dedicated `malware_reports` table so you can gate on malware independently of your CVE severity threshold.
+
+```yaml
+block:
+  cve_severity: [high, critical]   # CVE gate
+  malware: true                    # Malware gate — always all-or-nothing
+```
+
+GHSA malware advisories flow in too, via the GitHub Advisory clone. Socket.dev alerts tagged `malware` or `backdoor` land with `source = socket.dev`; everything else from Socket (install scripts, obfuscation, …) lands as informational `ScannerSignal`.
+
+## Typosquat — Levenshtein heuristic, conservative by default
+
+PackGuard keeps a reference list of popular npm + PyPI package names and scores every installed package against it. Suspects are flagged on four criteria:
+
+- Edit distance ≤ 2 against a popular name (`reactt` vs `react`)
+- Character swaps (`recat` vs `react`)
+- Prefix / suffix additions (`react-dev`, `reactx`) against the canonical name
+- Confusable-character substitutions
+
+The **base rate of actual typosquats among installed packages is ~0%**, so expect false positives. That's why the default `.packguard.yml` has `block.typosquat: warn`, not `strict` — the signal is worth surfacing, but it's for human review, not auto-gating.
+
+To tune:
+
+- Add legitimate confusables to the in-source whitelist (`crates/packguard-intel/src/typosquat/mod.rs::WHITELIST`).
+- For high-trust environments, set `block.typosquat: strict` per-group via `.packguard.yml`.
+- Or set `block.typosquat: off` globally and rely on the Phase 2.5 manual review flow.
+
+## Socket.dev — optional
+
+Socket gives you per-version scanner signals that complement OSV (which is advisory-driven). Set `PACKGUARD_SOCKET_TOKEN` in your environment before `packguard audit`; the CLI prints a one-line banner confirming the token was detected. Without the token, Socket is skipped silently.
+
+Socket alerts flagged `malware` or `backdoor` feed `malware_reports`; the rest (install scripts, obfuscation, …) surface in the dashboard under the "Scanner signals" tab without triggering the malware gate. Rate-limiting is handled client-side.
+
+## Air-gap path
+
+`packguard sync` writes everything it fetches to the local store. Once populated, `audit --no-live-fallback` runs without touching the network at all. The typical air-gap flow:
+
+1. On a connected host, run `packguard sync` into a scratch `~/.packguard/`.
+2. Copy the whole directory onto the disconnected host.
+3. On the disconnected host, `packguard audit --no-live-fallback` works against the copied store.
+
+## Related
+
+- [`packguard sync`](/cli/sync) — command reference + flags.
+- [`packguard audit`](/cli/audit) — audit output, `--focus`, `--fail-on-*`.
+- [Dashboard: Overview](/dashboard/overview) — how these signals aggregate in the UI.
