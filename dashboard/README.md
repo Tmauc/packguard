@@ -10,7 +10,7 @@ Two terminals, two ports:
 
 ```bash
 # Terminal A — Rust API server on :5174
-cargo run -p packguard-cli -- ui --no-open --port 5174
+cargo run -p packguard -- ui --no-open --port 5174
 
 # Terminal B — Vite dev server on :5173 (proxies /api/* to :5174)
 cd dashboard
@@ -19,7 +19,7 @@ pnpm dev
 ```
 
 Open http://localhost:5173. Hot reload on the front, `cargo watch` on the
-back if you want it (`cargo watch -x 'run -p packguard-cli -- ui --no-open'`).
+back if you want it (`cargo watch -x 'run -p packguard -- ui --no-open'`).
 
 ## Type sharing
 

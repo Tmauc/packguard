@@ -36,15 +36,26 @@ docker run --rm -v "$PWD":/workspace \
 
 The published image is multi-arch (`linux/amd64` · `linux/arm64`), ~46 MB distroless. For CI, pin `:vX.Y.Z` instead of `:latest` for reproducibility. A Docker Hub mirror at `tmauc/packguard` exists if that registry is already cached in your infra.
 
-## Cargo — from source
+## Cargo — from crates.io
 
 ```bash
-cargo install packguard-cli --features ui-embed
+cargo install packguard --features ui-embed
 ```
 
 Compiles the CLI + the embedded dashboard. Requires Rust 1.94+. Use this when you want a local build — custom flags or unreleased commits — rather than a verified release artifact.
 
 Without `--features ui-embed`, `packguard ui` only serves the REST API and expects a separate Vite dev server on `:5173`. Fine for dashboard development, not what most users want.
+
+### v0.2.0 rename
+
+The crate is now published as **`packguard`**. Pre-0.2.0 releases sat under the old name `packguard-cli` — that name is yanked on crates.io to keep `cargo install` defaults pointing at the new one, but the legacy release remains installable if you pin it:
+
+```bash
+# Legacy 0.1.0 install (no new features land here)
+cargo install packguard-cli --version 0.1.0 --locked
+```
+
+Everything else — the binary name, CLI flags, config format (outside the Phase 9b offset breaking change covered in [Offset policy](/concepts/offset-policy)) — is unchanged.
 
 ## Verify
 

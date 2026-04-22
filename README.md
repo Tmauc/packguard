@@ -63,7 +63,7 @@ packguard ui           # starts the API on :5174
 pnpm --dir dashboard dev   # starts Vite on :5173 (auto-proxies /api/*)
 
 # Release: single binary, no node runtime needed.
-PACKGUARD_SKIP_UI_BUILD=1 cargo build --release -p packguard-cli --features ui-embed
+PACKGUARD_SKIP_UI_BUILD=1 cargo build --release -p packguard --features ui-embed
 ./target/release/packguard ui
 ```
 
@@ -143,11 +143,21 @@ docker run --rm -v "$PWD":/workspace ghcr.io/tmauc/packguard:latest scan /worksp
 brew tap Tmauc/packguard
 brew install packguard
 
-# Option 4 — from source (with the embedded dashboard)
+# Option 4 — from crates.io (one command)
+cargo install packguard --features ui-embed
+
+# Option 5 — from source (embedded dashboard)
 cargo install --path crates/packguard-cli --features ui-embed
 ```
 
 The binary is called `packguard`. Verify with `packguard --version`.
+
+> **v0.2.0 rename:** the crate is now published as `packguard` on
+> crates.io. Users who pinned the pre-0.2.0 name can keep installing
+> `packguard-cli --version 0.1.0 --locked`, but no newer releases
+> will land under the old name. `packguard-cli@0.1.0` is yanked on
+> crates.io to hide it from `cargo install` defaults — see
+> [PUBLISHING.md](PUBLISHING.md) for context.
 
 ---
 

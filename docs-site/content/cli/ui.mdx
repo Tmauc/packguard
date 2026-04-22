@@ -26,7 +26,7 @@ packguard ui [path] [--port <N>] [--host <H>] [--no-open]
 
 ## Debug vs release
 
-- **Debug** (`cargo run -p packguard-cli -- ui`) only serves `/api/*`. Run `pnpm --dir dashboard dev` alongside it so Vite on `:5173` proxies `/api/*` for hot-reload during development.
+- **Debug** (`cargo run -p packguard -- ui`) only serves `/api/*`. Run `pnpm --dir dashboard dev` alongside it so Vite on `:5173` proxies `/api/*` for hot-reload during development.
 - **Release with `--features ui-embed`** serves both the API *and* the embedded Vite bundle — the same binary you install via `brew`, `install.sh`, `cargo install --features ui-embed`, or the Docker image.
 
 ## Store selection
