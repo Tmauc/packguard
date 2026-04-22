@@ -46,10 +46,36 @@ env:
 
 jobs:
   # ------------------------------------------------------------------
+  # Fail-fast version check: the tag and the workspace must agree.
+  # ------------------------------------------------------------------
+  version-sanity:
+    name: version · sanity
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: check
+        id: check
+        run: |
+          set -euo pipefail
+          WS_VERSION=$(grep -E '^version[[:space:]]*=' Cargo.toml | head -1 | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+          TAG="${GITHUB_REF_NAME}"
+          TAG_VERSION="${TAG#v}"
+          echo "workspace.package.version: ${WS_VERSION}"
+          echo "tag:                       ${TAG} (stripped: ${TAG_VERSION})"
+          if [ "$WS_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::workspace version '${WS_VERSION}' does not match tag '${TAG_VERSION}'. Update Cargo.toml (or use ./scripts/bump-version.sh) and retag before releasing."
+            exit 1
+          fi
+          echo "version=${WS_VERSION}" >> "$GITHUB_OUTPUT"
+
+  # ------------------------------------------------------------------
   # 5 platform binaries — ui-embed ON, stripped, checksummed.
   # ------------------------------------------------------------------
   build-binaries:
     name: build · ${{ matrix.target }}
+    needs: version-sanity
     strategy:
       fail-fast: false
       matrix:

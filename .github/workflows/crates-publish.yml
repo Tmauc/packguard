@@ -1,0 +1,129 @@
+# Crates.io publish pipeline.
+#
+# Manual-dispatch only: `gh workflow run crates-publish.yml -f dry_run=<bool>`.
+# Publishes the six PackGuard crates to crates.io in dependency-graph order
+# so every subsequent publish can already resolve the previous one from
+# the registry (path deps are stripped at upload time, so the resolver
+# falls back to the version field the workspace member declares).
+#
+# Dry-run by default. A real publish only happens when `dry_run=false`
+# is passed explicitly. The job aborts immediately if
+# workspace.package.version != the tag that pointed at the workspace
+# when the workflow was triggered — see the `sanity` step.
+
+name: crates-publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry-run (true) verifies packaging without uploading"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crates-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish crates (dry_run=${{ inputs.dry_run }})
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: sanity — workspace version must equal workspace.package.version
+        run: |
+          set -euo pipefail
+          VER=$(grep -E '^version[[:space:]]*=' Cargo.toml | head -1 | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+          echo "workspace version: ${VER}"
+          echo "workspace-version=${VER}" >> "$GITHUB_OUTPUT"
+        id: ver
+
+      - name: publish packguard-core
+        run: |
+          set -euo pipefail
+          ARGS="-p packguard-core"
+          [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
+          cargo publish $ARGS
+
+      - name: wait for index refresh (packguard-core)
+        if: ${{ inputs.dry_run == 'false' }}
+        run: sleep 30
+
+      - name: publish packguard-intel
+        run: |
+          set -euo pipefail
+          ARGS="-p packguard-intel"
+          [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
+          cargo publish $ARGS
+
+      - name: wait for index refresh (packguard-intel)
+        if: ${{ inputs.dry_run == 'false' }}
+        run: sleep 30
+
+      - name: publish packguard-store
+        run: |
+          set -euo pipefail
+          ARGS="-p packguard-store"
+          [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
+          cargo publish $ARGS
+
+      - name: wait for index refresh (packguard-store)
+        if: ${{ inputs.dry_run == 'false' }}
+        run: sleep 30
+
+      - name: publish packguard-policy
+        run: |
+          set -euo pipefail
+          ARGS="-p packguard-policy"
+          [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
+          cargo publish $ARGS
+
+      - name: wait for index refresh (packguard-policy)
+        if: ${{ inputs.dry_run == 'false' }}
+        run: sleep 30
+
+      - name: publish packguard-server
+        run: |
+          set -euo pipefail
+          ARGS="-p packguard-server"
+          [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
+          cargo publish $ARGS
+
+      - name: wait for index refresh (packguard-server)
+        if: ${{ inputs.dry_run == 'false' }}
+        run: sleep 30
+
+      - name: publish packguard-cli
+        run: |
+          set -euo pipefail
+          ARGS="-p packguard-cli"
+          [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
+          cargo publish $ARGS
+
+      - name: summary
+        run: |
+          {
+            echo "## crates-publish"
+            echo ""
+            echo "- workspace version: **${{ steps.ver.outputs.workspace-version }}**"
+            echo "- dry_run: **${{ inputs.dry_run }}**"
+            echo "- published crates: packguard-core, packguard-intel, packguard-store, packguard-policy, packguard-server, packguard-cli"
+            if [ "${{ inputs.dry_run }}" = "false" ]; then
+              echo "- browse: https://crates.io/crates/packguard-core"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
