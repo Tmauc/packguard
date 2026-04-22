@@ -135,7 +135,7 @@ jobs:
           PACKGUARD_SKIP_UI_BUILD: "1"
         run: |
           cargo build --release --target ${{ matrix.target }} \
-            -p packguard-cli --features ui-embed
+            -p packguard --features ui-embed
 
       - name: package
         id: package

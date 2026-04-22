@@ -153,10 +153,13 @@ jobs:
         if: ${{ inputs.dry_run == 'false' }}
         run: sleep 30
 
-      - name: publish packguard-cli
+      # Phase 9c — the binary crate is now named `packguard` (was
+      # `packguard-cli` up through 0.1.0). The legacy name stays on
+      # crates.io as a yanked 0.1.0 — see PUBLISHING.md.
+      - name: publish packguard
         run: |
           set -euo pipefail
-          CRATE="packguard-cli"
+          CRATE="packguard"
           ARGS="-p ${CRATE}"
           [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
           if ! out=$(cargo publish $ARGS 2>&1); then
@@ -176,8 +179,8 @@ jobs:
             echo ""
             echo "- workspace version: **${{ steps.ver.outputs.workspace-version }}**"
             echo "- dry_run: **${{ inputs.dry_run }}**"
-            echo "- published crates: packguard-core, packguard-intel, packguard-store, packguard-policy, packguard-server, packguard-cli"
+            echo "- published crates: packguard-core, packguard-intel, packguard-store, packguard-policy, packguard-server, packguard (renamed from packguard-cli in 0.2.0)"
             if [ "${{ inputs.dry_run }}" = "false" ]; then
-              echo "- browse: https://crates.io/crates/packguard-core"
+              echo "- browse: https://crates.io/crates/packguard"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
