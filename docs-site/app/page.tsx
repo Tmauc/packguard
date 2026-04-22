@@ -42,38 +42,49 @@ const FEATURE_ROWS = [
   },
 ]
 
-const INSTALL_SNIPPETS = [
+type SnippetLine = { kind: 'comment' | 'cmd' | 'cont'; text: string }
+
+const INSTALL_SNIPPETS: ReadonlyArray<{
+  label: string
+  lines: ReadonlyArray<SnippetLine>
+}> = [
   {
     label: '~/packguard · homebrew',
     lines: [
-      { kind: 'comment' as const, text: '# Homebrew — macOS recommended' },
-      { kind: 'cmd' as const, text: 'brew tap Tmauc/packguard' },
-      { kind: 'cmd' as const, text: 'brew install packguard' },
+      { kind: 'comment', text: '# Homebrew — macOS recommended' },
+      { kind: 'cmd', text: 'brew tap Tmauc/packguard' },
+      { kind: 'cmd', text: 'brew install packguard' },
     ],
   },
   {
     label: '~/packguard · install.sh',
     lines: [
-      { kind: 'comment' as const, text: '# install.sh — SHA256 verified, no sudo' },
+      { kind: 'comment', text: '# install.sh — SHA256-verified, no sudo' },
+      { kind: 'cmd', text: 'curl -fsSL \\' },
       {
-        kind: 'cmd' as const,
-        text: 'curl -fsSL https://raw.githubusercontent.com/Tmauc/packguard/main/install.sh | sh',
+        kind: 'cont',
+        text: '  https://raw.githubusercontent.com/Tmauc/packguard/main/install.sh \\',
       },
+      { kind: 'cont', text: '  | sh' },
     ],
   },
   {
     label: '~/packguard · docker',
     lines: [
-      { kind: 'comment' as const, text: '# Docker — ~46 MB, multi-arch' },
-      { kind: 'cmd' as const, text: 'docker run --rm -v "$PWD":/workspace \\' },
-      { kind: 'cmd' as const, text: '  ghcr.io/tmauc/packguard:latest scan /workspace' },
+      { kind: 'comment', text: '# Docker — ~46 MB, multi-arch' },
+      { kind: 'cmd', text: 'docker run --rm \\' },
+      { kind: 'cont', text: '  -v "$PWD":/workspace \\' },
+      {
+        kind: 'cont',
+        text: '  ghcr.io/tmauc/packguard:latest scan /workspace',
+      },
     ],
   },
   {
     label: '~/packguard · cargo',
     lines: [
-      { kind: 'comment' as const, text: '# Cargo — from source, any platform' },
-      { kind: 'cmd' as const, text: 'cargo install packguard-cli --features ui-embed' },
+      { kind: 'comment', text: '# Cargo — from source, any platform' },
+      { kind: 'cmd', text: 'cargo install packguard-cli --features ui-embed' },
     ],
   },
 ]
@@ -105,9 +116,9 @@ function BrandMark() {
 
 function TopNav() {
   return (
-    <nav className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
+    <nav className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-5 sm:px-6">
       <BrandMark />
-      <div className="flex items-center gap-7 text-[14px] text-mute">
+      <div className="hidden items-center gap-7 text-[14px] text-mute md:flex">
         <Link href="/getting-started/install" className="hover:text-slate-ink">
           Install
         </Link>
@@ -128,6 +139,13 @@ function TopNav() {
           GitHub
         </a>
       </div>
+      <Link
+        href="/getting-started/install"
+        className="inline-flex items-center gap-1.5 text-[14px] text-mute hover:text-slate-ink md:hidden"
+      >
+        Docs
+        <span aria-hidden>→</span>
+      </Link>
     </nav>
   )
 }
@@ -137,7 +155,7 @@ function TerminalCard({
   lines,
 }: {
   label: string
-  lines: ReadonlyArray<{ kind: 'comment' | 'cmd'; text: string }>
+  lines: ReadonlyArray<SnippetLine>
 }) {
   return (
     <div className="terminal-card">
@@ -146,15 +164,27 @@ function TerminalCard({
         <span>{label}</span>
       </div>
       <div className="terminal-body">
-        {lines.map((l, i) => (
-          <div key={i} className={l.kind === 'comment' ? 'comment' : undefined}>
-            {l.kind === 'cmd' ? (
-              <span aria-hidden className="flag">$</span>
-            ) : null}
-            {l.kind === 'cmd' ? ' ' : ''}
-            {l.text}
-          </div>
-        ))}
+        {lines.map((l, i) => {
+          if (l.kind === 'comment') {
+            return (
+              <div key={i} className="comment">
+                {l.text}
+              </div>
+            )
+          }
+          return (
+            <div key={i}>
+              {l.kind === 'cmd' ? (
+                <>
+                  <span aria-hidden className="flag">
+                    $
+                  </span>{' '}
+                </>
+              ) : null}
+              {l.text}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
