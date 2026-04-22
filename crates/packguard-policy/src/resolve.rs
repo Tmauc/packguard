@@ -1,32 +1,38 @@
 //! Rule resolution + recommended-version + compliance evaluation.
 //!
-//! # Phase 9b — three-axis offset cascade
+//! # Phase 10a — lexicographic offset bound
 //!
-//! Given `latest = X.Y.Z` and `offset = { major, minor, patch }` (each
-//! non-positive), the resolver walks three axes in order:
+//! Given `latest = X.Y.Z` (tip of the post-stability + min-age pool) and
+//! `offset = { major, minor, patch }` (each a non-negative magnitude, since
+//! YAML `-1` is stored as `1`), each axis contributes an **inclusive lex
+//! upper bound** on the `(major, minor, patch)` triple:
 //!
 //! ```text
-//! target_major = X - abs(offset.major)
-//! candidates   = versions where version.major == target_major
-//!
-//! if offset.minor != 0:
-//!   max_minor_on_target_major = max(minor over candidates)
-//!   target_minor = max_minor - abs(offset.minor)
-//!   candidates   = candidates where version.minor == target_minor
-//! else:
-//!   candidates   = candidates where version.minor == max_minor
-//!
-//! if offset.patch != 0:
-//!   max_patch = max(patch over candidates)
-//!   target_patch = max_patch - abs(offset.patch)
-//!   pick the highest version at (target_major, target_minor, target_patch)
-//! else:
-//!   pick the highest version at (target_major, target_minor, *)
+//! bound_major  = if a > 0: (X - a,     ∞, ∞)         ; infeasible when a > X
+//! bound_minor  = if b > 0:
+//!                  if b ≤ Y: (X,       Y - b, ∞)
+//!                  else:     (X - 1,   ∞,    ∞)      ; cross-boundary
+//!                                                    ; infeasible when X = 0
+//! bound_patch  = if c > 0:
+//!                  if c ≤ Z: (X,       Y,    Z - c)
+//!                  elif Y ≥ 1: (X,     Y - 1, ∞)      ; spill to prev minor
+//!                  elif X ≥ 1: (X - 1, ∞,    ∞)      ; spill to prev major
+//!                  else:     infeasible
+//! effective    = min_lex over all active axes (tightest bound wins)
+//! candidates   = versions V with (V.maj, V.min, V.pat) ≤ effective,
+//!                after stability + min_age + malware + CVE filters
+//! recommended  = max(candidates) or InsufficientCandidates if empty
 //! ```
 //!
-//! Any axis can exhaust the pool → `InsufficientCandidates` with a message
-//! naming the culprit ("offset.minor requested 2 below, only 1 minor
-//! exists on major 19").
+//! This is strictly more permissive than Phase 9b — `{minor:-1}` on a
+//! latest `5.0` now naturally falls to `4.max.max` via cross-boundary
+//! rather than surfacing `InsufficientCandidates`. The only way to get
+//! `InsufficientCandidates` is:
+//!
+//! 1. every axis lex bound underflows past major 0 (user asked for
+//!    something below the earliest possible release), or
+//! 2. the registry has literally zero version ≤ the effective bound, or
+//! 3. every candidate ≤ the bound is blocked by CVE / malware remediation.
 
 use crate::dialect::{Dialect, VersionMeta};
 use crate::model::TyposquatPolicy;
@@ -120,97 +126,120 @@ fn build_matcher(pattern: &str) -> Option<GlobMatcher> {
     Glob::new(pattern).ok().map(|g| g.compile_matcher())
 }
 
-/// Outcome of the offset cascade. `Ok` — pool narrowed to the versions
-/// matching `(target_major, target_minor, optional target_patch)`.
-/// `Err` — message explaining which axis exhausted the pool.
-enum OffsetOutcome<'a> {
-    Ok {
-        pool: Vec<(&'a ReleaseInfo, VersionMeta)>,
-    },
-    /// The cascade bailed out. The payload exists for future callers
-    /// (e.g. richer error propagation into `Compliance`) — the current
-    /// resolver maps it to `None`.
-    #[allow(dead_code)]
-    Insufficient(String),
+/// Per-axis contribution to the effective lex bound. `Inactive` means the
+/// axis magnitude is 0 (no constraint); `Infeasible` means the bound would
+/// underflow past (0, …, …) — the request can never be satisfied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AxisBound {
+    Inactive,
+    Inclusive((u64, u64, u64)),
+    Infeasible,
 }
 
-/// Walk the three axes on a pre-filtered pool (stability + min_age_days
-/// already applied). The caller picks the highest surviving version.
-fn apply_offset_cascade<'a>(
-    pool: Vec<(&'a ReleaseInfo, VersionMeta)>,
-    offset: Offset,
-) -> OffsetOutcome<'a> {
-    if pool.is_empty() {
-        return OffsetOutcome::Insufficient(
-            "no versions survived the stability + min_age filters".to_string(),
-        );
-    }
+/// Merged lex bound. `Unbounded` means every axis is inactive (offset is
+/// all-zeros, or a `pin` policy shortcut hasn't engaged yet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EffectiveBound {
+    Unbounded,
+    Inclusive((u64, u64, u64)),
+    Infeasible,
+}
 
-    // --- major ---
-    let latest_major = pool.iter().map(|(_, m)| m.major).max().unwrap();
-    if (offset.major as u64) > latest_major {
-        return OffsetOutcome::Insufficient(format!(
-            "offset.major requested {} below latest major {}, \
-             only majors [0..={}] exist",
-            offset.major, latest_major, latest_major,
-        ));
+fn bound_major(latest: (u64, u64, u64), a: u64) -> AxisBound {
+    if a == 0 {
+        return AxisBound::Inactive;
     }
-    let target_major = latest_major - offset.major as u64;
-    let pool: Vec<_> = pool
-        .into_iter()
-        .filter(|(_, m)| m.major == target_major)
-        .collect();
-    if pool.is_empty() {
-        return OffsetOutcome::Insufficient(format!(
-            "offset.major targeted major {target_major} but no release exists on that major",
-        ));
+    let (x, _, _) = latest;
+    match x.checked_sub(a) {
+        Some(target) => AxisBound::Inclusive((target, u64::MAX, u64::MAX)),
+        None => AxisBound::Infeasible,
     }
+}
 
-    // --- minor ---
-    let max_minor = pool.iter().map(|(_, m)| m.minor).max().unwrap();
-    if (offset.minor as u64) > max_minor {
-        return OffsetOutcome::Insufficient(format!(
-            "offset.minor requested {} below latest minor on major {} (max {}), \
-             only minors [0..={}] exist",
-            offset.minor, target_major, max_minor, max_minor,
-        ));
+fn bound_minor(latest: (u64, u64, u64), b: u64) -> AxisBound {
+    if b == 0 {
+        return AxisBound::Inactive;
     }
-    let target_minor = max_minor - offset.minor as u64;
-    let pool: Vec<_> = pool
-        .into_iter()
-        .filter(|(_, m)| m.minor == target_minor)
-        .collect();
-    if pool.is_empty() {
-        return OffsetOutcome::Insufficient(format!(
-            "offset.minor targeted {target_major}.{target_minor} but no release exists there",
-        ));
+    let (x, y, _) = latest;
+    if let Some(target) = y.checked_sub(b) {
+        return AxisBound::Inclusive((x, target, u64::MAX));
     }
+    // Cross-boundary: step back one major.
+    match x.checked_sub(1) {
+        Some(prev_x) => AxisBound::Inclusive((prev_x, u64::MAX, u64::MAX)),
+        None => AxisBound::Infeasible,
+    }
+}
 
-    // --- patch ---
-    if offset.patch != 0 {
-        let max_patch = pool.iter().map(|(_, m)| m.patch).max().unwrap();
-        if (offset.patch as u64) > max_patch {
-            return OffsetOutcome::Insufficient(format!(
-                "offset.patch requested {} below latest patch on {}.{} (max {}), \
-                 only patches [0..={}] exist",
-                offset.patch, target_major, target_minor, max_patch, max_patch,
-            ));
+fn bound_patch(latest: (u64, u64, u64), c: u64) -> AxisBound {
+    if c == 0 {
+        return AxisBound::Inactive;
+    }
+    let (x, y, z) = latest;
+    if let Some(target) = z.checked_sub(c) {
+        return AxisBound::Inclusive((x, y, target));
+    }
+    // Spill to previous minor, then previous major if minor is also 0.
+    if let Some(prev_y) = y.checked_sub(1) {
+        return AxisBound::Inclusive((x, prev_y, u64::MAX));
+    }
+    match x.checked_sub(1) {
+        Some(prev_x) => AxisBound::Inclusive((prev_x, u64::MAX, u64::MAX)),
+        None => AxisBound::Infeasible,
+    }
+}
+
+/// Compute the three per-axis bounds and merge into the tightest inclusive
+/// upper bound. Pure function: no access to the release pool, safe to
+/// unit-test without fixtures.
+fn compute_effective_bound(latest: (u64, u64, u64), offset: Offset) -> EffectiveBound {
+    let axes = [
+        bound_major(latest, offset.major as u64),
+        bound_minor(latest, offset.minor as u64),
+        bound_patch(latest, offset.patch as u64),
+    ];
+    if axes.iter().any(|a| matches!(a, AxisBound::Infeasible)) {
+        return EffectiveBound::Infeasible;
+    }
+    let tightest = axes
+        .iter()
+        .filter_map(|a| match a {
+            AxisBound::Inclusive(t) => Some(*t),
+            _ => None,
+        })
+        .min();
+    match tightest {
+        Some(b) => EffectiveBound::Inclusive(b),
+        None => EffectiveBound::Unbounded,
+    }
+}
+
+fn latest_tuple(pool: &[(&ReleaseInfo, VersionMeta)]) -> Option<(u64, u64, u64)> {
+    pool.iter().map(|(_, m)| (m.major, m.minor, m.patch)).max()
+}
+
+/// Narrow the pool to versions whose `(major, minor, patch)` triple is
+/// lex-≤ the effective bound. `None` means "no candidate satisfies the
+/// bound" and the caller should surface `InsufficientCandidates`.
+fn apply_lex_bound(
+    pool: Vec<(&ReleaseInfo, VersionMeta)>,
+    bound: EffectiveBound,
+) -> Option<Vec<(&ReleaseInfo, VersionMeta)>> {
+    match bound {
+        EffectiveBound::Infeasible => None,
+        EffectiveBound::Unbounded => Some(pool),
+        EffectiveBound::Inclusive(b) => {
+            let kept: Vec<_> = pool
+                .into_iter()
+                .filter(|(_, m)| (m.major, m.minor, m.patch) <= b)
+                .collect();
+            if kept.is_empty() {
+                None
+            } else {
+                Some(kept)
+            }
         }
-        let target_patch = max_patch - offset.patch as u64;
-        let filtered: Vec<_> = pool
-            .into_iter()
-            .filter(|(_, m)| m.patch == target_patch)
-            .collect();
-        if filtered.is_empty() {
-            return OffsetOutcome::Insufficient(format!(
-                "offset.patch targeted {target_major}.{target_minor}.{target_patch} \
-                 but no release exists there",
-            ));
-        }
-        return OffsetOutcome::Ok { pool: filtered };
     }
-
-    OffsetOutcome::Ok { pool }
 }
 
 /// Filter + pick the highest version that complies with `resolved`.
@@ -232,7 +261,8 @@ pub fn compute_recommended_version(
 ///
 /// 1. `stability: stable` drops prereleases.
 /// 2. `min_age_days` drops versions published less than N days ago.
-/// 3. Offset cascade (major → minor → patch) — see module docs.
+/// 3. Lexicographic offset bound (see module docs) — keep only versions
+///    whose `(major, minor, patch)` triple is ≤ the effective bound.
 /// 4. **Remediation**: skip candidates whose vulns match `block.cve_severity`.
 ///
 /// `pin` short-circuits everything: if the pin matches an entry in
@@ -252,10 +282,9 @@ pub fn compute_recommended_version_with_vulns(
     }
 
     let pool = prefilter_pool(resolved, releases, dialect, now)?;
-    let pool = match apply_offset_cascade(pool, resolved.offset) {
-        OffsetOutcome::Ok { pool } => pool,
-        OffsetOutcome::Insufficient(_) => return None,
-    };
+    let latest = latest_tuple(&pool)?;
+    let bound = compute_effective_bound(latest, resolved.offset);
+    let pool = apply_lex_bound(pool, bound)?;
 
     pick_best(pool, resolved, vulns_by_version, dialect)
 }
@@ -389,28 +418,27 @@ fn is_blocking_version(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Rich evaluation trace — used by the server to render the 3-axis decision
-// path in the "Policy eval" tab on the dashboard.
+// Rich evaluation trace — used by the server to render the lex-bound
+// decision path in the "Policy eval" tab on the dashboard.
 // ─────────────────────────────────────────────────────────────────────────
 
-/// Human-readable breakdown of how the resolver walked major → minor →
-/// patch. One line per axis, always in order. The UI renders these as
-/// bullet points.
+/// Human-readable breakdown of how the resolver derived the effective lex
+/// bound from the three axes. The UI renders each string as one bullet.
 #[derive(Debug, Clone)]
 pub struct OffsetCascadeTrace {
     pub lines: Vec<String>,
-    /// `Some(version)` when the cascade produced a candidate pool and
-    /// remediation picked one; `None` on `InsufficientCandidates` or when
-    /// `pin` / empty-history short-circuits.
+    /// `Some(version)` when remediation picked a candidate; `None` on
+    /// `InsufficientCandidates` or when `pin` / empty-history
+    /// short-circuits.
     pub recommended: Option<String>,
-    /// Populated when the cascade bailed out early; always `None` on
+    /// Populated when the resolver bailed out early; always `None` on
     /// success.
     pub insufficient_reason: Option<String>,
 }
 
-/// Build the cascade trace without mutating anything. Strictly a
-/// presentation helper — mirrors the logic of
-/// [`compute_recommended_version_full`] so the two never drift.
+/// Build the lex-bound trace without mutating anything. Presentation
+/// helper — mirrors the logic of [`compute_recommended_version_full`] so
+/// the two never drift.
 pub fn build_offset_cascade_trace(
     resolved: &ResolvedPolicy,
     releases: &[ReleaseInfo],
@@ -422,7 +450,7 @@ pub fn build_offset_cascade_trace(
     let mut lines: Vec<String> = Vec::new();
 
     if let Some(pin) = &resolved.pin {
-        let hit = releases.iter().find(|r| r.version == *pin).is_some();
+        let hit = releases.iter().any(|r| r.version == *pin);
         lines.push(format!(
             "pin = {pin} → {}",
             if hit {
@@ -477,128 +505,130 @@ pub fn build_offset_cascade_trace(
         };
     };
 
+    let latest = latest_tuple(&pool).unwrap();
     let o = resolved.offset;
-    let latest_major = pool.iter().map(|(_, m)| m.major).max().unwrap();
-    let target_major = latest_major.saturating_sub(o.major as u64);
-
-    if (o.major as u64) > latest_major {
-        let reason = format!(
-            "offset.major={} exceeds latest major {latest_major}",
-            o.major
-        );
-        lines.push(format!("major: {reason}"));
-        return OffsetCascadeTrace {
-            lines,
-            recommended: None,
-            insufficient_reason: Some(reason),
-        };
-    }
-    lines.push(format!(
-        "offset.major={} → target major={target_major} (latest={latest_major})",
-        o.major
-    ));
-
-    let on_major: Vec<_> = pool
-        .into_iter()
-        .filter(|(_, m)| m.major == target_major)
-        .collect();
-    if on_major.is_empty() {
-        let reason = format!("no release on major {target_major}");
-        lines.push(format!("major: {reason}"));
-        return OffsetCascadeTrace {
-            lines,
-            recommended: None,
-            insufficient_reason: Some(reason),
-        };
-    }
-
-    let max_minor = on_major.iter().map(|(_, m)| m.minor).max().unwrap();
-    if (o.minor as u64) > max_minor {
-        let reason = format!(
-            "offset.minor={} exceeds latest minor {max_minor} on major {target_major}",
-            o.minor
-        );
-        lines.push(format!("minor: {reason}"));
-        return OffsetCascadeTrace {
-            lines,
-            recommended: None,
-            insufficient_reason: Some(reason),
-        };
-    }
-    let target_minor = max_minor - o.minor as u64;
-    lines.push(format!(
-        "offset.minor={} → target minor={target_minor} (max on major {target_major}: {max_minor})",
-        o.minor
-    ));
-
-    let on_minor: Vec<_> = on_major
-        .into_iter()
-        .filter(|(_, m)| m.minor == target_minor)
-        .collect();
-    if on_minor.is_empty() {
-        let reason = format!("no release at {target_major}.{target_minor}");
-        lines.push(format!("minor: {reason}"));
-        return OffsetCascadeTrace {
-            lines,
-            recommended: None,
-            insufficient_reason: Some(reason),
-        };
-    }
-
-    let on_patch = if o.patch != 0 {
-        let max_patch = on_minor.iter().map(|(_, m)| m.patch).max().unwrap();
-        if (o.patch as u64) > max_patch {
-            let reason = format!(
-                "offset.patch={} exceeds latest patch {max_patch} on {target_major}.{target_minor}",
-                o.patch
-            );
-            lines.push(format!("patch: {reason}"));
-            return OffsetCascadeTrace {
-                lines,
-                recommended: None,
-                insufficient_reason: Some(reason),
-            };
-        }
-        let target_patch = max_patch - o.patch as u64;
+    let axes = [
+        ("major", bound_major(latest, o.major as u64), o.major),
+        ("minor", bound_minor(latest, o.minor as u64), o.minor),
+        ("patch", bound_patch(latest, o.patch as u64), o.patch),
+    ];
+    for (label, axis, mag) in axes {
         lines.push(format!(
-            "offset.patch={} → target patch={target_patch} (max on {target_major}.{target_minor}: {max_patch})",
-            o.patch
+            "offset.{label}={} → {}",
+            signed(mag),
+            axis_display(label, axis),
         ));
-        let filtered: Vec<_> = on_minor
-            .into_iter()
-            .filter(|(_, m)| m.patch == target_patch)
-            .collect();
-        if filtered.is_empty() {
-            let reason = format!("no release at {target_major}.{target_minor}.{target_patch}");
-            lines.push(format!("patch: {reason}"));
-            return OffsetCascadeTrace {
+    }
+
+    let bound = compute_effective_bound(latest, o);
+    let bound_str = format!(
+        "effective bound = {} (latest = {})",
+        bound_display(bound),
+        tuple_display(latest),
+    );
+    lines.push(bound_str);
+
+    match apply_lex_bound(pool, bound) {
+        None => {
+            let reason = match bound {
+                EffectiveBound::Infeasible => format!(
+                    "offset underflows past major 0 (latest = {})",
+                    tuple_display(latest)
+                ),
+                EffectiveBound::Inclusive(b) => {
+                    format!("no release ≤ {}", tuple_display(b))
+                }
+                // Unbounded never produces an empty pool when the
+                // prefilter has already handed us Some.
+                EffectiveBound::Unbounded => "pool unexpectedly empty".to_string(),
+            };
+            lines.push(format!("→ {reason} → InsufficientCandidates"));
+            OffsetCascadeTrace {
                 lines,
                 recommended: None,
                 insufficient_reason: Some(reason),
-            };
+            }
         }
-        filtered
+        Some(bounded_pool) => {
+            let recommended = pick_best(bounded_pool, resolved, vulns_by_version, dialect);
+            match &recommended {
+                Some(v) => lines.push(format!("max version ≤ bound = {v} → picked {v}")),
+                None => {
+                    lines.push("every candidate blocked by CVE / malware remediation".to_string())
+                }
+            }
+            let insufficient_reason = if recommended.is_some() {
+                None
+            } else {
+                Some("every candidate blocked by remediation".to_string())
+            };
+            OffsetCascadeTrace {
+                lines,
+                recommended,
+                insufficient_reason,
+            }
+        }
+    }
+}
+
+fn signed(magnitude: u32) -> String {
+    if magnitude == 0 {
+        "0".to_string()
     } else {
-        lines.push(format!(
-            "offset.patch=0 → keep latest patch on {target_major}.{target_minor}"
-        ));
-        on_minor
-    };
-
-    let recommended = pick_best(on_patch, resolved, vulns_by_version, dialect);
-    match &recommended {
-        Some(v) => lines.push(format!("remediation: picked {v}")),
-        None => lines.push("remediation: every candidate blocked by CVE severity".to_string()),
+        format!("-{magnitude}")
     }
+}
 
-    OffsetCascadeTrace {
-        lines,
-        recommended: recommended.clone(),
-        insufficient_reason: if recommended.is_some() {
-            None
-        } else {
-            Some("every candidate blocked by remediation".to_string())
-        },
+fn axis_display(label: &str, axis: AxisBound) -> String {
+    match axis {
+        AxisBound::Inactive => "inactive".to_string(),
+        AxisBound::Inclusive(t) => {
+            let tail = if is_cross_boundary(label, t) {
+                " (cross-boundary)"
+            } else {
+                ""
+            };
+            format!("{}{tail}", tuple_display(t))
+        }
+        AxisBound::Infeasible => "infeasible (underflow past major 0)".to_string(),
+    }
+}
+
+/// Did this axis fall back to a neighboring slot? `major` never crosses
+/// (stepping back a major *is* its job). `minor` crosses when the minor
+/// slot is `∞` — meaning the overshoot pushed back to the previous major.
+/// `patch` crosses when the patch slot is `∞` — meaning patch overshoot
+/// spilled to the previous minor (or further).
+fn is_cross_boundary(label: &str, (_, minor, patch): (u64, u64, u64)) -> bool {
+    match label {
+        "minor" => minor == u64::MAX,
+        "patch" => patch == u64::MAX,
+        _ => false,
+    }
+}
+
+fn tuple_display(t: (u64, u64, u64)) -> String {
+    format!(
+        "({}, {}, {})",
+        axis_slot(t.0),
+        axis_slot(t.1),
+        axis_slot(t.2)
+    )
+}
+
+fn axis_slot(n: u64) -> String {
+    if n == u64::MAX {
+        "∞".to_string()
+    } else {
+        n.to_string()
+    }
+}
+
+fn bound_display(bound: EffectiveBound) -> String {
+    match bound {
+        EffectiveBound::Unbounded => "(∞, ∞, ∞) [all axes inactive]".to_string(),
+        EffectiveBound::Inclusive(b) => tuple_display(b),
+        EffectiveBound::Infeasible => "infeasible".to_string(),
     }
 }
 
@@ -800,5 +830,120 @@ fn compare_installed_to_recommended(
             "{}: cannot compare {} to recommended {}",
             name, installed, recommended
         )),
+    }
+}
+
+#[cfg(test)]
+mod bound_tests {
+    //! Phase 10a — pure unit tests for the per-axis lex-bound builders
+    //! and their merge. These don't touch fixtures or the policy model;
+    //! they pin down the math.
+
+    use super::*;
+
+    fn off(m: u32, n: u32, p: u32) -> Offset {
+        Offset {
+            major: m,
+            minor: n,
+            patch: p,
+        }
+    }
+
+    #[test]
+    fn bound_major_zero_is_inactive() {
+        assert_eq!(bound_major((19, 2, 5), 0), AxisBound::Inactive);
+    }
+
+    #[test]
+    fn bound_major_minus_one_gives_prev_major_wildcard() {
+        assert_eq!(
+            bound_major((19, 2, 5), 1),
+            AxisBound::Inclusive((18, u64::MAX, u64::MAX))
+        );
+    }
+
+    #[test]
+    fn bound_major_underflow_past_zero_is_infeasible() {
+        assert_eq!(bound_major((0, 5, 3), 1), AxisBound::Infeasible);
+        assert_eq!(bound_major((2, 0, 0), 5), AxisBound::Infeasible);
+    }
+
+    #[test]
+    fn bound_minor_small_stays_on_same_major() {
+        assert_eq!(
+            bound_minor((19, 2, 5), 1),
+            AxisBound::Inclusive((19, 1, u64::MAX))
+        );
+    }
+
+    #[test]
+    fn bound_minor_cross_boundary_when_overshoot() {
+        // Y = 0, b = 1 → step back one major to (X-1, ∞, ∞).
+        assert_eq!(
+            bound_minor((5, 0, 0), 1),
+            AxisBound::Inclusive((4, u64::MAX, u64::MAX))
+        );
+        // Deep overshoot: single step, not proportional.
+        assert_eq!(
+            bound_minor((19, 2, 5), 99),
+            AxisBound::Inclusive((18, u64::MAX, u64::MAX))
+        );
+    }
+
+    #[test]
+    fn bound_minor_cross_boundary_infeasible_when_no_prev_major() {
+        assert_eq!(bound_minor((0, 0, 3), 1), AxisBound::Infeasible);
+    }
+
+    #[test]
+    fn bound_patch_small_stays_in_same_minor() {
+        assert_eq!(bound_patch((19, 2, 5), 1), AxisBound::Inclusive((19, 2, 4)));
+    }
+
+    #[test]
+    fn bound_patch_spills_to_prev_minor_then_prev_major() {
+        // Z = 0, Y ≥ 1: spill to prev minor.
+        assert_eq!(
+            bound_patch((19, 2, 0), 1),
+            AxisBound::Inclusive((19, 1, u64::MAX))
+        );
+        // Z = 0, Y = 0, X ≥ 1: spill to prev major.
+        assert_eq!(
+            bound_patch((5, 0, 0), 1),
+            AxisBound::Inclusive((4, u64::MAX, u64::MAX))
+        );
+        // Z = 0, Y = 0, X = 0: nowhere to go.
+        assert_eq!(bound_patch((0, 0, 0), 1), AxisBound::Infeasible);
+    }
+
+    #[test]
+    fn compute_effective_bound_all_zero_is_unbounded() {
+        assert_eq!(
+            compute_effective_bound((19, 2, 5), off(0, 0, 0)),
+            EffectiveBound::Unbounded
+        );
+    }
+
+    #[test]
+    fn compute_effective_bound_major_dominates_on_all_minus_one() {
+        // {-1, -1, -1} on (19, 2, 5) gives three bounds:
+        //   major → (18, ∞, ∞)
+        //   minor → (19, 1, ∞)
+        //   patch → (19, 2, 4)
+        // min_lex picks (18, ∞, ∞).
+        assert_eq!(
+            compute_effective_bound((19, 2, 5), off(1, 1, 1)),
+            EffectiveBound::Inclusive((18, u64::MAX, u64::MAX))
+        );
+    }
+
+    #[test]
+    fn compute_effective_bound_any_infeasible_axis_makes_whole_infeasible() {
+        // major:-10 on latest 2.0.0 underflows → Infeasible even though
+        // patch:-1 is perfectly reasonable.
+        assert_eq!(
+            compute_effective_bound((2, 0, 5), off(10, 0, 1)),
+            EffectiveBound::Infeasible
+        );
     }
 }
