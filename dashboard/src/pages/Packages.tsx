@@ -209,20 +209,33 @@ export function PackagesPage() {
                       column="ecosystem"
                       query={queryFromUrl}
                       onSort={setSort}
+                      title="Ecosystem (npm / pypi)."
                     />
-                    <th className="px-3 py-2 text-left font-medium">Installed</th>
-                    <th className="px-3 py-2 text-left font-medium">Latest</th>
+                    <th
+                      className="px-3 py-2 text-left font-medium"
+                      title="Version currently pinned by the lockfile."
+                    >
+                      Installed
+                    </th>
+                    <th
+                      className="px-3 py-2 text-left font-medium"
+                      title="Latest stable release known to the registry."
+                    >
+                      Latest
+                    </th>
                     <SortHeader
                       label="Compliance"
                       column="compliance"
                       query={queryFromUrl}
                       onSort={setSort}
+                      title="Verdict: compliant / warning / violation / cve-violation / malware / typosquat / insufficient. Click an insufficient badge to jump to the Policy eval cascade trace."
                     />
                     <SortHeader
                       label="Risk"
                       column="risk"
                       query={queryFromUrl}
                       onSort={setSort}
+                      title="CVE severity counts + supply-chain flags. 🔴 critical · 🟠 high · 🟡 medium · 🟢 low · 🏴‍☠️ malware · ⚠ typosquat."
                     />
                   </tr>
                 </thead>
@@ -247,13 +260,15 @@ export function PackagesPage() {
 }
 
 function Row({ row }: { row: PackageRow }) {
+  const detailHref = `/packages/${encodeURIComponent(row.ecosystem)}/${encodeURIComponent(row.name)}`;
+  // Insufficient rows deep-link into the Policy eval tab so the user lands
+  // directly on the cascade trace that explains the verdict.
+  const complianceHref =
+    row.compliance === "insufficient" ? `${detailHref}?tab=policy#cascade` : detailHref;
   return (
     <tr className="border-b border-zinc-100 hover:bg-zinc-50">
       <td className="px-3 py-2">
-        <Link
-          to={`/packages/${encodeURIComponent(row.ecosystem)}/${encodeURIComponent(row.name)}`}
-          className="font-mono text-zinc-900 hover:underline"
-        >
+        <Link to={detailHref} className="font-mono text-zinc-900 hover:underline">
           {row.name}
         </Link>
       </td>
@@ -267,7 +282,17 @@ function Row({ row }: { row: PackageRow }) {
         {row.latest ?? "—"}
       </td>
       <td className="px-3 py-2">
-        <ComplianceBadge tag={row.compliance} />
+        <Link
+          to={complianceHref}
+          className="hover:underline"
+          aria-label={
+            row.compliance === "insufficient"
+              ? `Open Policy eval cascade for ${row.name}`
+              : undefined
+          }
+        >
+          <ComplianceBadge tag={row.compliance} />
+        </Link>
       </td>
       <td className="px-3 py-2">
         <RiskBadges risk={row.risk} />
@@ -281,11 +306,13 @@ function SortHeader({
   column,
   query,
   onSort,
+  title,
 }: {
   label: string;
   column: string;
   query: Partial<PackagesQuery>;
   onSort: (col: string) => void;
+  title?: string;
 }) {
   const active = (query.sort ?? "name") === column;
   const asc = (query.dir ?? "asc") === "asc";
@@ -296,6 +323,7 @@ function SortHeader({
         active && "text-zinc-900",
       )}
       onClick={() => onSort(column)}
+      title={title}
     >
       <span className="inline-flex items-center gap-1">
         {label}
@@ -419,8 +447,18 @@ export function ComplianceBadge({ tag }: { tag: ComplianceTag }) {
             ? "malware"
             : tag === "typosquat"
               ? "typosquat"
-              : "muted";
-  return <Badge tone={tone}>{tag}</Badge>;
+              : tag === "insufficient"
+                ? "insufficient"
+                : "muted";
+  const title =
+    tag === "insufficient"
+      ? "Insufficient: no release satisfies the resolver's offset bound. Open the Policy eval tab to see the cascade trace, then loosen offset or pin explicitly."
+      : undefined;
+  return (
+    <Badge tone={tone} title={title}>
+      {tag}
+    </Badge>
+  );
 }
 
 export function RiskBadges({ risk }: { risk: PackageRisk }) {

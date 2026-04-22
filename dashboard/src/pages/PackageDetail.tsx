@@ -7,7 +7,7 @@ import { ComplianceBadge } from "@/pages/Packages";
 import { VersionTimeline } from "@/components/packages/VersionTimeline";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { scopeLabel } from "@/components/layout/workspace-scope";
+import { scopeLabel, useScope } from "@/components/layout/workspace-scope";
 import type { CompatDependent } from "@/api/types/CompatDependent";
 import type { MalwareEntry } from "@/api/types/MalwareEntry";
 import type { PackageDetail } from "@/api/types/PackageDetail";
@@ -50,9 +50,10 @@ export function PackageDetailPage() {
     });
   };
 
+  const scope = useScope();
   const detail = useQuery({
-    queryKey: ["package-detail", ecosystem, name],
-    queryFn: () => api.packageDetail(ecosystem, name),
+    queryKey: ["package-detail", ecosystem, name, scope ?? null],
+    queryFn: () => api.packageDetail(ecosystem, name, scope),
     enabled: Boolean(ecosystem && name),
   });
 
@@ -453,7 +454,10 @@ function PolicyTab({ detail }: { detail: PackageDetail }) {
         </dl>
       </div>
       {p.cascade.length > 0 && (
-        <div className="rounded-md border border-zinc-200 bg-white p-3">
+        <div
+          id="cascade"
+          className="rounded-md border border-zinc-200 bg-white p-3"
+        >
           <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
             Cascade trace
           </div>
@@ -469,6 +473,9 @@ function PolicyTab({ detail }: { detail: PackageDetail }) {
             ))}
           </ol>
         </div>
+      )}
+      {detail.policy_sources.length > 0 && (
+        <PolicySourcesPanel detail={detail} />
       )}
       <div className="rounded-md border border-zinc-200 bg-white p-3">
         <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
@@ -795,4 +802,86 @@ function formatDate(iso: string | null | undefined): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toISOString().slice(0, 10);
+}
+
+function PolicySourcesPanel({ detail }: { detail: PackageDetail }) {
+  const provByKey = new Map<string, { sourceIndex: number; line: number | null }>();
+  for (const p of detail.policy_provenance) {
+    provByKey.set(p.key, { sourceIndex: p.source_index, line: p.line });
+  }
+  // Key rows we surface with their effective value + provenance badge.
+  const keyRows: { key: string; label: string; value: string }[] = [
+    {
+      key: "defaults.offset.major",
+      label: "offset.major",
+      value: signedAxis(detail.policy_trace.offset.major),
+    },
+    {
+      key: "defaults.offset.minor",
+      label: "offset.minor",
+      value: signedAxis(detail.policy_trace.offset.minor),
+    },
+    {
+      key: "defaults.offset.patch",
+      label: "offset.patch",
+      value: signedAxis(detail.policy_trace.offset.patch),
+    },
+    {
+      key: "defaults.stability",
+      label: "stability",
+      value: detail.policy_trace.stability,
+    },
+    {
+      key: "defaults.min_age_days",
+      label: "min_age_days",
+      value: String(detail.policy_trace.min_age_days),
+    },
+  ];
+  return (
+    <div className="rounded-md border border-zinc-200 bg-white p-3">
+      <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
+        Policy sources
+      </div>
+      <div className="mb-3 text-xs text-zinc-500">
+        Merge order — later wins. Effective policy deep-merges the layers
+        below on every key.
+      </div>
+      <ol className="mb-3 space-y-1 text-xs">
+        {detail.policy_sources.map((src, i) => (
+          <li key={i} className="flex items-start gap-2">
+            <span className="font-mono text-zinc-400">[{i}]</span>
+            <span className="font-mono text-zinc-800">{src.label}</span>
+            <span className="ml-auto text-zinc-400">{src.kind}</span>
+          </li>
+        ))}
+      </ol>
+      <dl className="grid gap-y-1 text-xs sm:grid-cols-[max-content_max-content_1fr] sm:gap-x-3">
+        {keyRows.map((row) => {
+          const prov = provByKey.get(row.key);
+          const source =
+            prov !== undefined ? detail.policy_sources[prov.sourceIndex] : undefined;
+          const origin = source
+            ? prov?.line != null
+              ? `from ${source.label}:L${prov.line}`
+              : `from ${source.label}`
+            : "unset (falls through to downstream default)";
+          return (
+            <div
+              key={row.key}
+              className="contents text-zinc-700"
+              title={origin}
+            >
+              <dt className="font-mono text-zinc-500">{row.label}</dt>
+              <dd className="font-mono text-zinc-900">{row.value}</dd>
+              <dd className="text-zinc-400">{origin}</dd>
+            </div>
+          );
+        })}
+      </dl>
+    </div>
+  );
+}
+
+function signedAxis(n: number): string {
+  return n === 0 ? "0" : `-${n}`;
 }

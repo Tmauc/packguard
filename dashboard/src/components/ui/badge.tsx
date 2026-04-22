@@ -14,6 +14,7 @@ const badgeVariants = cva(
         cve: "bg-orange-100 text-orange-700",
         malware: "bg-fuchsia-100 text-fuchsia-700",
         typosquat: "bg-violet-100 text-violet-700",
+        insufficient: "bg-purple-100 text-purple-700",
         muted: "bg-zinc-50 text-zinc-500 border border-zinc-200",
       },
     },

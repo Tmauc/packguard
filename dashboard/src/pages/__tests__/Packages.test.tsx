@@ -123,6 +123,74 @@ describe("PackagesPage", () => {
       await screen.findByText(/No packages match the current filters/i),
     ).toBeInTheDocument();
   });
+
+  it("routes insufficient rows to the Policy eval cascade anchor", async () => {
+    (api.packages as ReturnType<typeof vi.fn>).mockResolvedValue(
+      fixture([
+        {
+          ecosystem: "pypi",
+          name: "aiohttp",
+          installed: "3.10.11",
+          latest: "3.11.14",
+          kind: "dep",
+          compliance: "insufficient",
+          risk: {
+            critical: 0,
+            high: 0,
+            medium: 0,
+            low: 0,
+            malware_confirmed: 0,
+            typosquat_suspects: 0,
+          },
+          last_scanned_at: null,
+        },
+      ]),
+    );
+    wrap();
+    const badge = await screen.findByText("insufficient");
+    // Tooltip text explains the verdict without having to open the tab.
+    expect(badge.getAttribute("title")).toMatch(
+      /no release satisfies.*offset bound/i,
+    );
+    const link = badge.closest("a");
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("href")).toBe(
+      "/packages/pypi/aiohttp?tab=policy#cascade",
+    );
+  });
+
+  it("renders tooltips on the Compliance and Risk column headers", async () => {
+    (api.packages as ReturnType<typeof vi.fn>).mockResolvedValue(
+      fixture([
+        {
+          ecosystem: "npm",
+          name: "lodash",
+          installed: "4.17.20",
+          latest: "4.17.21",
+          kind: "dep",
+          compliance: "compliant",
+          risk: {
+            critical: 0,
+            high: 0,
+            medium: 0,
+            low: 0,
+            malware_confirmed: 0,
+            typosquat_suspects: 0,
+          },
+          last_scanned_at: null,
+        },
+      ]),
+    );
+    wrap();
+    const compliance = await screen.findByText("Compliance");
+    const risk = screen.getByText("Risk");
+    expect(compliance.closest("th")?.getAttribute("title")).toMatch(
+      /compliant.*insufficient/i,
+    );
+    expect(risk.closest("th")?.getAttribute("title")).toMatch(
+      /critical.*malware/i,
+    );
+  });
 });
 
 // Tiny sanity check on useSearchParams usage so the test infra itself

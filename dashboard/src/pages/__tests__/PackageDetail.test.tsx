@@ -82,6 +82,8 @@ function fixture(overrides: Partial<PackageDetail> = {}): PackageDetail {
         "max version ≤ bound = 4.17.21 → picked 4.17.21",
       ],
     },
+    policy_sources: [],
+    policy_provenance: [],
     ...overrides,
   };
 }
@@ -131,6 +133,54 @@ describe("PackageDetailPage", () => {
     await user.click(screen.getByRole("button", { name: /^Policy/i }));
     expect(
       screen.getByText(/blocking CVE — upgrade to 4\.17\.21/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the Policy sources panel when cascade data is present", async () => {
+    wrap(
+      fixture({
+        policy_sources: [
+          {
+            kind: "built_in",
+            label: "built-in default",
+            path: null,
+          },
+          {
+            kind: "file",
+            label: "/repo/.packguard.yml",
+            path: "/repo/.packguard.yml",
+          },
+          {
+            kind: "file",
+            label: "/repo/front/vesta/.packguard.yml",
+            path: "/repo/front/vesta/.packguard.yml",
+          },
+        ],
+        policy_provenance: [
+          { key: "defaults.offset.major", source_index: 1, line: 4 },
+          { key: "defaults.offset.minor", source_index: 1, line: 5 },
+          { key: "defaults.offset.patch", source_index: 0, line: null },
+          { key: "defaults.min_age_days", source_index: 2, line: 3 },
+          { key: "defaults.stability", source_index: 0, line: null },
+        ],
+      }),
+    );
+    const user = userEvent.setup();
+    await screen.findByText("lodash");
+    await user.click(screen.getByRole("button", { name: /^Policy/i }));
+    expect(screen.getByText("Policy sources")).toBeInTheDocument();
+    // Merge-order list renders each contributor.
+    expect(screen.getByText("built-in default")).toBeInTheDocument();
+    expect(screen.getByText("/repo/.packguard.yml")).toBeInTheDocument();
+    expect(
+      screen.getByText("/repo/front/vesta/.packguard.yml"),
+    ).toBeInTheDocument();
+    // Per-key provenance column points at the right source + line.
+    expect(
+      screen.getByText(/from \/repo\/\.packguard\.yml:L4/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/from \/repo\/front\/vesta\/\.packguard\.yml:L3/),
     ).toBeInTheDocument();
   });
 
