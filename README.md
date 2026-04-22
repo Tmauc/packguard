@@ -406,8 +406,12 @@ groups:
 
 Resolution cascade: `defaults` → every matching `group` → every matching
 `override`, later layers strictly overriding per-field. The resolver then
-walks the three offset axes in order (major → minor → patch), surfacing
-`InsufficientCandidates` with a per-axis reason when history is too narrow.
+derives an inclusive lex bound on `(major, minor, patch)` from the three
+axes and picks the highest version ≤ the bound. Cross-boundary fallback
+kicks in automatically on clairsemé histories (a `{ minor: -1 }` against a
+package that just cut a major lands on the previous major's latest);
+`InsufficientCandidates` only surfaces when the registry has literally no
+release ≤ the bound.
 
 ---
 

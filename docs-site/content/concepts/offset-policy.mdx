@@ -4,7 +4,7 @@ Most governance tools have two default modes: pin everything (Dependabot-style "
 
 PackGuard's model is different — **offset**. You declare *how far behind* `latest` each package is allowed to drift, independently on each of the three semver axes (**major**, **minor**, **patch**), and the scanner classifies every installed version against that rule.
 
-## The three-axis offset (v0.2.0)
+## The three-axis offset
 
 Offset is an object with three non-positive integer keys. Missing keys default to `0`. The canonical shape:
 
@@ -21,45 +21,62 @@ That example — `{ major: 0, minor: -1, patch: 0 }` — is the default `packgua
 - **Minors** sometimes carry regressions → let them bake for one cycle.
 - **Majors** ship breaking changes → staying on the latest is the fastest way to get newer fixes, as long as you actively track upgrades.
 
-### How resolution works
+### How resolution works (v0.3.0)
 
-Given `latest = X.Y.Z` (after the stability and `min_age_days` filters have pruned prereleases / fresh releases):
+The resolver treats each axis as an **inclusive lexicographic upper bound** on the `(major, minor, patch)` triple, then picks the highest version that satisfies all bounds.
+
+Given `latest = X.Y.Z` (the tip of the post-stability + `min_age_days` pool):
 
 ```
-target_major = X - |offset.major|
-candidates   = versions where version.major == target_major
+bound_major  = if a > 0: (X - a, ∞, ∞)              ; infeasible when a > X
+bound_minor  = if b > 0:
+                  if b ≤ Y: (X, Y - b, ∞)
+                  else:     (X - 1, ∞, ∞)           ; cross-boundary
+                                                     ; infeasible when X = 0
+bound_patch  = if c > 0:
+                  if c ≤ Z: (X, Y, Z - c)
+                  elif Y ≥ 1: (X, Y - 1, ∞)         ; spill to prev minor
+                  elif X ≥ 1: (X - 1, ∞, ∞)         ; spill to prev major
+                  else:     infeasible
 
-if offset.minor != 0:
-  max_minor    = max(minor over candidates)
-  target_minor = max_minor - |offset.minor|
-  candidates   = candidates where version.minor == target_minor
-else:
-  candidates   = candidates where version.minor == max_minor
-
-if offset.patch != 0:
-  max_patch    = max(patch over candidates)
-  target_patch = max_patch - |offset.patch|
-  recommended  = max version at (target_major, target_minor, target_patch)
-else:
-  recommended  = max version at (target_major, target_minor, *)
+effective    = min_lex over all active axes (tightest bound wins)
+recommended  = max version ≤ effective, after stability + min_age + malware + CVE filters
 ```
 
-If any axis overshoots what the registry actually published — e.g. `{ minor: -3 }` on a major that only has one minor — the classifier returns `InsufficientCandidates` with a per-axis reason. That's surfaced in `packguard report` output and in the dashboard "Policy eval" cascade trace.
+`InsufficientCandidates` only shows up when:
+
+1. **every** axis underflows past `(0, 0, 0)` — the user asked for a version below the earliest possible release, or
+2. the registry has literally zero version ≤ the effective bound, or
+3. every candidate ≤ the bound is blocked by CVE / malware remediation.
+
+### Cross-boundary fallback
+
+Version histories in real registries are often clairsemées — packages skip majors, minors, or patches for months. The lex bound naturally falls back in those cases:
+
+- **`{ minor: -1 }` on latest `5.0.0`** — `Y - 1 < 0`, so the minor bound cross-boundaries to `(4, ∞, ∞)`. The resolver picks `4.max.max` instead of surfacing `InsufficientCandidates`.
+- **`{ patch: -1 }` on latest `19.2.5` when `19.2.4` doesn't exist** — the bound stays at `(19, 2, 4)` and the resolver picks the next-highest release below it (`19.2.0` on the React fixture).
+- **`{ major: -1 }` on a package that jumped from major 2 to major 4** — bound is `(3, ∞, ∞)`; no `3.x` exists, so the resolver falls back to the highest `2.x`.
+- **`{ minor: -99 }`** — a single cross-boundary step back to `(X - 1, ∞, ∞)`. It's not proportional to the overshoot; "I want any older version" is expressed by a large magnitude on the closest axis.
 
 ### Worked examples (React history: 12 versions across 16 → 19)
 
 Fixture: `16.14.0`, `17.0.0`, `17.0.2`, `18.0.0`, `18.2.0`, `18.3.1`, `19.0.0`, `19.1.0`, `19.2.0`, `19.2.5` (prereleases elided).
 
-| Offset                              | Recommended       |
-| ----------------------------------- | ----------------- |
-| `{ major: 0, minor: 0, patch: 0 }`  | `19.2.5`          |
-| `{ major: 0, minor: -1, patch: 0 }` | `19.1.0`          |
-| `{ major: -1 }`                     | `18.3.1`          |
-| `{ major: -2 }`                     | `17.0.2`          |
-| `{ major: 0, patch: -1 }`           | Insufficient (no `19.2.4`) |
-| `{ minor: -99 }`                    | Insufficient (`offset.minor=99 exceeds latest minor 2 on major 19`) |
+| Offset                                        | Effective bound    | Recommended |
+| --------------------------------------------- | ------------------ | ----------- |
+| `{ major: 0, minor: 0, patch: 0 }`            | `(∞, ∞, ∞)`        | `19.2.5`    |
+| `{ major: 0, minor: -1, patch: 0 }`           | `(19, 1, ∞)`       | `19.1.0`    |
+| `{ major: -1 }`                               | `(18, ∞, ∞)`       | `18.3.1`    |
+| `{ major: -2 }`                               | `(17, ∞, ∞)`       | `17.0.2`    |
+| `{ major: 0, minor: 0, patch: -1 }`           | `(19, 2, 4)`       | `19.2.0`    |
+| `{ major: -1, minor: -1, patch: -1 }`         | `(18, ∞, ∞)`       | `18.3.1`    |
+| `{ minor: -99 }`                              | `(18, ∞, ∞)` (cross) | `18.3.1`  |
 
 The cascade is deterministic. If two teams write the same policy they get the same answer on the same registry history, always.
+
+### Migrating from v0.2.0
+
+No YAML changes needed. The resolver became **strictly more permissive**: every `InsufficientCandidates` verdict v0.2.0 produced on a clairsemé history now returns an actual version recommendation. If you rely on `InsufficientCandidates` as a fail-closed signal, double-check the specific policies — it now only fires when every axis underflows past major 0, the registry truly has no version ≤ the bound, or CVE remediation dropped every candidate.
 
 ## Full `.packguard.yml`
 
@@ -110,11 +127,11 @@ Error: policy `offset` must be an object with major/minor/patch keys,
 
 Translation table for the common cases:
 
-| v0.1.x      | v0.2.0+                                |
-| ----------- | -------------------------------------- |
-| `offset: 0` | `offset: { major: 0 }`                 |
-| `offset: -1` | `offset: { major: -1 }`               |
-| `offset: -2` | `offset: { major: -2 }`               |
+| v0.1.x       | v0.2.0+                                |
+| ------------ | -------------------------------------- |
+| `offset: 0`  | `offset: { major: 0 }`                 |
+| `offset: -1` | `offset: { major: -1 }`                |
+| `offset: -2` | `offset: { major: -2 }`                |
 
 That's the minimum-change migration. Consider switching to `{ major: 0, minor: -1, patch: 0 }` — the new `packguard init` default — if you want the security-fix-flow described above.
 
