@@ -5,6 +5,7 @@
 //! engine lives in `packguard-policy`.
 
 pub mod classify;
+pub mod discovery;
 pub mod ecosystem;
 pub mod model;
 pub mod npm;
@@ -12,6 +13,10 @@ pub mod pypi;
 pub mod registry;
 
 pub use classify::classify_semver;
+pub use discovery::{
+    discover, has_manifest, DiscoveredProject, DiscoveryOptions, DiscoveryOutcome, ProjectSource,
+    BUILTIN_EXCLUDES, DEFAULT_MAX_DEPTH, LARGE_COUNT_THRESHOLD, MANIFEST_ANCHORS,
+};
 pub use ecosystem::Ecosystem;
 pub use model::{
     AffectedEvent, AffectedRange, AffectedRangeKind, AffectedSpec, CompatibilityInfo, Delta,
