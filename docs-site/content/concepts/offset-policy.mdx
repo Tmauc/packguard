@@ -114,6 +114,63 @@ groups:
 
 Resolution cascade: `defaults` → every matching `group` → every matching `override`. Later layers strictly override per-field. A package can match multiple groups — later matches win, which is why `overrides` (applied last) give you the last word.
 
+## Policy cascade across a monorepo
+
+In a monorepo, `packguard` walks up from the scan path collecting every `.packguard.yml` it finds and deep-merges them into a single effective policy:
+
+```
+Level 0 : built-in conservative defaults
+Level 1 : ~/.packguard.yml                                (optional, user-wide)
+Level 2 : <repo root>/.packguard.yml                       (monorepo root)
+Level 3 : <intermediate dirs>/.packguard.yml               (groups, e.g. front/)
+Level 4 : <scan path>/.packguard.yml                       (project-level)
+```
+
+Later layers override earlier ones on a per-key basis. Nested objects deep-merge (a child's `offset: { major: -1 }` overrides just `major`, preserving parent's `minor` and `patch`). **Arrays replace**, they don't concatenate — a child's `block.cve_severity: [critical]` fully replaces a parent's `[high, critical]`. Use `extends:` when you want to inherit a parent's `overrides` / `groups` list.
+
+The walk stops at (in priority order):
+1. A `.packguard.yml` that declares `root: true` (explicit barrier for non-git monorepos).
+2. The first directory that contains a `.git/` folder (implicit repo boundary — the `.packguard.yml` at that level **is** included).
+3. The home directory (safety — the walk never escapes into `$HOME`'s ancestors).
+
+### `extends:` — explicit inclusion
+
+```yaml
+extends: "../presets/security.yml"
+
+defaults:
+  min_age_days: 14
+```
+
+The extended file is loaded and merged **just before** the declaring file. Paths are resolved against the declaring file's directory. Cycles are detected and fail the load with an explicit error.
+
+### Inspecting the resolved policy
+
+```
+packguard report <path> --show-policy
+```
+
+prints the effective policy with per-key provenance (which file and line each value came from), so you can answer "why does this key have this value?" without reading the three `.packguard.yml` files yourself:
+
+```
+# Effective policy for /repos/nalo/monorepo/front/vesta
+# Sources (merge order — later wins):
+#   [0] built-in default
+#   [1] /repos/nalo/monorepo/.packguard.yml
+#   [2] /repos/nalo/monorepo/front/.packguard.yml
+#   [3] /repos/nalo/monorepo/front/vesta/.packguard.yml
+
+defaults.offset.major          = -1                (from /repos/nalo/monorepo/.packguard.yml:L4)
+defaults.offset.minor          = -1                (from /repos/nalo/monorepo/front/.packguard.yml:L3)
+defaults.offset.patch          = 0                 (from built-in default)
+defaults.block.typosquat       = strict            (from /repos/nalo/monorepo/front/vesta/.packguard.yml:L3)
+…
+```
+
+### Migrating from v0.2.0 (no cascade)
+
+Existing repos keep working: if a project has exactly one `.packguard.yml` at its scan path, the cascade walks up to it, finds no parent files, and the result is identical to v0.2.0. No YAML changes required. The new cascade only kicks in when you actually want it.
+
 ## Migrating from v0.1.x scalar offsets
 
 The pre-0.2.0 scalar form `offset: -1` is **no longer accepted**. `packguard scan` / `report` / `audit` will error out at parse time with a rewrite hint:

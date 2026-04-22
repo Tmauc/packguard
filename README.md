@@ -413,6 +413,12 @@ package that just cut a major lands on the previous major's latest);
 `InsufficientCandidates` only surfaces when the registry has literally no
 release ≤ the bound.
 
+**Monorepo cascade.** Every `.packguard.yml` from the scan path up to the
+repo root (or a `root: true` / `.git/` barrier) deep-merges into a single
+effective policy. Use `extends:` for explicit includes, and inspect the
+merge with `packguard report <path> --show-policy` — it prints which
+file + line each value came from. See [Policy cascade](https://packguard-docs.vercel.app/concepts/offset-policy#policy-cascade-across-a-monorepo).
+
 ---
 
 ## Supported ecosystems (Tier 1)

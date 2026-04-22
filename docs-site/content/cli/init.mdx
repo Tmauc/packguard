@@ -20,6 +20,22 @@ packguard init [path] [--force] [--with-ci gitlab|github|jenkins]
 
 With `--with-ci`, also writes a pipeline snippet into `.packguard/ci/<vcs>.yml` that you can copy into your pipeline layout.
 
+## Running `init` at the monorepo root
+
+When `init` is scaffolding a policy at the **top** of a repo that hosts multiple sub-projects, add `root: true` at the top level of the file:
+
+```yaml
+root: true
+defaults:
+  offset:
+    major: 0
+    minor: -1
+    patch: 0
+  # …
+```
+
+`root: true` stops the upward cascade walk at this file — useful when the monorepo isn't a git repo itself (no `.git/` to auto-detect) or when it lives under a shared parent directory that shouldn't contribute to the cascade. See [Policy cascade](/concepts/offset-policy#policy-cascade-across-a-monorepo).
+
 ## Examples
 
 ```bash
