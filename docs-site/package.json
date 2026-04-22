@@ -1,0 +1,39 @@
+{
+  "name": "packguard-docs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PackGuard documentation site — Next.js 16 + Nextra 4",
+  "scripts": {
+    "predev": "node scripts/generate-llms.mjs",
+    "dev": "next dev --port 3003",
+    "prebuild": "node scripts/generate-llms.mjs",
+    "build": "next build",
+    "start": "next start --port 3003",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@react-three/drei": "10.7.7",
+    "@react-three/fiber": "9.6.0",
+    "next": "16.2.4",
+    "nextra": "4.6.1",
+    "nextra-theme-docs": "4.6.1",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "three": "0.184.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.2.4",
+    "@types/node": "22.9.0",
+    "@types/react": "19.0.14",
+    "@types/react-dom": "19.0.4",
+    "@types/three": "0.184.0",
+    "gray-matter": "4.0.3",
+    "tailwindcss": "4.2.4",
+    "typescript": "5.7.2"
+  },
+  "packageManager": "pnpm@10.15.0",
+  "engines": {
+    "node": ">=20.9"
+  }
+}

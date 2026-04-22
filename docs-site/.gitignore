@@ -1,0 +1,10 @@
+node_modules/
+.next/
+.vercel/
+.turbo/
+out/
+*.tsbuildinfo
+.env*.local
+.DS_Store
+public/llms.txt
+public/llms-full.txt
