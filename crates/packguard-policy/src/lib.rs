@@ -5,11 +5,16 @@
 //! Phase 1 scope: offset, pin, stability, min_age_days. The `block` section
 //! is parsed and stored but evaluated in Phase 2 once vuln intel lands.
 
+mod cascade;
 mod dialect;
 mod model;
 mod parse;
 mod resolve;
 
+pub use cascade::{
+    resolve_policy as resolve_policy_cascade, resolve_policy_with_home, PolicySource, Provenance,
+    ProvenanceEntry, ResolvedPolicyFile, SourceKind,
+};
 pub use dialect::{Dialect, VersionMeta};
 pub use model::{
     BlockRule, Compliance, GroupRule, Offset, OverrideRule, Policy, PolicyDefaults, ReleaseInfo,

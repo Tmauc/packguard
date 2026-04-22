@@ -164,12 +164,27 @@ pub struct GroupRule {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Policy {
+    /// Phase 10b — path to another `.packguard.yml` that should be
+    /// included just before this file in the cascade. Relative paths are
+    /// resolved against the directory of the file that declared the
+    /// extend. Cycle detection aborts the resolve with an error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extends: Option<String>,
+    /// Phase 10b — stop the upward cascade walk at this file. Useful at
+    /// a monorepo root when parent directories are outside the project
+    /// scope (e.g. `$HOME`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub root: bool,
     #[serde(default)]
     pub defaults: PolicyDefaults,
     #[serde(default)]
     pub overrides: Vec<OverrideRule>,
     #[serde(default)]
     pub groups: Vec<GroupRule>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Effective rule after defaults → group → override merging.
