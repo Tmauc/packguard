@@ -56,7 +56,16 @@ jobs:
       - name: publish packguard-core
         run: |
           set -euo pipefail
-          ARGS="-p packguard-core"
+          CRATE="packguard-core"
+          VER="${{ steps.ver.outputs.workspace-version }}"
+          if [ "${{ inputs.dry_run }}" != "true" ]; then
+            code=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}")
+            if [ "$code" = "200" ]; then
+              echo "::notice::${CRATE}@${VER} already on crates.io — skipping"
+              exit 0
+            fi
+          fi
+          ARGS="-p ${CRATE}"
           [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
           cargo publish $ARGS
 
@@ -67,7 +76,16 @@ jobs:
       - name: publish packguard-intel
         run: |
           set -euo pipefail
-          ARGS="-p packguard-intel"
+          CRATE="packguard-intel"
+          VER="${{ steps.ver.outputs.workspace-version }}"
+          if [ "${{ inputs.dry_run }}" != "true" ]; then
+            code=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}")
+            if [ "$code" = "200" ]; then
+              echo "::notice::${CRATE}@${VER} already on crates.io — skipping"
+              exit 0
+            fi
+          fi
+          ARGS="-p ${CRATE}"
           [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
           cargo publish $ARGS
 
@@ -78,7 +96,16 @@ jobs:
       - name: publish packguard-store
         run: |
           set -euo pipefail
-          ARGS="-p packguard-store"
+          CRATE="packguard-store"
+          VER="${{ steps.ver.outputs.workspace-version }}"
+          if [ "${{ inputs.dry_run }}" != "true" ]; then
+            code=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}")
+            if [ "$code" = "200" ]; then
+              echo "::notice::${CRATE}@${VER} already on crates.io — skipping"
+              exit 0
+            fi
+          fi
+          ARGS="-p ${CRATE}"
           [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
           cargo publish $ARGS
 
@@ -89,7 +116,16 @@ jobs:
       - name: publish packguard-policy
         run: |
           set -euo pipefail
-          ARGS="-p packguard-policy"
+          CRATE="packguard-policy"
+          VER="${{ steps.ver.outputs.workspace-version }}"
+          if [ "${{ inputs.dry_run }}" != "true" ]; then
+            code=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}")
+            if [ "$code" = "200" ]; then
+              echo "::notice::${CRATE}@${VER} already on crates.io — skipping"
+              exit 0
+            fi
+          fi
+          ARGS="-p ${CRATE}"
           [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
           cargo publish $ARGS
 
@@ -100,7 +136,16 @@ jobs:
       - name: publish packguard-server
         run: |
           set -euo pipefail
-          ARGS="-p packguard-server"
+          CRATE="packguard-server"
+          VER="${{ steps.ver.outputs.workspace-version }}"
+          if [ "${{ inputs.dry_run }}" != "true" ]; then
+            code=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}")
+            if [ "$code" = "200" ]; then
+              echo "::notice::${CRATE}@${VER} already on crates.io — skipping"
+              exit 0
+            fi
+          fi
+          ARGS="-p ${CRATE}"
           [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
           cargo publish $ARGS
 
@@ -111,7 +156,16 @@ jobs:
       - name: publish packguard-cli
         run: |
           set -euo pipefail
-          ARGS="-p packguard-cli"
+          CRATE="packguard-cli"
+          VER="${{ steps.ver.outputs.workspace-version }}"
+          if [ "${{ inputs.dry_run }}" != "true" ]; then
+            code=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}")
+            if [ "$code" = "200" ]; then
+              echo "::notice::${CRATE}@${VER} already on crates.io — skipping"
+              exit 0
+            fi
+          fi
+          ARGS="-p ${CRATE}"
           [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
           cargo publish $ARGS
 
