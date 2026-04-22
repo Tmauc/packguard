@@ -1842,6 +1842,123 @@ Routes qui ne changent pas (entité package est globale):
 
 ---
 
+## 14.14. Feature requests v0.2.0 (remontées post-release)
+
+Thomas a utilisé l'outil sur son monorepo Nalo dès la post-release et a remonté deux **manques produit substantiels** :
+
+- **#11 Monorepo auto-discovery (recursive par défaut)** : `packguard scan .` à la racine d'un monorepo doit détecter `pnpm-workspace.yaml` / `turbo.json` / `nx.json` et auto-scanner tous les sous-projets. `--no-recursive` pour legacy. **Livré Phase 9a.**
+- **#12 Offset multi-axes** : `offset` devient un objet `{ major, minor, patch }`. Forme scalar legacy rejetée au parse. **Livré Phase 9b.**
+- **#13 Rename `packguard-cli` → `packguard`** sur crates.io. **Livré Phase 9c.**
+- **Reporté v0.3.0+** : Tier 2 écosystèmes (Cargo, Go), pnpm negation globs, dark mode dashboard, WebGL graph virtualization, Refinery 0.9 → latest.
+
+---
+
+## 14.15. Phase 9a — Monorepo auto-discovery ✅ done (2026-04-22)
+
+**Livré :** 4 commits (`0ce7ea7`, `76f10e6`, `4abbbaf`, `4fa2444`), 281 tests (+47 nets), clippy & fmt clean. Cargo version reste `0.1.0` (bump groupé fin cycle 9).
+
+**Démo live Nalo monorepo :**
+```
+$ packguard scan /Users/mauc/Repo/Nalo/monorepo --dry-run
+🔍 Discovering projects under /Users/mauc/Repo/Nalo/monorepo …
+→ walked filesystem — 20 projects would be scanned.
+    api / front / front/{mellona,phoebus,v1,vesta}
+    services / services/{accounting,accounting_manager,backend,etl,
+                         event_manager,incentive,instrument_data_manager,
+                         pdf_service,portfolio_manager,risk_officer,
+                         simulator_api,transaction_blocker,transaction_manager}
+```
+
+**Nouveaux flags CLI :** `--no-recursive`, `--depth N`, `--include <GLOB>`, `--exclude <GLOB>`, `--dry-run`, `--yes`.
+
+**Notes saillantes :**
+1. **pnpm globs réels sont traîtres** — `phoebus/**` sur Nalo a matché des milliers de "projets" dans `node_modules/.pnpm/...`. Fix via prune avec denylist (node_modules, target, .venv, .pnpm, dist, build, .next, coverage, .git, .turbo, .nx, .cache, __pycache__, vendor). 2 tests de régression.
+2. `foo/**` ne match pas `foo` lui-même en strict pnpm glob — fallback avec `/**` stripped pour que le base dir participate.
+3. Discovery découplée : `packguard-core::discovery` retourne candidate directories, le CLI run `Ecosystem.detect()` sur chacune. Extensible pour Tier 2.
+4. Robustness par-projet : un parse error d'un projet en mode recursive = red inline line, scan continue. Single-project mode garde le comportement original.
+
+---
+
+## 14.16. Phase 9b — Offset multi-axes ✅ done (2026-04-22)
+
+**Livré :** 4 commits (`9c7a1c0`, `33d7db2`, `2695bbf`, `716e60d`), 304 tests Rust (+23 nets), 51 Vitest (+1), clippy/fmt clean, ts-rs drift vert. Breaking change assumé (pas de compat scalar).
+
+**Nouveau template `packguard init`** :
+```yaml
+defaults:
+  offset:
+    major: 0      # latest major
+    minor: -1     # one minor behind on that major
+    patch: 0      # latest patch within that major.minor
+```
+= pattern sécurité canonique, jamais exprimable en v0.1.x.
+
+**Truth table vérifiée contre fixture `react` (12 versions sur majors 16/17/18/19) :**
+
+| Policy | Recommended |
+|---|---|
+| `{ major:0, minor:0, patch:0 }` | 19.2.5 |
+| `{ major:0, minor:-1 }` | 19.1.0 |
+| `{ major:-1 }` | 18.3.1 |
+| `{ patch:-1 }` | Insufficient (pas de 19.2.4) |
+| `{ major:-1, minor:-1, patch:-1 }` | Insufficient |
+| `{ minor:-99 }` | Insufficient (axis-named reason) |
+
+**Parse error explicite** sur scalar legacy avec doc link + YAML line info.
+
+**Dashboard Policy eval tab** gagne 4 panels : Verdict / Offset 3-axis / Cascade trace / Remediation. Trace exemple :
+```
+1. offset.major=0 → target major=19 (latest)
+2. offset.minor=1 → target minor=1 (max on major 19: 2)
+3. offset.patch=0 → keep max patch on (19,1)
+4. remediation: picked 19.1.0
+```
+
+**Notes saillantes :**
+1. `Offset` struct `Copy` → resolver le thread sans cloning.
+2. **Strict cascade semantics** : `{-1,-1,-1}` tombe souvent en `InsufficientCandidates`. Correct par spec.
+3. `build_offset_cascade_trace` duplique la logique resolver (présentation vs évaluation). Mitigation : test end-to-end asserte `trace.recommended == compute_recommended_version` → drift devient test failure.
+4. Pnpm negation globs toujours reportée (carry-over 9a).
+
+---
+
+## 14.17. Phase 9c — Crate rename `packguard-cli` → `packguard` ✅ done (2026-04-22)
+
+**Livré :** 4 commits (`47a0dcd`, `6974da2`, `1aed61e`, `7091d79`), 304 Rust + 51 Vitest inchangés (zéro régression), clippy/fmt/typecheck clean.
+
+**Décisions prises :**
+1. **Dir `crates/packguard-cli/` conservé** — seul `[package].name` passe à `packguard`. Dir rename = churn inutile (install scripts, docker paths, git archaeology) pour zéro bénéfice user-visible.
+2. **Option A (yank) recommandée** dans `PUBLISHING.md`. `cargo yank --version 0.1.0 packguard-cli` après publish de `packguard@0.2.0`. Users pinnant explicitement peuvent toujours installer l'ancien.
+
+**Impact surface :** 2 workflow files + docs. Zéro code library crate touché, zéro API change.
+
+**Validation regression :**
+- `cargo install --path crates/packguard-cli --features ui-embed` → installe `packguard v0.1.0` ✅
+- `cargo build -p packguard-cli` → fail "package ID not found" (attendu) ✅
+- `cargo build -p packguard` → OK
+
+---
+
+## Phase 9 — Bilan agrégé (9a + 9b + 9c)
+
+**Total cycle v0.2.0 pré-release :** 12 commits atomiques sur 3 sessions agent, +24 tests nets (281 → 304 Rust, 50 → 51 Vitest), zéro régression.
+
+**3 breaking changes bundled dans 0.2.0** (semver-propre, pas besoin de brûler un 0.3.0 pour le rename) :
+- 9a : scan recursive par défaut (`--no-recursive` pour legacy)
+- 9b : policy `offset` objet-only (scalar rejeté au parse avec message explicite)
+- 9c : crate `packguard-cli` renommé → `packguard`
+
+**Checklist Thomas pour shipper v0.2.0 :**
+```bash
+./scripts/bump-version.sh 0.2.0
+git push origin main --follow-tags
+# workflow release → ~8-60 min selon QEMU
+gh workflow run crates-publish.yml -f dry_run=false
+# (optionnel) cargo yank --version 0.1.0 packguard-cli
+```
+
+---
+
 ## 15. Tech debt & follow-ups (remontés Phase 1)
 
 À traiter en Phase 1.5 ou intégré à une phase ultérieure. Ordre par priorité :

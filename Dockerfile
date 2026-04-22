@@ -40,7 +40,7 @@ ENV PACKGUARD_SKIP_UI_BUILD=1
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 COPY --from=dashboard-build /src/dashboard/dist ./dashboard/dist
-RUN cargo build --release -p packguard-cli --features ui-embed
+RUN cargo build --release -p packguard --features ui-embed
 # Strip symbols to shrink the final image; they stay in the build cache
 # for anyone who wants a debug-symbol copy on the side.
 RUN strip /src/target/release/packguard
