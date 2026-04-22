@@ -24,7 +24,17 @@ fn init_writes_conservative_yml() {
     let (ok, _stdout, stderr) = run_init(&[], &dir.path().to_path_buf());
     assert!(ok, "stderr: {stderr}");
     let yml = std::fs::read_to_string(dir.path().join(".packguard.yml")).unwrap();
-    assert!(yml.contains("offset: -1"));
+    // Phase 9b — conservative default is the three-axis object form
+    // `{ major: 0, minor: -1, patch: 0 }` (the canonical security posture:
+    // stay on latest major, one minor behind, always take patches).
+    assert!(
+        yml.contains("minor: -1"),
+        "missing minor: -1 in generated YAML:\n{yml}"
+    );
+    assert!(
+        yml.contains("major: 0") && yml.contains("patch: 0"),
+        "missing major/patch in generated YAML:\n{yml}"
+    );
     assert!(yml.contains("allow_patch: true"));
     assert!(yml.contains("cve_severity"));
 }
@@ -49,7 +59,10 @@ fn init_with_force_overwrites() {
     assert!(ok, "stderr: {stderr}");
     let contents = std::fs::read_to_string(&target).unwrap();
     assert_ne!(contents, "# existing\n");
-    assert!(contents.contains("offset: -1"));
+    assert!(
+        contents.contains("minor: -1"),
+        "missing minor: -1 in regenerated YAML:\n{contents}"
+    );
 }
 
 #[test]

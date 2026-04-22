@@ -145,7 +145,7 @@ fn report_sarif_only_emits_violations() {
     std::fs::write(
         env.repo.join(".packguard.yml"),
         r#"
-defaults: { offset: -1 }
+defaults: { offset: { major: -1 } }
 overrides:
   - match: lodash
     pin: "4.17.21"

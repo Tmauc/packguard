@@ -1,0 +1,5 @@
+---
+source: crates/packguard-policy/tests/resolver_snapshots.rs
+expression: verdict(&c)
+---
+"insufficient: react: offset.minor=99 exceeds latest minor 2 on major 19"
