@@ -160,56 +160,116 @@ function TerminalCard({
   )
 }
 
+const HERO_LINE_1 = ['Stop', 'trusting', 'dependencies']
+const HERO_LINE_2 = ['you', 'never', 'audited.']
+
 function Hero() {
   return (
-    <section className="mx-auto grid max-w-6xl grid-cols-1 gap-10 px-6 py-16 lg:grid-cols-[1.05fr_1fr] lg:items-center lg:py-24">
-      <div>
-        <div className="inline-flex items-center gap-2 rounded-full border border-divider bg-white/70 px-3 py-1 text-xs font-medium text-mute">
-          <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-shield-green" />
-          v0.1.0 · MIT / Apache-2.0 · npm + PyPI
-        </div>
-        <h1 className="font-editorial mt-6 text-[48px] leading-[1.02] tracking-editorial text-slate-ink lg:text-[84px]">
-          Stop trusting dependencies
-          <br />
-          you never audited.
-        </h1>
-        <p className="mt-7 max-w-xl text-[17px] leading-relaxed text-mute">
-          PackGuard is a local-first CLI and dashboard that governs package
-          versions across every repo you own. Offset policy, supply-chain intel
-          <span className="font-editorial-roman"> — </span>
-          <span className="font-editorial">CVE · malware · typosquat</span>
-          <span className="font-editorial-roman"> — </span>
-          and a live dependency graph. One Rust binary, no cloud.
-        </p>
-        <div className="mt-8 flex flex-wrap gap-3">
-          <Link
-            href="/getting-started/install"
-            className="inline-flex items-center gap-2 rounded-lg bg-slate-ink px-5 py-3 text-sm font-medium text-warm-white hover:bg-slate-ink/90"
-          >
-            Install PackGuard
-            <span aria-hidden>→</span>
-          </Link>
-          <a
-            href="https://github.com/Tmauc/packguard"
-            className="inline-flex items-center gap-2 rounded-lg border border-divider-strong px-5 py-3 text-sm font-medium text-slate-ink hover:border-slate-ink/40"
-          >
-            View on GitHub
-          </a>
-        </div>
-        <p className="mt-5 text-xs text-mute">
-          Works with npm (npm · pnpm · yarn) and PyPI (poetry · uv · pip).
-          Cargo + Go modules next.
-        </p>
-      </div>
+    <section className="relative mx-auto max-w-6xl px-6 py-16 lg:py-24">
+      <span
+        aria-hidden
+        className="vertical-label absolute left-2 top-32 hidden lg:block xl:left-[-12px]"
+      >
+        § 01 — Living dependency graph
+      </span>
 
-      <div className="canvas-frame relative h-[340px] w-full overflow-hidden bg-gradient-to-br from-white to-shield-green-soft/60 lg:h-[460px]">
-        <Hero3D />
-        <div className="pointer-events-none absolute bottom-3 left-4 right-4 flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-mute">
-          <span className="inline-flex items-center gap-1.5">
-            <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-ember-red" />
-            contamination chain
-          </span>
-          <span>48 nodes · 47 edges · 1 chain</span>
+      <div className="grid grid-cols-1 items-center gap-10 lg:grid-cols-12 lg:gap-8">
+        {/* Copy — 7 cols */}
+        <div className="lg:col-span-7">
+          <div
+            className="reveal-block flex items-baseline gap-4"
+            style={{ '--delay': '60ms' } as React.CSSProperties}
+          >
+            <span className="section-numeral">i.</span>
+            <span className="micro-caps">what it is</span>
+            <span aria-hidden className="h-px flex-1 bg-divider-strong/70 hidden md:block" />
+          </div>
+
+          <h1 className="font-editorial mt-5 text-[48px] leading-[1.02] tracking-editorial text-slate-ink lg:text-[88px]">
+            {HERO_LINE_1.map((w, i) => (
+              <span
+                key={`l1-${i}`}
+                className="reveal-word"
+                style={{ '--i': i } as React.CSSProperties}
+              >
+                {w}{' '}
+              </span>
+            ))}
+            <br />
+            {HERO_LINE_2.map((w, i) => (
+              <span
+                key={`l2-${i}`}
+                className="reveal-word"
+                style={{ '--i': i + HERO_LINE_1.length } as React.CSSProperties}
+              >
+                {w}{' '}
+              </span>
+            ))}
+          </h1>
+
+          <p
+            className="reveal-block mt-7 max-w-xl text-[17px] leading-relaxed text-mute"
+            style={{ '--delay': '520ms' } as React.CSSProperties}
+          >
+            PackGuard is a local-first CLI and dashboard that governs package
+            versions across every repo you own. Offset policy, supply-chain
+            intel
+            <span className="font-editorial-roman"> — </span>
+            <span className="font-editorial">CVE · malware · typosquat</span>
+            <span className="font-editorial-roman"> — </span>
+            and a live dependency graph. One Rust binary, no cloud.
+          </p>
+
+          <div
+            className="reveal-block mt-8 flex flex-wrap items-center gap-3"
+            style={{ '--delay': '640ms' } as React.CSSProperties}
+          >
+            <Link
+              href="/getting-started/install"
+              className="inline-flex items-center gap-2 rounded-lg bg-slate-ink px-5 py-3 text-sm font-medium text-warm-white transition-colors hover:bg-slate-ink/90"
+            >
+              Install PackGuard
+              <span aria-hidden>→</span>
+            </Link>
+            <a
+              href="https://github.com/Tmauc/packguard"
+              className="inline-flex items-center gap-2 rounded-lg border border-divider-strong px-5 py-3 text-sm font-medium text-slate-ink transition-colors hover:border-slate-ink/40"
+            >
+              View on GitHub
+            </a>
+          </div>
+
+          <p
+            className="reveal-block mt-5 text-xs text-mute"
+            style={{ '--delay': '760ms' } as React.CSSProperties}
+          >
+            Works with npm (npm · pnpm · yarn) and PyPI (poetry · uv · pip).
+            Cargo + Go modules next.
+          </p>
+        </div>
+
+        {/* 3D — 5 cols, overflowing right */}
+        <div
+          className="reveal-block relative lg:col-span-5 lg:-mr-6 xl:-mr-16"
+          style={{ '--delay': '350ms' } as React.CSSProperties}
+        >
+          <div className="canvas-frame relative h-[340px] w-full overflow-hidden bg-gradient-to-br from-white to-shield-green-soft/50 lg:h-[500px]">
+            <Hero3D />
+            <div className="pointer-events-none absolute bottom-3 left-4 right-4 flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-mute">
+              <span className="inline-flex items-center gap-1.5">
+                <span
+                  aria-hidden
+                  className="inline-block h-1.5 w-1.5 rounded-full bg-ember-red"
+                />
+                contamination chain
+              </span>
+              <span>48 nodes · 47 edges · 1 chain</span>
+            </div>
+          </div>
+          <div className="absolute -bottom-6 right-0 hidden items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-mute lg:flex">
+            <span aria-hidden className="h-px w-10 bg-divider-strong" />
+            fig. i · dependency graph, 48 nodes
+          </div>
         </div>
       </div>
     </section>

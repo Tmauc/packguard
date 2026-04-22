@@ -190,10 +190,14 @@ body::before {
  * ---------------------------------------------------------------- */
 .reveal-word {
   display: inline-block;
+  margin-right: 0.22em;
   opacity: 0;
   transform: translateY(14px);
   animation: reveal-up 0.55s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
   animation-delay: calc(var(--i, 0) * 55ms + 100ms);
+}
+.reveal-word:last-child {
+  margin-right: 0;
 }
 .reveal-block {
   opacity: 0;
