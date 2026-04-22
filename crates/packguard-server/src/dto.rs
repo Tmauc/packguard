@@ -157,6 +157,41 @@ pub struct PackageDetail {
     pub malware: Vec<MalwareEntry>,
     /// Resolved policy + why the installed version is (not) compliant.
     pub policy_trace: PolicyTrace,
+    /// Phase 10c — the cascade chain that produced the effective policy,
+    /// in merge order (lowest priority first). Empty when the endpoint
+    /// is called without a `project` query param (scope-less access
+    /// falls back to built-in defaults).
+    #[serde(default)]
+    pub policy_sources: Vec<PolicySourceDto>,
+    /// Phase 10c — per-key provenance map. Keys are dot-notation like
+    /// `defaults.offset.major`; values point at the source in
+    /// `policy_sources` that last set them. Empty alongside
+    /// `policy_sources` when no `project` scope is passed.
+    #[serde(default)]
+    pub policy_provenance: Vec<PolicyProvenanceEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "PolicySourceDto.ts")]
+pub struct PolicySourceDto {
+    /// "built_in" | "user_wide" | "file" | "extends".
+    pub kind: String,
+    /// User-facing label: "built-in default", "~/.packguard.yml", or
+    /// the absolute file path.
+    pub label: String,
+    /// Absolute path when the source is a file; `None` for built-in.
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "PolicyProvenanceEntry.ts")]
+pub struct PolicyProvenanceEntry {
+    /// Dot-notation key (`defaults.offset.major`, …).
+    pub key: String,
+    /// Index into `policy_sources`.
+    pub source_index: u32,
+    /// Best-effort 1-based YAML line; `None` when not resolvable.
+    pub line: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

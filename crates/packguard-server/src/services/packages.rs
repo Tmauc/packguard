@@ -6,7 +6,8 @@
 
 use crate::dto::{
     ComplianceTag, MalwareEntry, PackageDetail, PackageRisk, PackageRow, PackagesPage,
-    PackagesQuery, PolicyTrace, VersionRow, VulnerabilityEntry,
+    PackagesQuery, PolicyProvenanceEntry, PolicySourceDto, PolicyTrace, VersionRow,
+    VulnerabilityEntry,
 };
 use anyhow::Result;
 use packguard_core::{MalwareKind, Severity};
@@ -64,8 +65,52 @@ pub fn list(
     })
 }
 
-pub fn detail(store: &Store, ecosystem: &str, name: &str) -> Result<Option<PackageDetail>> {
-    let policy = crate::services::policies::current_policy_or_default()?;
+pub fn detail(
+    store: &Store,
+    ecosystem: &str,
+    name: &str,
+    project: Option<&std::path::Path>,
+) -> Result<Option<PackageDetail>> {
+    // Phase 10c — when a `project` scope is passed, walk the full cascade
+    // so the detail page reflects the same rules `packguard report` would
+    // apply for that path. Without a scope we fall back to the built-in
+    // defaults (the behaviour before 10c) so scope-less requests stay cheap.
+    let (policy, policy_sources, policy_provenance) = match project {
+        Some(p) => {
+            let resolved = packguard_policy::resolve_policy_cascade(p)?;
+            let sources: Vec<PolicySourceDto> = resolved
+                .sources
+                .iter()
+                .map(|s| PolicySourceDto {
+                    kind: match s.kind {
+                        packguard_policy::SourceKind::BuiltIn => "built_in",
+                        packguard_policy::SourceKind::UserWide => "user_wide",
+                        packguard_policy::SourceKind::File => "file",
+                        packguard_policy::SourceKind::Extends => "extends",
+                    }
+                    .to_string(),
+                    label: s.label.clone(),
+                    path: s.path.as_ref().map(|p| p.display().to_string()),
+                })
+                .collect();
+            let provenance: Vec<PolicyProvenanceEntry> = resolved
+                .provenance
+                .keys
+                .iter()
+                .map(|(k, v)| PolicyProvenanceEntry {
+                    key: k.clone(),
+                    source_index: v.source_index as u32,
+                    line: v.line,
+                })
+                .collect();
+            (resolved.policy, sources, provenance)
+        }
+        None => (
+            crate::services::policies::current_policy_or_default()?,
+            Vec::new(),
+            Vec::new(),
+        ),
+    };
     let now = chrono::Utc::now();
 
     let Some(full) = evaluate_row(store, &policy, &now, ecosystem, name)? else {
@@ -226,6 +271,8 @@ pub fn detail(store: &Store, ecosystem: &str, name: &str) -> Result<Option<Packa
         vulnerabilities,
         malware,
         policy_trace,
+        policy_sources,
+        policy_provenance,
     }))
 }
 

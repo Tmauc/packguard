@@ -95,9 +95,11 @@ async fn packages_list(
 async fn package_detail(
     State(s): State<AppState>,
     Path((ecosystem, name)): Path<(String, String)>,
+    Query(q): Query<ProjectQuery>,
 ) -> Result<Json<PackageDetail>, ApiError> {
     let store = s.store.lock().await;
-    services::packages::detail(&store, &ecosystem, &name)?
+    let project = resolve_project_filter(&store, q.project.as_deref())?;
+    services::packages::detail(&store, &ecosystem, &name, project.as_deref())?
         .map(Json)
         .ok_or_else(|| ApiError::NotFound(format!("{ecosystem}/{name} not in scan cache")))
 }

@@ -54,6 +54,8 @@ fn export_all(target: &Path) {
         dto::VulnerabilityEntry,
         dto::MalwareEntry,
         dto::PolicyTrace,
+        dto::PolicySourceDto,
+        dto::PolicyProvenanceEntry,
         dto::PolicyDocument,
         dto::PolicyWrite,
         dto::PolicyDryRun,

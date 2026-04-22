@@ -2,6 +2,8 @@
 import type { ComplianceTag } from "./ComplianceTag";
 import type { MalwareEntry } from "./MalwareEntry";
 import type { PackageRisk } from "./PackageRisk";
+import type { PolicyProvenanceEntry } from "./PolicyProvenanceEntry";
+import type { PolicySourceDto } from "./PolicySourceDto";
 import type { PolicyTrace } from "./PolicyTrace";
 import type { VersionRow } from "./VersionRow";
 import type { VulnerabilityEntry } from "./VulnerabilityEntry";
@@ -20,4 +22,18 @@ malware: Array<MalwareEntry>,
 /**
  * Resolved policy + why the installed version is (not) compliant.
  */
-policy_trace: PolicyTrace, };
+policy_trace: PolicyTrace, 
+/**
+ * Phase 10c — the cascade chain that produced the effective policy,
+ * in merge order (lowest priority first). Empty when the endpoint
+ * is called without a `project` query param (scope-less access
+ * falls back to built-in defaults).
+ */
+policy_sources: Array<PolicySourceDto>, 
+/**
+ * Phase 10c — per-key provenance map. Keys are dot-notation like
+ * `defaults.offset.major`; values point at the source in
+ * `policy_sources` that last set them. Empty alongside
+ * `policy_sources` when no `project` scope is passed.
+ */
+policy_provenance: Array<PolicyProvenanceEntry>, };

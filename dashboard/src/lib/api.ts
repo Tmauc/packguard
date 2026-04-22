@@ -78,10 +78,12 @@ export const api = {
     return fetch(`/api/packages${qs ? `?${qs}` : ""}`).then(handle<PackagesPage>);
   },
 
-  packageDetail: (eco: string, name: string) =>
-    fetch(`/api/packages/${encodeURIComponent(eco)}/${encodeURIComponent(name)}`).then(
-      handle<PackageDetail>,
-    ),
+  packageDetail: (eco: string, name: string, project?: ProjectScope) => {
+    const qs = withProject(new URLSearchParams(), project).toString();
+    return fetch(
+      `/api/packages/${encodeURIComponent(eco)}/${encodeURIComponent(name)}${qs ? `?${qs}` : ""}`,
+    ).then(handle<PackageDetail>);
+  },
 
   policies: (project?: ProjectScope) => {
     const qs = withProject(new URLSearchParams(), project).toString();
