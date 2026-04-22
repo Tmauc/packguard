@@ -239,7 +239,99 @@ jobs:
             dist/**/*.sig
             dist/SHA256SUMS
           generate_release_notes: true
-          draft: true
+          draft: false
+          make_latest: "true"
+
+  # ------------------------------------------------------------------
+  # Regenerate the Homebrew formula in the tap repo with new SHA256s.
+  # Skipped entirely if HOMEBREW_TAP_TOKEN is not set.
+  # ------------------------------------------------------------------
+  update-homebrew-formula:
+    name: update · homebrew formula
+    needs: [publish-release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: skip if no tap token
+        id: gate
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN not set — skipping formula update"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != 'true'
+        with:
+          path: packguard
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != 'true'
+        with:
+          repository: Tmauc/homebrew-packguard
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - uses: actions/download-artifact@v4
+        if: steps.gate.outputs.skip != 'true'
+        with:
+          path: dist/
+
+      - name: regenerate Formula/packguard.rb
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          # Re-aggregate the per-artifact SHA256s (same pattern as publish-release)
+          cd dist
+          find . -name '*.sha256' -exec cat {} + | sort > SHA256SUMS
+          cat SHA256SUMS
+
+          # shasum / sha256sum output: "<hash><2 spaces or ' *'><filename>"
+          # grep by trailing filename, pick first field = hash.
+          darwin_arm=$(grep -E 'aarch64-apple-darwin\.tar\.gz$'        SHA256SUMS | awk '{print $1}')
+          darwin_x64=$(grep -E 'x86_64-apple-darwin\.tar\.gz$'         SHA256SUMS | awk '{print $1}')
+          linux_arm=$( grep -E 'aarch64-unknown-linux-gnu\.tar\.gz$'   SHA256SUMS | awk '{print $1}')
+          linux_x64=$( grep -E 'x86_64-unknown-linux-gnu\.tar\.gz$'    SHA256SUMS | awk '{print $1}')
+
+          for v in "$darwin_arm" "$darwin_x64" "$linux_arm" "$linux_x64"; do
+            if [ -z "$v" ]; then
+              echo "::error::one of the platform SHA256 hashes came back empty"
+              exit 1
+            fi
+          done
+
+          cd ..
+          mkdir -p tap/Formula
+          sed \
+            -e "s/RELEASE_VERSION_PLACEHOLDER/${VERSION}/g" \
+            -e "s/RELEASE_SHA256_DARWIN_ARM64_PLACEHOLDER/${darwin_arm}/g" \
+            -e "s/RELEASE_SHA256_DARWIN_X64_PLACEHOLDER/${darwin_x64}/g" \
+            -e "s/RELEASE_SHA256_LINUX_ARM64_PLACEHOLDER/${linux_arm}/g" \
+            -e "s/RELEASE_SHA256_LINUX_X64_PLACEHOLDER/${linux_x64}/g" \
+            packguard/packaging/homebrew/packguard.rb \
+            > tap/Formula/packguard.rb
+
+      - name: commit + push tap
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          cd tap
+          VERSION="${GITHUB_REF_NAME#v}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/packguard.rb
+          if git diff --cached --quiet; then
+            echo "formula already up-to-date for v${VERSION}"
+            exit 0
+          fi
+          git commit -m "feat: packguard v${VERSION} formula (auto-generated)"
+          git push
 
   # ------------------------------------------------------------------
   # Multi-arch Docker image. Job no-ops cleanly if Docker Hub creds are
