@@ -57,17 +57,17 @@ jobs:
         run: |
           set -euo pipefail
           CRATE="packguard-core"
-          VER="${{ steps.ver.outputs.workspace-version }}"
-          if [ "${{ inputs.dry_run }}" != "true" ]; then
-            code=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}")
-            if [ "$code" = "200" ]; then
-              echo "::notice::${CRATE}@${VER} already on crates.io — skipping"
-              exit 0
-            fi
-          fi
           ARGS="-p ${CRATE}"
           [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
-          cargo publish $ARGS
+          if ! out=$(cargo publish $ARGS 2>&1); then
+            if echo "$out" | grep -q "already exists on crates.io index"; then
+              echo "::notice::${CRATE} already on crates.io — skipping"
+              exit 0
+            fi
+            printf '%s\n' "$out" >&2
+            exit 1
+          fi
+          printf '%s\n' "$out"
 
       - name: wait for index refresh (packguard-core)
         if: ${{ inputs.dry_run == 'false' }}
@@ -77,17 +77,17 @@ jobs:
         run: |
           set -euo pipefail
           CRATE="packguard-intel"
-          VER="${{ steps.ver.outputs.workspace-version }}"
-          if [ "${{ inputs.dry_run }}" != "true" ]; then
-            code=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}")
-            if [ "$code" = "200" ]; then
-              echo "::notice::${CRATE}@${VER} already on crates.io — skipping"
-              exit 0
-            fi
-          fi
           ARGS="-p ${CRATE}"
           [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
-          cargo publish $ARGS
+          if ! out=$(cargo publish $ARGS 2>&1); then
+            if echo "$out" | grep -q "already exists on crates.io index"; then
+              echo "::notice::${CRATE} already on crates.io — skipping"
+              exit 0
+            fi
+            printf '%s\n' "$out" >&2
+            exit 1
+          fi
+          printf '%s\n' "$out"
 
       - name: wait for index refresh (packguard-intel)
         if: ${{ inputs.dry_run == 'false' }}
@@ -97,17 +97,17 @@ jobs:
         run: |
           set -euo pipefail
           CRATE="packguard-store"
-          VER="${{ steps.ver.outputs.workspace-version }}"
-          if [ "${{ inputs.dry_run }}" != "true" ]; then
-            code=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}")
-            if [ "$code" = "200" ]; then
-              echo "::notice::${CRATE}@${VER} already on crates.io — skipping"
-              exit 0
-            fi
-          fi
           ARGS="-p ${CRATE}"
           [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
-          cargo publish $ARGS
+          if ! out=$(cargo publish $ARGS 2>&1); then
+            if echo "$out" | grep -q "already exists on crates.io index"; then
+              echo "::notice::${CRATE} already on crates.io — skipping"
+              exit 0
+            fi
+            printf '%s\n' "$out" >&2
+            exit 1
+          fi
+          printf '%s\n' "$out"
 
       - name: wait for index refresh (packguard-store)
         if: ${{ inputs.dry_run == 'false' }}
@@ -117,17 +117,17 @@ jobs:
         run: |
           set -euo pipefail
           CRATE="packguard-policy"
-          VER="${{ steps.ver.outputs.workspace-version }}"
-          if [ "${{ inputs.dry_run }}" != "true" ]; then
-            code=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}")
-            if [ "$code" = "200" ]; then
-              echo "::notice::${CRATE}@${VER} already on crates.io — skipping"
-              exit 0
-            fi
-          fi
           ARGS="-p ${CRATE}"
           [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
-          cargo publish $ARGS
+          if ! out=$(cargo publish $ARGS 2>&1); then
+            if echo "$out" | grep -q "already exists on crates.io index"; then
+              echo "::notice::${CRATE} already on crates.io — skipping"
+              exit 0
+            fi
+            printf '%s\n' "$out" >&2
+            exit 1
+          fi
+          printf '%s\n' "$out"
 
       - name: wait for index refresh (packguard-policy)
         if: ${{ inputs.dry_run == 'false' }}
@@ -137,17 +137,17 @@ jobs:
         run: |
           set -euo pipefail
           CRATE="packguard-server"
-          VER="${{ steps.ver.outputs.workspace-version }}"
-          if [ "${{ inputs.dry_run }}" != "true" ]; then
-            code=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}")
-            if [ "$code" = "200" ]; then
-              echo "::notice::${CRATE}@${VER} already on crates.io — skipping"
-              exit 0
-            fi
-          fi
           ARGS="-p ${CRATE}"
           [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
-          cargo publish $ARGS
+          if ! out=$(cargo publish $ARGS 2>&1); then
+            if echo "$out" | grep -q "already exists on crates.io index"; then
+              echo "::notice::${CRATE} already on crates.io — skipping"
+              exit 0
+            fi
+            printf '%s\n' "$out" >&2
+            exit 1
+          fi
+          printf '%s\n' "$out"
 
       - name: wait for index refresh (packguard-server)
         if: ${{ inputs.dry_run == 'false' }}
@@ -157,17 +157,17 @@ jobs:
         run: |
           set -euo pipefail
           CRATE="packguard-cli"
-          VER="${{ steps.ver.outputs.workspace-version }}"
-          if [ "${{ inputs.dry_run }}" != "true" ]; then
-            code=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}")
-            if [ "$code" = "200" ]; then
-              echo "::notice::${CRATE}@${VER} already on crates.io — skipping"
-              exit 0
-            fi
-          fi
           ARGS="-p ${CRATE}"
           [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
-          cargo publish $ARGS
+          if ! out=$(cargo publish $ARGS 2>&1); then
+            if echo "$out" | grep -q "already exists on crates.io index"; then
+              echo "::notice::${CRATE} already on crates.io — skipping"
+              exit 0
+            fi
+            printf '%s\n' "$out" >&2
+            exit 1
+          fi
+          printf '%s\n' "$out"
 
       - name: summary
         run: |
