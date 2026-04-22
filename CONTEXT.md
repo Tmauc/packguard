@@ -1842,6 +1842,259 @@ Routes qui ne changent pas (entité package est globale):
 
 ---
 
+## 14.18. v0.3.0 — Plan (resserré, option B validée 2026-04-22)
+
+**Thème produit** : *"Fix the foundations"*. v0.2.0 a livré les canaux de distribution et les 3 breaking changes de surface (scan recursive, offset object, rename crate). v0.3.0 **corrige la sémantique sous-jacente** (offset lexicographique + cascade héritage + surface des décisions) + **rend /graph usable** (quick wins). Pas de nouvelles features majeures — le reste du backlog (Page Actions, Tier 2, i18n) va dans les minor bumps suivants.
+
+**Scope total** : Phase 10 (a+b+c) + Phase 11 partiel. Estimation **~18 commits**, **1 breaking change** (offset sémantique), 1 release workflow groupé en fin de cycle.
+
+### Phase 10 — Core policy semantics
+
+**10a. Offset lexicographique fallback ✅ done (2026-04-22)**
+
+Livré : 3 commits, 319 tests Rust (+15 nets), clippy/fmt clean, ts-rs drift vert. Workspace reste à 0.2.0 (bump groupé fin cycle).
+
+Commits :
+- `6269e09` refactor(policy)!: replace 3-axis cascade with lexicographic bound resolver
+- `341d8de` feat(dashboard,server): update Policy eval trace for lex-bound semantic
+- `bdf3e81` docs(offset-policy): rewrite for v0.3.0 lexicographic fallback
+
+Finding #14 résolu. Le resolver produit maintenant des recommandations utiles au lieu de `InsufficientCandidates` sur les histoires clairsemées. Cross-boundary fallback fonctionne.
+
+---
+
+**10a (spec originale, pour historique)** 🔴 (finding #14, core)
+
+Rewrite du resolver : `offset` devient une **borne supérieure lexicographique** sur les tuples semver, pas un target exact.
+
+Semantic précise :
+```
+offset: { major: a, minor: b, patch: c }    # tous ≤ 0
+latest = (X, Y, Z)
+
+bound_major = if a < 0: (X - |a|, ∞, ∞)  else: (∞, ∞, ∞)
+bound_minor = if b < 0:
+              let T = Y - |b|
+              if T < 0: (X - 1, ∞, ∞)                # cross-boundary
+              else: (X, T, ∞)
+              else: (∞, ∞, ∞)
+bound_patch = if c < 0:
+              let T = Z - |c|
+              if T < 0: spill-over to (X, Y-1, ∞) or (X-1, ∞, ∞)
+              else: (X, Y, T)
+              else: (∞, ∞, ∞)
+
+effective_bound = min_lex(bound_major, bound_minor, bound_patch)   # tightest
+
+candidates   = versions V where V ≤ effective_bound (after stability + min_age + block filters)
+recommended  = max(candidates) or InsufficientCandidates if candidates empty
+```
+
+Truth table v0.3.0 (remplace celle de Phase 9b), fixtures `react` 12 versions sur majors 16/17/18/19 :
+
+| Policy | v0.3.0 recommended | v0.2.0 (pour comparer) |
+|---|---|---|
+| `{major:0}` | 19.2.5 | 19.2.5 |
+| `{major:-1}` | 18.max.max | 18.max.max |
+| `{major:-1}` (latest 5.2, pas de 4.x) | **3.max.max** (cross) | Insufficient ❌ |
+| `{minor:-1}` (latest 5.0) | **4.max.max** (cross) | Insufficient ❌ |
+| `{minor:-1}` (latest 19.2.5) | 19.1.max | 19.1.0 (strict) |
+| `{patch:-1}` | 19.2.4 ou 19.2.3 si 19.2.4 absent | Insufficient si 19.2.4 absent ❌ |
+| `{major:-1, minor:-1}` | 18.max.max (major domine via min_lex) | 18.(max-1).max (strict) |
+| `{minor:-99}` | Insufficient si histo < 99 minors | Insufficient |
+
+**Impact** : v0.3.0 est **beaucoup plus permissif** que v0.2.0. Quasi zéro `InsufficientCandidates` sur les packages avec des histo clairsemées. Le user voit enfin des recommandations utiles.
+
+**Breaking change** : acceptable (quasi-zéro utilisateurs déclarés). YAML unchanged côté config — juste le comportement du resolver.
+
+Livrables :
+- `packguard-policy::resolver` rewritten avec la nouvelle sémantique
+- Truth table Phase 9b remplacée par v0.3.0 dans snapshot tests
+- Nouveau test de régression : le resolver v0.3.0 doit renvoyer ≥ autant de versions autorisées que v0.2.0 pour tout input valide (never more restrictive)
+- Dashboard Policy eval cascade trace mis à jour pour expliquer la nouvelle sémantique ("effective bound = (X, Y, ∞) — max version ≤ bound = Z")
+- Docs `concepts/offset-policy.mdx` réécrit avec nouvelle table + exemples cross-boundary
+
+Budget : ~4 commits, 15-20 snapshots tests mis à jour + 5-8 nouveaux.
+
+---
+
+**10b. Policy cascade héritage monorepo ✅ done (2026-04-22)**
+
+Livré : 3 commits, 331 tests Rust (+12 nets), clippy/fmt clean, ts-rs drift vert (aucun DTO touché), Vitest 51 inchangé.
+
+Commits :
+- `accd16e` feat(policy): add monorepo cascade resolver with deep-merge + provenance
+- `b787ada` feat(cli,server): wire policy loaders to cascade resolver + add --show-policy
+- `83d185b` docs(policy): document monorepo cascade + --show-policy + root marker
+
+**Impl highlights (à retenir) :**
+1. **Deep-merge au niveau `serde_json::Value`**, pas `Policy` — nécessaire pour distinguer "clé absente" de "clé explicitement à la valeur default" (ex: `block.malware: false` enfant doit clobber `true` parent). Le Value mergé est re-parsé en Policy à la fin.
+2. **Deep merge** : objets → recursive, arrays + scalars → replace (pattern ESLint/Prettier respecté). `block.cve_severity: [critical]` enfant remplace `[high, critical]` parent.
+3. **Walk-stop** : `root: true` explicite, OU `.git/` implicite (le `.packguard.yml` à ce niveau est inclus), OU home dir safety bound.
+4. **Cycle detection** sur `extends:` via `BTreeSet<PathBuf>` de paths canoniques visités.
+5. **Line numbers** : regex scan du raw YAML, gère indentation 2-espaces canonique, dégrade à `None` si indentations exotiques.
+6. **Nouveaux champs YAML** `extends: Option<PathBuf>` + `root: bool`, tous deux `#[serde(default)]` et `skip_serializing_if` — **zéro breaking** sur YAML existants.
+7. **`~/.packguard.yml`** mergé avant le walk, skip si déjà dans la chain (évite double-merge).
+8. **`load_policy(path)`** conservé dans `packguard-policy` pour tests/features non-cascade, nouveau `resolve_policy_cascade` dispo.
+9. **Path canonicalization** dans `extends:` — résilient aux symlinks/relatifs.
+
+**Notes saillantes / tech-debt remonté :**
+- **Built-in defaults leak via deep-merge** : les defaults conservatrices (offset.minor: -1, cve_severity: [high, critical]) persistent si aucun layer ne les override. C'est le comportement attendu (tests le vérifient). À garder en tête pour la migration user : `root: true` + `defaults: { offset: { major: -1 } }` donne effectivement `{ -1, -1, 0 }` par merge. Documenté dans le MDX.
+- **Dashboard Policy sources/provenance reporté à 10c** : agent a délibérément skippé ce bout. Raison : le PackageDetail endpoint n'a pas le project: Option<&Path> plumbing pour exposer la cascade au dashboard. Puisque Phase 10c touchera le PackageDetail de toute façon (finding #12 UX surfacing), folder dans le même PR.
+
+**Démo Nalo** : temp `.packguard.yml` root + locale à `front/vesta/`. `packguard report --show-policy front/vesta` → provenance correcte : `cve_severity` du root, `typosquat` + `min_age_days` du locale, reste hérité via built-in. Fichiers nettoyés après démo.
+
+---
+
+**10b (spec originale, pour historique)** 🔴 (finding #13)
+
+`packguard scan <path>` charge maintenant la policy via une **cascade hiérarchique** :
+
+```
+Niveau 0 : Built-in defaults du binaire
+Niveau 1 : ~/.packguard.yml                                        (user-wide, optionnel)
+Niveau 2 : <repo root>/.packguard.yml                              (monorepo root)
+            → root détecté via : remontée jusqu'au premier .git/
+              OU jusqu'à un .packguard.yml avec `root: true`
+              OU jusqu'au home dir (bornage safety)
+Niveau 3 : <intermediate dirs>/.packguard.yml                      (groupes, ex: front/)
+Niveau 4 : <path>/.packguard.yml                                   (project-level)
+```
+
+Deep merge clé par clé, arrays = replace (standard merge, pattern ESLint/Prettier/tsconfig).
+
+Champ spécial `extends: "../../.packguard.yml"` permet d'inclure explicitement un autre fichier en plus de la cascade (utile cross-repo ou pour des presets communs).
+
+Champ `root: true` au niveau racine d'un monorepo stoppe la remontée (évite d'aller trop haut).
+
+Livrables :
+- Module `packguard-policy::cascade` qui résout la policy effective en parcourant l'arborescence
+- Tests : monorepo avec 3 niveaux de `.packguard.yml`, vérification de la merge correcte
+- Test : `root: true` stoppe bien la remontée
+- Test : `extends:` inclut correctement
+- CLI `packguard report --show-policy` (ou `--resolve-policy`) affiche la policy effective + provenance clé par clé :
+  ```
+  offset.major     = 0     (from /monorepo/.packguard.yml:L5)
+  offset.minor     = -1    (from /monorepo/front/.packguard.yml:L8)
+  offset.patch     = 0     (from built-in default)
+  block.malware    = true  (from built-in default)
+  ...
+  ```
+- Dashboard Policy eval tab gagne la provenance dans la trace
+
+Budget : ~5 commits, 20+ tests, 1 nouveau module.
+
+---
+
+**10c. UX surfacing des décisions resolver ✅ done (2026-04-22)**
+
+Livré : 4 commits, 332 Rust tests (+1 net : `audit_warns_when_store_has_no_advisories_cached`), 54 Vitest (+3 nets : Policy sources panel, insufficient row deep-link, column header tooltips), clippy/fmt/typecheck/ts-rs drift verts.
+
+Commits :
+- `41fb8bf` feat(server,dashboard): wire project param + expose cascade on PackageDetail
+- `c5905e0` feat(dashboard): insufficient badge distinct + column tooltips + policy sources panel
+- `afaa03c` feat(cli): pedagogical footers + sync hint when store empty
+- `742dce5` docs(cli,policy): report --show-policy + audit guidance surfacé
+
+**Tous les 🔴 v0.3.0 findings couverts** : #5 (Graph perf → Phase 11), #6 (Graph Focus → Phase 11), #12 UX surfacing ✅, #13 cascade ✅, #14 offset lexicographique ✅. Finding #1 (tooltips Packages table) adressé partiel, finding #4 (CLI bridges report↔audit + sync hint) adressé intégral.
+
+**Reste v0.3.0** : Phase 11 (11.1 depth=2, 11.2 legend clickable, 11.3 CVE palette), puis bump 0.2.0 → 0.3.0 + push tag + run crates-publish workflow.
+
+---
+
+**10c (spec originale, pour historique)** 🔴🟡 (findings #12 + #4)
+
+Rendre les décisions du resolver **visibles** sans buried dans un onglet secondaire.
+
+Livrables :
+
+**Dashboard** :
+- Colonne `Policy` dans Packages table : `insufficient` a son propre badge (couleur distincte du `—` "pas de data"). Hover tooltip explicite : "no release satisfies offset bound (X.Y.Z, try loosening offset or pin explicitly)"
+- Row indicator cliquable → lien direct vers onglet Policy eval du package avec anchor `#cascade`
+- Filter pre-existant "show only insufficient" dans Packages table (utile review session)
+- Tooltips explicatives sur TOUS les column headers (Compliance, Risk, Severity, Flags, Used By) — réponse au finding #1
+
+**CLI** :
+- `packguard report` footer pédagogique : `→ Run 'packguard audit' to see CVE/malware details`
+- `packguard audit` quand `vulnerabilities` table vide : message clair `Store has 0 advisories — run 'packguard sync' first to fetch the CVE database` (au lieu de `no installed vuln` ambigu)
+- `packguard report --show-policy` (livré via 10b) pour afficher la policy résolue avec provenance
+
+Budget : ~3 commits, tests UI + CLI snapshots.
+
+---
+
+**Total Phase 10** : ~12 commits, 35+ tests, 1 breaking change (resolver sémantique).
+
+### Phase 11 partiel — Graph quick wins
+
+Pas le rework complet (WebGL, progressive render, server-side pagination = reporté v0.4.0). Juste les 3 fixes qui débloquent la page d'un freeze 15s à "usable".
+
+**11.1. Default depth = 2** (finding #5, quick win le plus gros)
+
+Au lieu de rendre tout le graphe transitive (1000+ nœuds sur Nalo), `/graph` démarre avec `depth=2` (direct deps + 1 transitive level). Slider Depth existant permet d'augmenter si besoin.
+
+Gain estimé : 1000+ nœuds → ~300, render <2s au lieu de 15s freeze.
+
+Budget : ~1 commit, petit changement `dashboard/src/pages/Graph.tsx`, tests Vitest on param defaulting.
+
+**11.2. Légende dynamique + cliquable** (finding #7)
+
+- La légende en haut n'affiche QUE les catégories présentes dans le DOM courant (post-filter, post-depth). Pas de bruit.
+- Click sur un item → toggle filter (masque les nœuds de cette catégorie). Re-click → restaure.
+- Style : items inactifs désaturés + strikethrough.
+- Sync avec les filter checkboxes existants (source of truth = URL query param).
+
+Budget : ~2 commits, ~5 tests Vitest (legend render based on filtered DOM + click toggles URL state).
+
+**11.3. Focus CVE palette `Cmd+K`** (finding #6)
+
+Remplacer l'input text `Focus CVE (e.g. CVE-2026-4800)` par une **command palette** :
+- Déclencheur : `Cmd+K` (ou click sur le champ actuel)
+- Liste fuzzy-searchable de TOUTES les CVE dans le store scope workspace courant
+- Chaque entrée : `CVE-YYYY-NNNNN · <package> · <severity badge> · N chains`
+- Select → focus le graphe sur cette CVE
+- Accessibility : keyboard nav (↑↓ Enter Escape)
+- Data source : `/api/graph/vulnerabilities?project=<path>` nouveau endpoint (ou existing surfacé)
+
+Budget : ~3 commits, ~8 tests Vitest (palette open/close, fuzzy search, select), + backend endpoint si besoin.
+
+---
+
+**Total Phase 11 partiel** : ~6 commits, ~15 tests.
+
+### Reporté après v0.3.0
+
+v0.4.0 candidates :
+- Graph rework complet : progressive render, LOD, server-side pagination, WebGL
+- Page Actions / Next steps ⭐
+- Tooltips restants hors Packages table (Graph, Package detail, Policies)
+- Workspace selector tree view
+- Policies overflow horizontal
+- Dashboard favicon
+- i18n / Settings page
+
+Pas de priorité urgente, dépendra de ce qui émerge du next round de dogfood.
+
+### Ordre de livraison v0.3.0
+
+Strict : **10a → 10b → 10c → 11.1 → 11.2 → 11.3**.
+
+Chaque sous-phase = 1 agent dédié. Je briefe, tu relaies, rapport final, je valide + update CONTEXT, je briefe le suivant.
+
+Le bump `0.2.0 → 0.3.0` se fait à la **fin du cycle** (après 11.3), comme la convention Phase 9.
+
+### Critères de sortie v0.3.0
+
+- [ ] Tous les 🔴 findings adressés (5, 6, 12, 13, 14)
+- [ ] 5 findings 🟡 traités au passage (1 partiel tooltips Packages, 4 CLI, 7 legend)
+- [ ] Truth table v0.3.0 documentée (offset lexicographique)
+- [ ] `packguard report --show-policy` existe et affiche provenance
+- [ ] `/graph` rend en <3s sur Nalo monorepo avec defaults
+- [ ] Focus CVE via palette (pas input text)
+- [ ] Zéro régression sur les 305 Rust + 51 Vitest de v0.2.0 (sauf les ~15 tests truth-table qui changent légitimement)
+
+---
+
 ## 14.14. Feature requests v0.2.0 (remontées post-release)
 
 Thomas a utilisé l'outil sur son monorepo Nalo dès la post-release et a remonté deux **manques produit substantiels** :
@@ -1850,6 +2103,183 @@ Thomas a utilisé l'outil sur son monorepo Nalo dès la post-release et a remont
 - **#12 Offset multi-axes** : `offset` devient un objet `{ major, minor, patch }`. Forme scalar legacy rejetée au parse. **Livré Phase 9b.**
 - **#13 Rename `packguard-cli` → `packguard`** sur crates.io. **Livré Phase 9c.**
 - **Reporté v0.3.0+** : Tier 2 écosystèmes (Cargo, Go), pnpm negation globs, dark mode dashboard, WebGL graph virtualization, Refinery 0.9 → latest.
+
+### Post-v0.2.0 dogfood findings (Thomas, 2026-04-22)
+
+Notes brutes à prioriser plus tard quand Thomas a fait le tour complet du produit en usage réel Nalo. **Pas de plan détaillé pour l'instant**, juste la collection.
+
+**UX · Tooltips et légendes explicatives (dashboard)**
+- Colonnes de tableau manquent d'explications : hover sur `Compliance` → tooltip "compliant / warning / violation / insufficient, défini par…"
+- Hover sur `Insufficient` → expliquer le status spécifique (aucune version ne satisfait la cascade d'offset)
+- Badges `Risk` (1🟡 2🟢 etc.) → légende ou tooltip : `🟡 = warning, 🟢 = compliant, 🔴 = critical, 🟠 = high, 🟣 = malware, 🏴‍☠️ = typosquat, etc.`
+- Page Package detail : colonne `Severity` dans tableau versions → tooltip "CVE severity affectant cette version spécifique"
+- Colonne `Flags` → tooltip "deprecated / yanked markers from publisher"
+- Onglet Compatibility → "Used by 0" avec tooltip expliquant que c'est scoped au workspace actuel
+- **Goal** : un dev peut comprendre chaque pixel du dashboard sans lire la doc séparément
+
+**i18n · Internationalisation dashboard + docs**
+- Page "Settings" dans le dashboard avec selector langue (FR / EN / …)
+- Traduction dashboard (tooltips, labels, empty states, error messages)
+- Traduction docs (Nextra 4 supporte i18n native via le router)
+- FR d'abord (cible initiale Thomas + Nalo), EN en parallèle (base actuelle, déjà écrit)
+- Persistance du choix langue : localStorage pour l'UI, query param `?lang=fr` pour partageable
+
+**CLI · UX guidance**
+- `packguard report` devrait probablement mentionner en footer "Run `packguard audit` to see CVE/malware details" — aujourd'hui il n'y a pas de pont entre les deux commandes
+- Quand `packguard sync` n'a jamais été exécuté et qu'on lance `audit`, message plus explicite : "Store has 0 advisories — run `packguard sync` first to fetch the CVE database" (actuellement affiche juste "no installed vuln" ambigu)
+
+**Graph · Performance (freezes 15s observés sur Nalo)** 🔴
+- Constat utilisateur : la page `/graph` freeze 15s sur le monorepo Nalo (≈1000+ nœuds en transitive)
+- Cytoscape rend tout en un seul batch → blocage main thread
+- **Solutions par effort croissant** :
+  1. **Quick win** : baisser la profondeur par défaut de `∞` à `2` (direct deps + 1 level transitive). L'utilisateur peut augmenter via le slider Depth. **Devrait faire passer Nalo de 1000+ nœuds à ~300**, probable <2s render.
+  2. **Progressive rendering** : chunks de 50 nœuds dessinés dans des `requestIdleCallback` successifs, UI reste réactive. Bonne UX visible ("des nœuds qui apparaissent").
+  3. **Level-of-detail** : zoom-out → masquer les labels, grouper les clusters ; zoom-in → détail. Cytoscape supporte via `style > zoom-dependent`.
+  4. **Server-side pagination** : `/api/graph?center=<pkg>&radius=2` au lieu de tout le graphe. Lazy-expand au clic sur un nœud "edge of view".
+  5. **WebGL renderer** (déjà dans v0.3+ report) : pour monorepos >2000 nœuds, le DOM-based rendering de Cytoscape ne scale plus. Migration vers `cytoscape-webgl` ou alternative (sigma.js, pixi-based).
+
+**Policy offset · sémantique stricte vs fallback lexicographique** 🔴 (design debate, v0.2.0 trop strict)
+- Constat utilisateur : "si j'ai `major: -1`, latest 5.2 et pas de 4.x, je veux 3.x, pas `InsufficientCandidates`. Si `minor: -1` et latest 5.0, je veux 4.max.max."
+- **v0.2.0 actuelle = sémantique stricte** : `offset: -1` sur major = exactement major 4. Si vide → `InsufficientCandidates`. Correct par spec mais contre-intuitif par intent.
+- **v0.3.0 proposé = sémantique fallback lexicographique** : `offset` définit une **borne supérieure** sur la version autorisée, pas un target exact.
+  ```
+  latest = X.Y.Z
+  candidates = versions V telles que V < shifted_boundary
+    where shifted_boundary =
+      (X - |offset.major|, ∞, ∞)                     if major offset
+      (X, Y - |offset.minor|, ∞)                     if minor offset only
+      (X, Y, Z - |offset.patch|)                     if patch offset only
+      (tighter of the three if multiple non-zero)
+  ```
+  Cas d'usage du constat :
+  - `latest = 5.2, {major: -1}` → candidates < (5, ∞, ∞) → 4.x if exists, else 3.x, 2.x, etc. Pick max.
+  - `latest = 5.0, {minor: -1}` → candidates < (5, 0, ∞) → 4.(max).(max) naturellement (cross-boundary).
+- **Pourquoi c'est meilleur** :
+  - Intuition user : "au moins N behind" (pas "exactement N behind")
+  - Histoires versions clairsemées (nombreux packages skippent des versions) → la stricte produit Insufficient partout, signal inutile
+  - Pattern lexicographique classique sur semver tuples → impl plus simple que la cascade axe-par-axe
+  - Le rapport Phase 9b le constatait déjà comme "carried tech-debt" : *"Strict cascade semantics mean {-1,-1,-1} frequently lands on InsufficientCandidates"* — red flag qu'on aurait dû acter
+- **Impact breaking** : changer le sémantique casse les fixtures Phase 9b. Acceptable puisque quasi-zéro utilisateurs. Nouvelle truth table à écrire. Migration : aucune config user à changer (même YAML, comportement plus permissif).
+- **Insufficient reste possible** : uniquement quand le package a littéralement zéro version ≤ la borne (package créé avec 5.0 comme première release et `major: -1` demandé — légitime Insufficient).
+
+**Policy · cascade d'héritage depuis la racine du monorepo** 🔴 (gap majeur pour adoption monorepo)
+- Constat utilisateur : "si j'ai un `.packguard.yml` dans `front/` et un dans `vesta/` et aucun dans `phoebus/`, lequel s'applique où ?"
+- **Réponse v0.2.0** : **aucune hiérarchie**. Chaque scan lit seulement le `.packguard.yml` à son path exact. `front/.packguard.yml` est invisible pour les scans de `vesta` ou `phoebus`. `phoebus` sans policy tombe sur le built-in du binaire — pas sur la policy de son parent.
+- **Conséquence** : en monorepo on doit **dupliquer** le fichier dans chaque sous-projet. Duplication = dérive garantie.
+- **Comportement souhaité v0.3.0 — cascade hiérarchique** :
+  ```
+  Policy effective pour scan de front/phoebus :
+    1. Built-in defaults                             (niveau 0)
+    2. MERGE ~/.packguard.yml (user-wide)            (niveau 1)
+    3. MERGE /path/.packguard.yml from root          (niveau 2 — remonte jusqu'à une racine git ou /)
+    4. MERGE front/.packguard.yml                    (niveau 3 — group)
+    5. MERGE front/phoebus/.packguard.yml (absent)   (niveau 4 — project)
+  ```
+  Deep merge clé par clé. Arrays (`block.cve_severity`) = replace, pas concat (standard merge).
+- **Précédents design** : ESLint hiérarchique, Prettier, tsconfig `extends`, Babel. Les devs connaissent le pattern.
+- **Implications techniques** :
+  - Parser scanne les parents jusqu'à trouver un marker racine (`.git/` dir, ou option explicite `packguard.root: true`)
+  - La resolved policy est explicitement traçable : `packguard report --show-policy` ou trace dans le Policy eval tab affiche "provenance de chaque clé" (override from `front/.packguard.yml:L23`)
+  - `.packguard.yml` peut avoir un champ `extends: "../../.packguard.yml"` pour forcer l'include manuel si l'auto-cascade n'est pas voulu (cohérent avec ESLint)
+  - Gestion du cas `.packguard.root: true` au niveau racine monorepo pour stopper la remontée (ne pas remonter dans les home dirs, etc.)
+- **Lien avec le `.packguard.yml` scan.exclude** backlog : le `.packguard.yml` racine est le bon endroit pour mettre l'exclude liste globale (`front/v1`, test fixtures, etc.), avec possibilité d'override en sous-projet.
+
+**Packages table · `recommended` vide sans explication** 🔴 (UX buried)
+- Constat utilisateur : certains packages (ex: `aiohttp`) affichent `recommended` vide dans le tableau — aucune indication du pourquoi
+- Cause réelle : probable `InsufficientCandidates` du resolver 3-axis v0.2.0 quand la policy ne trouve aucune version satisfaisant la cascade `{ major: N, minor: M, patch: P }` (ex: pas de release sur le minor cible après soustraction)
+- Info existe déjà dans l'onglet `Policy eval` du Package detail (cascade trace Phase 9b) — **mais buried** : on ne la voit que si on sait qu'elle existe
+- **Fixes cumulables** :
+  1. **Row indicator** : au lieu de cellule vide, afficher un badge `insufficient` ou icône `ℹ️` cliquable → lien vers `Policy eval` tab du package avec anchor `#cascade`
+  2. **Hover tooltip** : passer sur la cellule vide → tooltip mini-version de la cascade trace ("No release on 3.10.x — try `offset.minor: 0` or pin explicitly")
+  3. **Default status column** : les status `insufficient` devraient avoir une couleur/badge distinct du `—` pur (on confond "pas de data" et "policy ne peut pas se prononcer")
+  4. **Filter "show only insufficient"** : permettre de lister toutes les deps où le resolver s'est cassé la cascade — c'est probablement une review manuelle à faire
+- **Lien avec Page Actions** : chaque `insufficient` devient une action suggérée ("Loosen offset on @X or pin explicitly")
+
+**Workspace selector · vue arbre au lieu de liste plate** 🟡 (structurel à partir de ~5 workspaces)
+- Constat utilisateur : le dropdown flat list du `<WorkspaceSelector />` devient illisible avec 20+ workspaces scannés — "on ne comprend pas qui est où et à quelle arborescence"
+- **Comportement souhaité** : vue arbre qui reflète le filesystem, construite par common-prefix detection :
+  ```
+  📂 All workspaces
+  📂 Nalo/monorepo/
+    📁 front/
+      📄 vesta       (npm · 83 deps)
+      📄 phoebus     (npm · 109 deps)
+      📄 mellona     (npm · 43 deps)
+      📄 v1          (npm · unsupported lockfile)
+    📁 services/
+      📄 incentive   (pypi · 27 deps)
+      📄 accounting  (pypi · 27 deps)
+      📄 backend     (pypi · 209 deps · npm · 1 dep)
+      📄 …
+    📄 api           (pypi · 5 deps)
+  ```
+- **Interactions** :
+  - Click sur un leaf `vesta` → scope `?project=<path-vesta>`
+  - Click sur un folder `front/` → scope agrégé "tous les workspaces sous front/" (`?project=<path-front>/*` ou équivalent backend)
+  - Collapse/expand par dossier, état persisté localStorage
+  - Search bar en haut → fuzzy match sur tous les segments de path (`vesta`, `front/v*`, `services`)
+- **Edge cases** :
+  - Un seul workspace dans un dossier → pas besoin de le mettre dans un sous-arbre (flatten)
+  - Workspace dont le nom est identique au dossier parent (`services/services/`) → bien distinguer visuellement
+  - Workspaces de repos différents (pas même root) → premier niveau = groupes repo séparés
+- **Impl notes** :
+  - Backend inchangé : le selector consomme `/api/workspaces` et le transforme en tree côté client
+  - Libs possibles : `shadcn Collapsible`, `@radix-ui/react-accordion`, ou rendre à la main (~40 lignes)
+  - Keyboard nav : `↑` / `↓` pour naviguer, `→` / `←` pour expand/collapse, `Enter` pour sélectionner
+  - Bonus : raccourci `Cmd+K` ouvre une palette de recherche fuzzy sur les workspaces (alternative à la navigation souris)
+
+**Dashboard · pas de favicon** 🟡 (polish)
+- Constat utilisateur : l'onglet navigateur de `packguard ui` (http://127.0.0.1:5174) affiche le favicon globe générique → "pas ouf"
+- Fix trivial :
+  - `dashboard/public/favicon.svg` (format SVG moderne, 1 seul fichier, dark/light adaptatif)
+  - `<link rel="icon" href="/favicon.svg" type="image/svg+xml" />` dans `dashboard/index.html`
+  - `rust-embed` picke automatiquement depuis `dashboard/dist/` → binary release embarque le favicon sans config
+- **Cohérence DA** : réutiliser le logomark / mark du docs-site si existe (`docs-site/public/favicon.svg`), sinon créer un mark dérivé (P + shield ? dep graph abstrait ?). À aligner avec la DA éditoriale du site vitrine
+- **Bonus** : aussi un apple-touch-icon et OG image pour le jour où quelqu'un partage un lien screenshot du dashboard
+
+**Policies · overflow horizontal sur la page** 🟡 (bug CSS)
+- Constat utilisateur : la page `/policies` déclenche un scroll horizontal sur l'écran → UX dérangeante
+- **Causes probables** (à investiguer) :
+  - Éditeur CodeMirror sans `line-wrap` → lignes YAML longues forcent le conteneur à déborder
+  - Panneau dry-run preview side-by-side avec l'éditeur → largeur combinée > viewport à résolutions moyennes (< 1440px)
+  - Un `<pre>` / `<code>` avec `white-space: pre` et long content (exemples policy)
+  - Un container avec `min-width` en px au lieu de `%` / `clamp()`
+- **Fixes potentiels** :
+  - `overflow-x: hidden` sur le root container de `/policies`
+  - CodeMirror : activer `EditorView.lineWrapping` dans les extensions (setup des `@codemirror/view` basics)
+  - Responsive : stacker le dry-run panel **sous** l'éditeur aux largeurs `< 1200px` (grid-cols-1 lg:grid-cols-2 en Tailwind)
+  - `max-width: 100%` + `overflow-wrap: anywhere` sur les blocs code inline
+
+**Graph · Légende dynamique + cliquable pour filtrer** 🟡
+- Constat utilisateur : la légende en haut affiche `npm / pypi / CVE / malware / typosquat / root / runtime / dev / peer / optional` **en permanence**, même si certaines catégories ne sont pas visibles dans le rendu courant. C'est du bruit visuel qui ne renseigne pas.
+- **Comportement souhaité #1** : la légende affiche **uniquement** ce qui est réellement dans le DOM courant (post-filtrage, post-depth). Si après `?kind=runtime` et focus CVE tu n'as que des nœuds npm runtime avec un CVE → la légende montre `npm · runtime · CVE`, le reste est masqué.
+- **Comportement souhaité #2** : **chaque item de la légende est cliquable = filtre toggle**. Click sur "npm" → masque les nœuds PyPI (ou les désature). Click sur "CVE" → masque ceux sans CVE. Click à nouveau → restaure. Pattern classique observable / d3 / plotly — ça transforme la légende en filtre rapide, sans passer par les checkboxes du filter bar.
+- **Bonus UX** : visuellement, les items inactifs de la légende affichent leur marker désaturé/striked pour montrer ce qui est filtré OUT. Double-click sur un item → mode "isolate" (n'afficher que ça).
+- **Impl note** : ça s'articule avec la perf — si la légende permet de désélectionner `optional` en un click, un user qui voit 1000+ nœuds peut instantanément couper les `optional` pour descendre à ~300 sans ouvrir un panneau config.
+
+**Graph · Mode Focus CVE — UX inutilisable** 🔴
+- Constat utilisateur : "je ne connais pas les CVE par cœur". Input text "Focus CVE (e.g. CVE-2026-4800)" demande de taper l'ID exact → pratique nulle
+- **Solutions** (cumulables) :
+  1. **Modale/command palette** (`Cmd+K`) : search fuzzy sur CVE IDs + package names affectés + severity. Sélection → focus le graphe sur la chaîne contaminée
+  2. **Dropdown populé** : remplacer l'input par un `<select>` listant toutes les CVE actuelles dans le store (scope workspace courant). Chaque entrée : `CVE-2026-4800 · lodash · high · 3 chains`
+  3. **Sidebar "Vulnerable packages"** : panneau latéral listant les packages avec CVE, triés par severity. Click = focus la CVE la plus grave du package
+  4. **Focus par package** : bouton "Show vulnerable deps" qui ne demande pas de choisir une CVE — affiche tous les chains toxiques d'un coup, rouge
+  5. **Découverte automatique** : quand il y a 1-2 CVE dans le workspace scopé, faire default-focus la + grave sans action user
+
+**Product · Page "Actions / Next steps" dans le dashboard** ⭐ (insight UX fort)
+- Constat utilisateur : "les tableaux c'est beau mais je suis perdu, je ne sais pas par où commencer"
+- Besoin produit : une page qui transforme l'observation en action — **next best action**
+- Exemples de ce qu'elle pourrait lister, ordonné par impact × effort :
+  1. `Fix CVE-2026-4800 in lodash` — high, 5 projets affectés, 1 bump. Bouton [Apply]
+  2. `Bump eslint 9 → 10` — 1 major behind, policy violation. Bouton [Upgrade dry-run]
+  3. `Investigate typosquat suspect clsx` — false positive probable. Boutons [Whitelist] [Open package]
+  4. `Run packguard sync` — ta base CVE a 14 jours. Bouton [Sync now]
+  5. `Exclude front/v1 from scan` — lockfile v1 unsupported, bruit inutile
+- Lien avec Phase 7-`apply` : **distinct mais complémentaire**. `apply` patche les manifests vers la version recommandée. La page Actions est plus large : priorisation, guidance config, rappels sync, whitelist suggestions — le copilot qui dit "par ici pour le plus gros impact"
+- Positionnement produit : transforme PackGuard de "scanner qui décrit" en "outil qui guide". C'est probablement LA feature qui fait basculer l'adoption — aujourd'hui un user novice peut scanner son repo mais ne sait pas quoi en faire
+- Peut s'étendre plus tard avec raisonnement AI ("We suggest X because Y impacts Z projects") mais le MVP non-AI est déjà un énorme gain
+
+Ces findings s'accumulent en vrac jusqu'à ce que Thomas ait fini son tour d'usage. Ensuite on fait un vrai plan priorisé avec découpage en Phase 10 / 11 / etc.
 
 ---
 
