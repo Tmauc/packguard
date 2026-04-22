@@ -1,11 +1,19 @@
 [package]
-name = "packguard-cli"
+# Phase 9c — crate renamed from `packguard-cli` (pre-0.2.0) to
+# `packguard` so `cargo install packguard` works as expected. The
+# directory stays at `crates/packguard-cli/` to keep the rename to a
+# single file. See PUBLISHING.md for the one-time yank runbook on
+# `packguard-cli@0.1.0`.
+name = "packguard"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "PackGuard CLI binary."
+description = "PackGuard — local, multi-repo, multi-ecosystem package version governance with offset policy and embedded dashboard."
+readme = "../../README.md"
+keywords = ["dependencies", "security", "supply-chain", "npm", "pypi"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "packguard"
@@ -14,7 +22,7 @@ path = "src/main.rs"
 [features]
 default = []
 # Pass-through for the server's ui-embed feature so `cargo build --release -p
-# packguard-cli --features ui-embed` produces a self-contained binary.
+# packguard --features ui-embed` produces a self-contained binary.
 ui-embed = ["packguard-server/ui-embed"]
 
 [dependencies]
