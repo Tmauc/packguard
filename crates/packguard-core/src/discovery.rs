@@ -243,6 +243,7 @@ struct Marker {
 
 impl Marker {
     fn expand(&self, root: &Path, warnings: &mut Vec<String>) -> Vec<PathBuf> {
+        let excludes: BTreeSet<&str> = BUILTIN_EXCLUDES.iter().copied().collect();
         let mut out: Vec<PathBuf> = Vec::new();
         for raw in &self.globs {
             // pnpm supports a `!` negation prefix on workspace globs;
@@ -257,21 +258,61 @@ impl Marker {
                 ));
                 continue;
             }
-            let pattern = root.join(raw);
-            let pattern = pattern.to_string_lossy().to_string();
-            match glob::glob(&pattern) {
-                Ok(paths) => {
-                    for path in paths.flatten() {
-                        if path.is_dir() && has_manifest(&path) {
+
+            // Expand up to two patterns so we DTRT on common shapes:
+            //   - `apps/*`    → direct children of `apps/`
+            //   - `phoebus`   → exactly that dir
+            //   - `phoebus/**` → strictly in pnpm semantics means
+            //      "descendants of phoebus", but real repos write it
+            //      meaning "phoebus itself + any nested workspaces".
+            //      Add the un-starred form so the base dir still
+            //      participates.
+            let mut patterns: Vec<String> = Vec::with_capacity(2);
+            patterns.push(raw.clone());
+            if let Some(stem) = raw
+                .strip_suffix("/**")
+                .or_else(|| raw.strip_suffix("/**/*"))
+            {
+                if !stem.is_empty() && !patterns.iter().any(|p| p == stem) {
+                    patterns.push(stem.to_string());
+                }
+            }
+
+            for p in patterns {
+                let pattern = root.join(&p);
+                let pattern = pattern.to_string_lossy().to_string();
+                match glob::glob(&pattern) {
+                    Ok(paths) => {
+                        for path in paths.flatten() {
+                            if !path.is_dir() || !has_manifest(&path) {
+                                continue;
+                            }
+                            // Real-world pnpm-workspace globs like
+                            // `app/**` happily expand into
+                            // `node_modules/.pnpm/…` (tens of thousands
+                            // of hits in a warm repo). Prune paths that
+                            // traverse any built-in excluded directory.
+                            let relative = path.strip_prefix(root).unwrap_or(&path);
+                            let hits_excluded = relative.components().any(|c| match c {
+                                std::path::Component::Normal(os) => {
+                                    os.to_str().is_some_and(|s| excludes.contains(s))
+                                }
+                                _ => false,
+                            });
+                            if hits_excluded {
+                                continue;
+                            }
                             out.push(path);
                         }
                     }
-                }
-                Err(err) => {
-                    warnings.push(format!("{}: invalid glob '{}': {}", self.label, raw, err))
+                    Err(err) => {
+                        warnings.push(format!("{}: invalid glob '{}': {}", self.label, raw, err))
+                    }
                 }
             }
         }
+        out.sort();
+        out.dedup();
         out
     }
 }
@@ -804,6 +845,80 @@ mod tests {
         assert_eq!(outcome.projects.len(), 1);
         // Marker provenance wins over the walk hit at the same path.
         assert_eq!(outcome.projects[0].source, ProjectSource::PnpmWorkspace);
+    }
+
+    #[test]
+    fn discover_pnpm_double_star_glob_excludes_node_modules() {
+        // Real-world `foo/**` globs match every nested dir — including
+        // `foo/node_modules/.pnpm/.../package.json`. The marker must
+        // prune paths that traverse a built-in excluded directory.
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        touch(
+            &root.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'phoebus/**'\n",
+        );
+        touch(&root.join("phoebus/package.json"), "{}");
+        touch(&root.join("phoebus/src/nested/package.json"), "{}");
+        // Noise that must NOT turn into a workspace via marker expansion.
+        touch(
+            &root.join("phoebus/node_modules/.pnpm/react@18/node_modules/react/package.json"),
+            "{}",
+        );
+        touch(
+            &root.join("phoebus/node_modules/.pnpm/lodash@4/node_modules/lodash/package.json"),
+            "{}",
+        );
+
+        let outcome = discover(root, &DiscoveryOptions::default()).unwrap();
+        let names: Vec<String> = outcome
+            .projects
+            .iter()
+            .map(|p| p.relative.display().to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "phoebus"),
+            "phoebus missing: {names:?}"
+        );
+        for n in &names {
+            assert!(
+                !n.contains("node_modules"),
+                "node_modules leaked: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn discover_pnpm_double_star_glob_picks_up_base_dir() {
+        // pnpm semantics: `phoebus/**` = "descendants of phoebus", so
+        // strictly speaking `phoebus` itself would NOT match. Real
+        // users write it meaning "phoebus is a workspace". We include
+        // the base dir by also expanding the glob with `/**` stripped.
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        touch(
+            &root.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'phoebus/**'\n",
+        );
+        touch(&root.join("phoebus/package.json"), "{}");
+
+        let outcome = discover(root, &DiscoveryOptions::default()).unwrap();
+        let names: Vec<String> = outcome
+            .projects
+            .iter()
+            .map(|p| p.relative.display().to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "phoebus"),
+            "phoebus missing: {names:?}"
+        );
+        // Must be tagged as a marker hit, not merely a walk result.
+        let phoebus = outcome
+            .projects
+            .iter()
+            .find(|p| p.relative.as_os_str() == "phoebus")
+            .unwrap();
+        assert_eq!(phoebus.source, ProjectSource::PnpmWorkspace);
     }
 
     #[test]
