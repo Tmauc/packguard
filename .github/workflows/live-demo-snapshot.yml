@@ -1,0 +1,91 @@
+# Refreshes docs-site/content/live/snapshot.json by running PackGuard
+# against docs-site/ and merging the three JSON exports. Commits the
+# result to main when the content (ignoring scanned_at) actually
+# changed. On any failure we exit non-zero without committing — a
+# lying snapshot is worse than a stale one.
+
+name: live-demo-snapshot
+
+on:
+  schedule:
+    # Mondays 06:00 UTC — same cadence as the github-actions
+    # integration recipe (docs/integrations/github-actions.md).
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: live-demo-snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    name: scan docs-site + commit snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Restore ~/.packguard cache
+        # Hot cache cuts sync + scan from ~60s down to ~3s. Key uses
+        # run_id so we always save; restore-keys falls back to the
+        # most recent run.
+        uses: actions/cache@v4
+        with:
+          path: ~/.packguard
+          key: packguard-live-demo-${{ github.run_id }}
+          restore-keys: |
+            packguard-live-demo-
+
+      - name: Install packguard
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/Tmauc/packguard/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify packguard
+        run: packguard --version
+
+      - name: Scan docs-site/
+        run: packguard scan docs-site/
+
+      - name: Sync intel (OSV + GHSA + typosquat lists)
+        run: packguard sync
+
+      - name: Export report / audit / graph as JSON
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pg"
+          packguard report docs-site/ --format json > "$RUNNER_TEMP/pg/report.json"
+          packguard audit  docs-site/ --focus all --format json > "$RUNNER_TEMP/pg/audit.json"
+          packguard graph  docs-site/ --format json > "$RUNNER_TEMP/pg/graph.json"
+
+      - name: Merge into snapshot.json
+        run: |
+          node docs-site/scripts/build-snapshot.mjs \
+            --report "$RUNNER_TEMP/pg/report.json" \
+            --audit  "$RUNNER_TEMP/pg/audit.json" \
+            --graph  "$RUNNER_TEMP/pg/graph.json" \
+            --target docs-site \
+            --out    docs-site/content/live/snapshot.json
+
+      - name: Commit if content changed (ignoring scanned_at)
+        run: |
+          set -euo pipefail
+          current=$(jq -cS 'del(.scanned_at)' docs-site/content/live/snapshot.json)
+          committed=$(git show HEAD:docs-site/content/live/snapshot.json | jq -cS 'del(.scanned_at)')
+          if [ "$current" = "$committed" ]; then
+            echo "::notice::snapshot content unchanged — skipping commit"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          today=$(date -u +%Y-%m-%d)
+          git add docs-site/content/live/snapshot.json
+          git commit -m "chore(docs-site): refresh live snapshot ${today}"
+          git push
