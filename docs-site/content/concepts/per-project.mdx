@@ -48,9 +48,11 @@ warning: --project not specified, defaulting to the most recent scan (apps/api).
 
 ![Policies — empty state without scope vs CodeMirror editor when a workspace is picked](/screenshots/phase7-policies-empty-vs-scoped.png)
 
-Each workspace can own its own `.packguard.yml`. When none is present at the workspace root, PackGuard uses the conservative defaults baked into the binary. When one is present, it's the only policy evaluated for that scope — there's no cross-workspace inheritance by design.
+Each workspace can own its own `.packguard.yml`. When one exists, it composes with any parent `.packguard.yml` between the workspace and the repo root via a deterministic cascade (deep-merge, walk-stop on `.git/` or `root: true`). When no `.packguard.yml` exists anywhere along the chain, PackGuard uses the conservative defaults baked into the binary.
 
-That keeps the policy locally legible. A dev opening `apps/web/.packguard.yml` sees exactly what CI will enforce for that workspace, without having to chase a parent `.packguard.yml` three directories up.
+The cascade keeps policy flexible in a monorepo — a repo-root `.packguard.yml` can set shared rules (`block.cve_severity`, `block.malware`) once, while each workspace overrides only what it needs locally. To see exactly which file contributed which key, run `packguard report --show-policy <workspace>` — it prints the resolved policy with per-key provenance (file + line).
+
+See [offset-policy / Policy cascade across a monorepo](/concepts/offset-policy#policy-cascade-across-a-monorepo) for the full merge rules, `extends:` directive, and walk-stop semantics.
 
 ## The `Used by` drill-down
 

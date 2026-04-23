@@ -6,24 +6,32 @@ Cytoscape-rendered transitive dependency graph — dagre + cose-bilkent layouts,
 
 ![Graph — default view across the workspace](/screenshots/graph-default.png)
 
-Dagre layout with the workspace root on the left and leaves on the right. Node fills encode ecosystem (npm blue / pypi green / malware purple / typosquat magenta / CVE ember). Edge styles encode kind (runtime solid / dev stroked / peer dashed / optional dotted).
+Cose-bilkent layout by default — force-directed, clusters nodes by coupling so tightly-connected subgraphs visually group together. Dagre (left-to-right DAG) stays available in the Layout dropdown for reviews that favour hierarchy over cohesion. Node fills encode ecosystem (npm blue / pypi green / malware purple / typosquat magenta / CVE ember). Edge styles encode kind (runtime solid / dev stroked / peer dashed / optional dotted).
 
 ## Filters
 
 | Control | Effect |
 |---|---|
 | **Kind** | Toggle runtime / dev / peer / optional edges. Defaults to runtime only. |
-| **Depth** | Limit the BFS depth from workspace roots. Default 3. |
+| **Depth** | Limit the BFS depth from workspace roots. Default 2 — direct deps + one transitive level. Raise the slider to go deeper on large monorepos. |
 | **Layout** | dagre (DAG-style) / cose-bilkent (force-directed). |
 | **Search** | Highlights any node whose name substring-matches. |
 
 Every filter is in the URL, so a shared link reproduces the same view.
 
+## Legend — dynamic and clickable
+
+The legend only surfaces categories actually present in the current render (post-filter, post-depth). If no `optional` edges are in view, the `optional` item isn't in the legend — no dead controls. Click an item to hide that category from the canvas; the item desaturates with a strikethrough so you keep the handle to restore it. Re-click to bring it back.
+
+The state lives in the URL: `?hide=<keys>` for client-side categories (ecosystem / status), `?kind=` for edge kinds (shared source of truth with the Kind row above). Share a URL, share the exact filtered view.
+
 ## Focus-CVE contamination mode
 
 ![Graph focus — CVE contamination chain to lodash](/screenshots/graph-focus-lodash.png)
 
-Paste a CVE id (or any advisory alias) into the search bar and click **Trace**. The graph:
+Press `Cmd+K` (or `Ctrl+K` on Linux / Windows) to open the CVE command palette. Fuzzy search across every advisory present in the current workspace scope — each row shows `CVE-YYYY-NNNNN · <package> · <severity> · <N chains>`. Arrow keys to navigate, Enter to select, Escape to close without touching the URL.
+
+Selecting an entry writes `?focus_cve=<id>` into the URL and the graph:
 
 1. Looks up every `(ecosystem, name, version)` touched by the advisory in the local store.
 2. Runs the inverse contamination BFS — same algorithm as [`packguard graph --contaminated-by`](/cli/graph).
@@ -31,7 +39,7 @@ Paste a CVE id (or any advisory alias) into the search bar and click **Trace**. 
 
 The banner at the top tells you how many packages were hit and how many chains were surfaced — `CVE-2026-4800: 1 package hit · 3 contamination chains · cached`.
 
-Cache is per-advisory, 15 minutes — a subsequent trace of the same CVE is instant.
+Cache is per-advisory, 15 minutes — a subsequent trace of the same CVE is instant. When the store has no advisories in scope, the palette shows a callout pointing at `packguard sync` to fetch the database.
 
 ## Empty state
 
