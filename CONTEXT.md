@@ -2029,7 +2029,19 @@ Budget : ~3 commits, tests UI + CLI snapshots.
 
 Pas le rework complet (WebGL, progressive render, server-side pagination = reporté v0.4.0). Juste les 3 fixes qui débloquent la page d'un freeze 15s à "usable".
 
-**11.1. Default depth = 2** (finding #5, quick win le plus gros)
+**11.1. Default depth = 2 ✅ done (2026-04-23)**
+
+Livré : 1 commit (`b32a899`), 57 Vitest (+3 nets : default=2, override `?max_depth=5`, input↔URL sync). 332 Rust inchangés. Tous quality gates verts (clippy/fmt/typecheck/lint max-warnings 0).
+
+Changement minimal : `dashboard/src/pages/Graph.tsx` default URL fallback `"4"` → `"2"` (1 ligne). Slider UI initialise cohérent avec URL, override user respecté.
+
+Smoke test Nalo : avant ~15s freeze sur ~1100 nœuds, après <2s pour la tranche depth=2. Slider dispo pour creuser si besoin.
+
+Note méthodo : la "ts-rs drift" gate mentionnée dans le brief n'est pas un feature flag séparé — c'est un test Rust régulier déjà embarqué dans `cargo test --workspace` (cf. CONTEXT.md §705-712, commit a03f25d). Ajuster les prochains briefs.
+
+---
+
+**11.1 (spec originale, pour historique)** (finding #5, quick win le plus gros)
 
 Au lieu de rendre tout le graphe transitive (1000+ nœuds sur Nalo), `/graph` démarre avec `depth=2` (direct deps + 1 transitive level). Slider Depth existant permet d'augmenter si besoin.
 
@@ -2037,7 +2049,20 @@ Gain estimé : 1000+ nœuds → ~300, render <2s au lieu de 15s freeze.
 
 Budget : ~1 commit, petit changement `dashboard/src/pages/Graph.tsx`, tests Vitest on param defaulting.
 
-**11.2. Légende dynamique + cliquable** (finding #7)
+**11.2. Légende dynamique + cliquable ✅ done (2026-04-23)**
+
+Livré : 2 commits atomiques (`7fa8968` dynamic legend + `a8e7ba3` clickable + bidirectional URL sync), 63 Vitest (+6 nets : legend only shows present categories, surfaces all when all present, stays hidden on empty graph, click hides via URL param, click-again restores, stays in sync with Kind checkboxes). 332 Rust inchangés. Tous quality gates verts.
+
+**Décisions design notables (à retenir pour 11.3+) :**
+1. **Deux URL params distincts** : `?hide=<keys>` (client-side, pour ecosystem/status) + `?kind=` réutilisé (backend, pour edge kinds). Évite la double source de vérité quand le Kind filter row et la légende touchent la même catégorie.
+2. **Désaturation au lieu de disparition** : un item cliqué disparaît visuellement (désaturé + strikethrough) mais reste dans la légende pour préserver l'affordance de restauration. Sinon l'utilisateur perd le handle pour réactiver.
+3. **Post-hide graph flow** : `contaminationGraph` → (post-hide filter) → `GraphCanvas`. La légende conserve ses items même quand l'utilisateur masque tout dans une catégorie (pas d'empty-state collapse).
+
+Smoke test Nalo depth=2 : seules `npm`, `cve`, `root`, `runtime` s'affichent (les autres catégories absentes du DOM, pas de bruit). Click CVE → sous-arbre retiré. Click dev après deselect via Kind row → cohérent avec le filter row.
+
+---
+
+**11.2 (spec originale, pour historique)** (finding #7)
 
 - La légende en haut n'affiche QUE les catégories présentes dans le DOM courant (post-filter, post-depth). Pas de bruit.
 - Click sur un item → toggle filter (masque les nœuds de cette catégorie). Re-click → restaure.
@@ -2046,7 +2071,21 @@ Budget : ~1 commit, petit changement `dashboard/src/pages/Graph.tsx`, tests Vite
 
 Budget : ~2 commits, ~5 tests Vitest (legend render based on filtered DOM + click toggles URL state).
 
-**11.3. Focus CVE palette `Cmd+K`** (finding #6)
+**11.3. Focus CVE palette `Cmd+K` ✅ done (2026-04-23)**
+
+Livré : 3 commits atomiques (`a777a0a` endpoint server + `ed7a88b` CvePalette component + `d9e227a` wiring Cmd+K), 72 Vitest (+9 : 7 CvePalette open/search/Escape/ArrowEnter/click/empty-state + 2 wiring Graph), 334 Rust (+2 : `lists_cves_hit_in_scope` + `vulnerabilities_endpoint_returns_empty_when_store_is_empty`). Tous quality gates verts. Bindings ts-rs `GraphVulnerabilityList.ts` régénérés dans le commit 1.
+
+**Option 2 retenue** (nouveau endpoint `/api/graph/vulnerabilities?project=<path>`). Justification : `GraphNode` expose `cve_severity` (max) mais pas la liste de `cve_id` — la dérivation client-side aurait forcé à alourdir le payload `/api/graph`, exactement ce que Phase 11.1 cherchait à éviter. L'endpoint isolé garde les deux concerns propres.
+
+**Déviation spec assumée** : `chains_count` remplacé par `severity` comme signal visuel de priorité dans la liste. Raison : calculer le BFS contamination per-CVE au fetch palette = O(cves × bfs) gâché, clicker une ligne déclenche déjà le BFS via `?focus_cve`. Severity (critical > high > medium > low) est le bon signal de priorité en liste flat.
+
+**Décision "zero new dep" (meta-règle à retenir)** : l'agent a décliné d'ajouter `cmdk` malgré l'autorisation explicite du brief. Rationale : *"PackGuard est un auditeur supply-chain ; chaque dep supplémentaire = ligne d'audit. Rouler le palette sur primitives React (input + filter + arrow nav + Escape) coûte moins que maintenir une nouvelle ligne d'audit."* ~200 lignes UI. À valoriser — cohérence produit + dogfooding.
+
+Smoke test Nalo : Cmd+K ouvre, entrées triées severity desc, fuzzy search multi-tokens (`axios critical` → AND des deux), ArrowDown+Enter set `?focus_cve=`, Escape ferme sans toucher l'URL, empty state callout "Run packguard sync to fetch the advisory database, then re-scan."
+
+---
+
+**11.3 (spec originale, pour historique)** (finding #6)
 
 Remplacer l'input text `Focus CVE (e.g. CVE-2026-4800)` par une **command palette** :
 - Déclencheur : `Cmd+K` (ou click sur le champ actuel)
@@ -2083,15 +2122,38 @@ Chaque sous-phase = 1 agent dédié. Je briefe, tu relaies, rapport final, je va
 
 Le bump `0.2.0 → 0.3.0` se fait à la **fin du cycle** (après 11.3), comme la convention Phase 9.
 
-### Critères de sortie v0.3.0
+### Phase 11.4 — Graph dogfood polish ✅ done (2026-04-23)
 
-- [ ] Tous les 🔴 findings adressés (5, 6, 12, 13, 14)
-- [ ] 5 findings 🟡 traités au passage (1 partiel tooltips Packages, 4 CLI, 7 legend)
-- [ ] Truth table v0.3.0 documentée (offset lexicographique)
-- [ ] `packguard report --show-policy` existe et affiche provenance
-- [ ] `/graph` rend en <3s sur Nalo monorepo avec defaults
-- [ ] Focus CVE via palette (pas input text)
-- [ ] Zéro régression sur les 305 Rust + 51 Vitest de v0.2.0 (sauf les ~15 tests truth-table qui changent légitimement)
+Post-implémentation des Phase 11.1/2/3, Thomas a dogfoodé en local et remonté 2 findings bloquants avant tag :
+- **A — default layout** : `/graph` démarrait sur `dagre`, préfère `cose-bilkent` par défaut (plus lisible sur les monorepos, edges clustered by coupling)
+- **B — positions perdues au toggle légende** : click sur une catégorie → masque OK → re-click → les nœuds reviennent à (0,0) au lieu de reprendre leur place
+
+Livré : 2 commits atomiques (`5061465` fix B + `2edaf71` fix A), 76 Vitest (+4), 334 Rust inchangés. Tous quality gates verts.
+
+**Root cause B + refactor** : `filteredGraph` (Graph.tsx:138-152) filtrait les elements au React data layer → Cytoscape voyait fresh nodes à chaque re-show → placed à origin. Fix : `filteredGraph` supprimé, `contaminationGraph` passé direct à `<GraphCanvas>`, `hideSet` propagé jusqu'au canvas, classe CSS `.hidden` appliquée via `data-hidden` selector → Cytoscape garde ses positions internes. Edges cachées si ≥1 endpoint hidden (évite lignes suspendues). Stats label recalculé en scalars à partir du post-hide. `elements` + `layoutOptions` + `stylesheet` stables via `useMemo` → react-cytoscapejs ne re-layout pas.
+
+Tests (+4 nets) : `toggling a legend category does not shrink the graph passed to the canvas` (régression guard), `initial mount with ?hide=... still hands the full graph to the canvas` (edge case mount-with-hide), `defaults the graph layout when URL has none`, `respects an explicit ?layout=dagre override` (backcompat URL).
+
+Smoke test Nalo : cose-bilkent default lisible, 3+ cycles toggle (cve → restore → malware → restore → eco:pypi → restore) sans drift, mount-with-hide préserve les positions.
+
+### Critères de sortie v0.3.0 — ✅ all met (2026-04-23)
+
+- [x] Tous les 🔴 findings adressés (5 Phase 11.1, 6 Phase 11.3, 12 Phase 10c, 13 Phase 10b, 14 Phase 10a)
+- [x] 5 findings 🟡 traités au passage (1 partiel tooltips Packages Phase 10c, 4 CLI Phase 10c, 7 legend Phase 11.2)
+- [x] 2 findings dogfood post-11.3 résolus (Phase 11.4 default layout + positions preservation)
+- [x] Truth table v0.3.0 documentée (offset lexicographique Phase 10a)
+- [x] `packguard report --show-policy` existe et affiche provenance (Phase 10b)
+- [x] `/graph` rend en <3s sur Nalo monorepo avec defaults (<2s mesuré Phase 11.1)
+- [x] Focus CVE via palette (pas input text) — Phase 11.3
+- [x] Zéro régression : 334 Rust pass (vs 305 v0.2.0), 76 Vitest pass (vs 51 v0.2.0)
+
+**Bundle Phase 11 (8 commits, toujours locaux)** :
+- 11.1 : `b32a899` depth=2
+- 11.2 : `7fa8968` dynamic legend, `a8e7ba3` clickable + URL sync
+- 11.3 : `a777a0a` endpoint vuln, `ed7a88b` palette component, `d9e227a` palette wiring + Cmd+K
+- 11.4 : `5061465` positions preservation, `2edaf71` cose-bilkent default
+
+Thomas ship séquence : `./scripts/bump-version.sh 0.3.0` → `git push origin main --follow-tags` → attendre `release.yml` → `gh workflow run crates-publish.yml -f dry_run=false`.
 
 ---
 
