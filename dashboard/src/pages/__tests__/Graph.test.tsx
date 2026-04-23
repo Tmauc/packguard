@@ -471,6 +471,20 @@ describe("GraphPage", () => {
     expect(canvas).toHaveAttribute("data-hidden", "status:cve");
   });
 
+  it("defaults the graph layout to cose-bilkent when the URL has none", async () => {
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    wrap();
+    const canvas = await screen.findByTestId("graph-canvas");
+    expect(canvas).toHaveAttribute("data-layout", "cose-bilkent");
+  });
+
+  it("respects an explicit ?layout=dagre override", async () => {
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    wrap(["/graph?layout=dagre"]);
+    const canvas = await screen.findByTestId("graph-canvas");
+    expect(canvas).toHaveAttribute("data-layout", "dagre");
+  });
+
   it("shows a helpful empty-state when the advisory hits nothing", async () => {
     (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
     (api.contaminated as ReturnType<typeof vi.fn>).mockResolvedValue({
