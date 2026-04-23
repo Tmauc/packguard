@@ -32,7 +32,7 @@ export function GraphPage() {
       .map((s) => s.trim())
       .filter((s): s is Kind => (KINDS as readonly string[]).includes(s));
   }, [params]);
-  const maxDepth = Number(params.get("max_depth") ?? "4");
+  const maxDepth = Number(params.get("max_depth") ?? "2");
   const layout = ((params.get("layout") as LayoutName) ?? "dagre") as LayoutName;
   const focusCve = params.get("focus_cve") ?? "";
   const focusNode = params.get("focus") ?? "";

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -175,6 +175,44 @@ describe("GraphPage", () => {
     await user.click(node);
     const link = await screen.findByRole("link", { name: /Open detail/i });
     expect(link).toHaveAttribute("href", "/packages/npm/lodash");
+  });
+
+  it("defaults max_depth to 2 when the URL has no depth param", async () => {
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    wrap();
+    await waitFor(() => {
+      expect(api.graph).toHaveBeenLastCalledWith(
+        expect.objectContaining({ max_depth: 2 }),
+        undefined,
+      );
+    });
+    expect(screen.getByRole("spinbutton")).toHaveValue(2);
+  });
+
+  it("respects an explicit ?max_depth=5 URL override", async () => {
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    wrap(["/graph?max_depth=5"]);
+    await waitFor(() => {
+      expect(api.graph).toHaveBeenLastCalledWith(
+        expect.objectContaining({ max_depth: 5 }),
+        undefined,
+      );
+    });
+    expect(screen.getByRole("spinbutton")).toHaveValue(5);
+  });
+
+  it("keeps the depth input in sync with the URL after a user edit", async () => {
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    wrap();
+    await screen.findByTestId("graph-canvas");
+    fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "3" } });
+    await waitFor(() => {
+      expect(api.graph).toHaveBeenLastCalledWith(
+        expect.objectContaining({ max_depth: 3 }),
+        undefined,
+      );
+    });
+    expect(screen.getByRole("spinbutton")).toHaveValue(3);
   });
 
   it("shows a helpful empty-state when the advisory hits nothing", async () => {
