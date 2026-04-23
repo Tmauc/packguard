@@ -215,6 +215,115 @@ describe("GraphPage", () => {
     expect(screen.getByRole("spinbutton")).toHaveValue(3);
   });
 
+  it("legend only shows categories actually present in the rendered graph", async () => {
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    wrap();
+    const legend = await screen.findByTestId("graph-legend");
+    // Present in GRAPH: npm ecosystem, CVE (lodash high), root (vesta),
+    // runtime edges. Absent: pypi, malware, typosquat, dev/peer/optional.
+    expect(legend).toHaveTextContent(/npm/i);
+    expect(legend).toHaveTextContent(/CVE/i);
+    expect(legend).toHaveTextContent(/root/i);
+    expect(legend).toHaveTextContent(/runtime/i);
+    expect(legend).not.toHaveTextContent(/pypi/i);
+    expect(legend).not.toHaveTextContent(/malware/i);
+    expect(legend).not.toHaveTextContent(/typosquat/i);
+    expect(legend).not.toHaveTextContent(/\bdev\b/i);
+    expect(legend).not.toHaveTextContent(/\bpeer\b/i);
+    expect(legend).not.toHaveTextContent(/optional/i);
+  });
+
+  it("legend surfaces every category when a mixed graph shows them all", async () => {
+    const MIXED: GraphResponse = {
+      nodes: [
+        {
+          id: "npm:root@1.0.0",
+          ecosystem: "npm",
+          name: "root",
+          version: "1.0.0",
+          is_root: true,
+          cve_severity: null,
+          has_malware: false,
+          has_typosquat: false,
+          compliance: null,
+          is_unresolved: false,
+        },
+        {
+          id: "pypi:evil@0.1.0",
+          ecosystem: "pypi",
+          name: "evil",
+          version: "0.1.0",
+          is_root: false,
+          cve_severity: "critical",
+          has_malware: true,
+          has_typosquat: true,
+          compliance: null,
+          is_unresolved: false,
+        },
+      ],
+      edges: [
+        {
+          source: "npm:root@1.0.0",
+          target: "pypi:evil@0.1.0",
+          range: "*",
+          kind: "runtime",
+          unresolved: false,
+        },
+        {
+          source: "npm:root@1.0.0",
+          target: "pypi:evil@0.1.0",
+          range: "*",
+          kind: "dev",
+          unresolved: false,
+        },
+        {
+          source: "npm:root@1.0.0",
+          target: "pypi:evil@0.1.0",
+          range: "*",
+          kind: "peer",
+          unresolved: false,
+        },
+        {
+          source: "npm:root@1.0.0",
+          target: "pypi:evil@0.1.0",
+          range: "*",
+          kind: "optional",
+          unresolved: false,
+        },
+      ],
+      oversize_warning: null,
+    };
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(MIXED);
+    wrap();
+    const legend = await screen.findByTestId("graph-legend");
+    for (const label of [
+      "npm",
+      "pypi",
+      "CVE",
+      "malware",
+      "typosquat",
+      "root",
+      "runtime",
+      "dev",
+      "peer",
+      "optional",
+    ]) {
+      expect(legend).toHaveTextContent(new RegExp(label, "i"));
+    }
+  });
+
+  it("legend stays hidden when the graph has no nodes", async () => {
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      oversize_warning: null,
+    } satisfies GraphResponse);
+    wrap();
+    // Wait for the empty-state to render so the query has settled.
+    await screen.findByText(/No dependency edges/i);
+    expect(screen.queryByTestId("graph-legend")).not.toBeInTheDocument();
+  });
+
   it("shows a helpful empty-state when the advisory hits nothing", async () => {
     (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
     (api.contaminated as ReturnType<typeof vi.fn>).mockResolvedValue({

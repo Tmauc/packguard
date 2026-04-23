@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { AlertTriangleIcon, SearchIcon } from "lucide-react";
@@ -13,6 +13,7 @@ import type { LayoutName } from "@/components/graph/register-layouts";
 import { LAYOUTS } from "@/components/graph/register-layouts";
 import { ScopeBadge } from "@/components/layout/ScopeBadge";
 import { useScope } from "@/components/layout/workspace-scope";
+import type { GraphResponse } from "@/api/types/GraphResponse";
 
 const KINDS = ["runtime", "dev", "peer", "optional"] as const;
 type Kind = (typeof KINDS)[number];
@@ -169,7 +170,7 @@ export function GraphPage() {
         </div>
         <div className="flex items-start gap-3">
           <ScopeBadge className="mt-0.5" />
-          <Legend />
+          <Legend graph={displayGraph} />
         </div>
       </header>
 
@@ -325,21 +326,123 @@ export function GraphPage() {
   );
 }
 
-function Legend() {
+// Inspect the currently-rendered graph to surface only the legend entries
+// that map to something visible. On a 1000-node npm-only workspace the old
+// static legend advertised pypi/malware/typosquat swatches the user could
+// never see — pure noise. Keys are intentionally category-scoped (prefixed
+// by their domain) so they won't collide once Phase 11.2.2 wires click
+// toggles on top of the same set.
+function collectPresentCategories(graph: GraphResponse | null | undefined): Set<string> {
+  const present = new Set<string>();
+  if (!graph) return present;
+  for (const n of graph.nodes) {
+    if (n.ecosystem === "npm") present.add("eco:npm");
+    else if (n.ecosystem === "pypi") present.add("eco:pypi");
+    if (n.cve_severity) present.add("status:cve");
+    if (n.has_malware) present.add("status:malware");
+    if (n.has_typosquat) present.add("status:typosquat");
+    if (n.is_root) present.add("status:root");
+  }
+  for (const e of graph.edges) {
+    if (e.kind === "runtime") present.add("edge:runtime");
+    else if (e.kind === "dev") present.add("edge:dev");
+    else if (e.kind === "peer") present.add("edge:peer");
+    else if (e.kind === "optional") present.add("edge:optional");
+  }
+  return present;
+}
+
+function Legend({ graph }: { graph: GraphResponse | null | undefined }) {
+  const present = useMemo(() => collectPresentCategories(graph), [graph]);
+  if (present.size === 0) return null;
+
+  const nodeEntries: { key: string; node: ReactElement }[] = [];
+  if (present.has("eco:npm")) {
+    nodeEntries.push({
+      key: "eco:npm",
+      node: <LegendSwatch color={COLORS.ecoNpm} label="npm" />,
+    });
+  }
+  if (present.has("eco:pypi")) {
+    nodeEntries.push({
+      key: "eco:pypi",
+      node: <LegendSwatch color={COLORS.ecoPypi} label="pypi" />,
+    });
+  }
+  if (present.has("status:cve")) {
+    nodeEntries.push({
+      key: "status:cve",
+      node: <LegendSwatch color={COLORS.cve} label="CVE" ring />,
+    });
+  }
+  if (present.has("status:malware")) {
+    nodeEntries.push({
+      key: "status:malware",
+      node: <LegendSwatch color={COLORS.malware} label="malware" />,
+    });
+  }
+  if (present.has("status:typosquat")) {
+    nodeEntries.push({
+      key: "status:typosquat",
+      node: <LegendSwatch color={COLORS.yanked} label="typosquat" ring dashed />,
+    });
+  }
+  if (present.has("status:root")) {
+    nodeEntries.push({
+      key: "status:root",
+      node: <LegendSwatch color={COLORS.root} label="root" ring thick />,
+    });
+  }
+
+  const edgeKinds: {
+    key: string;
+    label: string;
+    color: string;
+    dashed?: boolean;
+    dotted?: boolean;
+  }[] = [];
+  if (present.has("edge:runtime")) {
+    edgeKinds.push({ key: "edge:runtime", label: "runtime", color: COLORS.edgeRuntime });
+  }
+  if (present.has("edge:dev")) {
+    edgeKinds.push({ key: "edge:dev", label: "dev", color: COLORS.edgeDev });
+  }
+  if (present.has("edge:peer")) {
+    edgeKinds.push({ key: "edge:peer", label: "peer", color: COLORS.edgePeer, dashed: true });
+  }
+  if (present.has("edge:optional")) {
+    edgeKinds.push({
+      key: "edge:optional",
+      label: "optional",
+      color: COLORS.edgeOptional,
+      dotted: true,
+    });
+  }
+
   return (
-    <div className="flex flex-wrap items-center gap-3 text-[11px] text-zinc-500">
-      <LegendSwatch color={COLORS.ecoNpm} label="npm" />
-      <LegendSwatch color={COLORS.ecoPypi} label="pypi" />
-      <LegendSwatch color={COLORS.cve} label="CVE" ring />
-      <LegendSwatch color={COLORS.malware} label="malware" />
-      <LegendSwatch color={COLORS.yanked} label="typosquat" ring dashed />
-      <LegendSwatch color={COLORS.root} label="root" ring thick />
-      <span className="ml-1 border-l border-zinc-200 pl-3">
-        edges: runtime <EdgeLabel color={COLORS.edgeRuntime} /> · dev{" "}
-        <EdgeLabel color={COLORS.edgeDev} /> · peer{" "}
-        <EdgeLabel color={COLORS.edgePeer} dashed /> · optional{" "}
-        <EdgeLabel color={COLORS.edgeOptional} dotted />
-      </span>
+    <div
+      className="flex flex-wrap items-center gap-3 text-[11px] text-zinc-500"
+      data-testid="graph-legend"
+    >
+      {nodeEntries.map((entry) => (
+        <span key={entry.key}>{entry.node}</span>
+      ))}
+      {edgeKinds.length > 0 && (
+        <span
+          className={cn(
+            "flex flex-wrap items-center gap-2",
+            nodeEntries.length > 0 && "ml-1 border-l border-zinc-200 pl-3",
+          )}
+        >
+          <span>edges:</span>
+          {edgeKinds.map((e, i) => (
+            <span key={e.key} className="inline-flex items-center gap-1">
+              {e.label} <EdgeLabel color={e.color} dashed={e.dashed} dotted={e.dotted} />
+              {i < edgeKinds.length - 1 && <span aria-hidden>·</span>}
+            </span>
+          ))}
+        </span>
+      )}
     </div>
   );
 }
