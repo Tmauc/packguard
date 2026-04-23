@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { AlertTriangleIcon, SearchIcon } from "lucide-react";
@@ -17,6 +17,18 @@ import type { GraphResponse } from "@/api/types/GraphResponse";
 
 const KINDS = ["runtime", "dev", "peer", "optional"] as const;
 type Kind = (typeof KINDS)[number];
+
+// Keys the URL `?hide=` param understands. Edge kinds live under the
+// existing `?kind=` param, so the legend toggles wire those separately
+// rather than double-encoding the same filter.
+const HIDEABLE_KEYS = new Set([
+  "eco:npm",
+  "eco:pypi",
+  "status:cve",
+  "status:malware",
+  "status:typosquat",
+  "status:root",
+]);
 
 export function GraphPage() {
   const [params, setParams] = useSearchParams();
@@ -37,6 +49,17 @@ export function GraphPage() {
   const layout = ((params.get("layout") as LayoutName) ?? "dagre") as LayoutName;
   const focusCve = params.get("focus_cve") ?? "";
   const focusNode = params.get("focus") ?? "";
+  const kindExplicit = params.get("kind") !== null;
+  const hideSet = useMemo(() => {
+    const raw = params.get("hide");
+    if (!raw) return new Set<string>();
+    return new Set(
+      raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => HIDEABLE_KEYS.has(s)),
+    );
+  }, [params]);
   const [cveInput, setCveInput] = useState(focusCve);
 
   useEffect(() => {
@@ -85,7 +108,7 @@ export function GraphPage() {
   // Cytoscape runs its layout on the filtered element set, so the chain
   // gets the whole viewport instead of being hidden behind 1100+ muted
   // siblings. The `highlight` classes on top paint those chains red.
-  const displayGraph = useMemo(() => {
+  const contaminationGraph = useMemo(() => {
     if (!graphQuery.data) return graphQuery.data;
     if (highlight.kind !== "contamination") return graphQuery.data;
     const nodes = graphQuery.data.nodes.filter((n) => highlight.nodeIds.has(n.id));
@@ -94,6 +117,28 @@ export function GraphPage() {
     );
     return { ...graphQuery.data, nodes, edges };
   }, [graphQuery.data, highlight]);
+
+  // Client-side hide filter driven by clicks on the legend. Legend keeps
+  // the deselected entries visible (desaturated) so the user can always
+  // click back in — that's why Legend receives `contaminationGraph`
+  // (pre-hide) rather than the post-hide view below.
+  const displayGraph = useMemo(() => {
+    if (!contaminationGraph) return contaminationGraph;
+    if (hideSet.size === 0) return contaminationGraph;
+    const nodes = contaminationGraph.nodes.filter((n) => {
+      if (hideSet.has(`eco:${n.ecosystem}`)) return false;
+      if (hideSet.has("status:cve") && n.cve_severity) return false;
+      if (hideSet.has("status:malware") && n.has_malware) return false;
+      if (hideSet.has("status:typosquat") && n.has_typosquat) return false;
+      if (hideSet.has("status:root") && n.is_root) return false;
+      return true;
+    });
+    const nodeIds = new Set(nodes.map((n) => n.id));
+    const edges = contaminationGraph.edges.filter(
+      (e) => nodeIds.has(e.source) && nodeIds.has(e.target),
+    );
+    return { ...contaminationGraph, nodes, edges };
+  }, [contaminationGraph, hideSet]);
 
   const selectedNode = useMemo(() => {
     if (!graphQuery.data || !selectedId) return null;
@@ -118,6 +163,24 @@ export function GraphPage() {
       else current.delete(k);
       if (current.size === KINDS.length) next.delete("kind");
       else next.set("kind", [...current].join(","));
+      return next;
+    });
+  }
+
+  function toggleHide(key: string) {
+    if (!HIDEABLE_KEYS.has(key)) return;
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      const current = new Set(
+        (next.get("hide") ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => HIDEABLE_KEYS.has(s)),
+      );
+      if (current.has(key)) current.delete(key);
+      else current.add(key);
+      if (current.size === 0) next.delete("hide");
+      else next.set("hide", [...current].sort().join(","));
       return next;
     });
   }
@@ -170,7 +233,14 @@ export function GraphPage() {
         </div>
         <div className="flex items-start gap-3">
           <ScopeBadge className="mt-0.5" />
-          <Legend graph={displayGraph} />
+          <Legend
+            graph={contaminationGraph}
+            hidden={hideSet}
+            kinds={kinds}
+            kindExplicit={kindExplicit}
+            onToggleHide={toggleHide}
+            onToggleKind={(k) => setKind(k, !kinds.includes(k))}
+          />
         </div>
       </header>
 
@@ -330,8 +400,9 @@ export function GraphPage() {
 // that map to something visible. On a 1000-node npm-only workspace the old
 // static legend advertised pypi/malware/typosquat swatches the user could
 // never see — pure noise. Keys are intentionally category-scoped (prefixed
-// by their domain) so they won't collide once Phase 11.2.2 wires click
-// toggles on top of the same set.
+// by their domain) so the click-toggle logic can route each key back to
+// either the `?hide=` param (node categories) or the existing `?kind=`
+// param (edge kinds).
 function collectPresentCategories(graph: GraphResponse | null | undefined): Set<string> {
   const present = new Set<string>();
   if (!graph) return present;
@@ -352,94 +423,107 @@ function collectPresentCategories(graph: GraphResponse | null | undefined): Set<
   return present;
 }
 
-function Legend({ graph }: { graph: GraphResponse | null | undefined }) {
+type NodeLegendItem = {
+  key: string;
+  label: string;
+  color: string;
+  ring?: boolean;
+  dashed?: boolean;
+  thick?: boolean;
+};
+
+type EdgeLegendItem = {
+  kind: Kind;
+  label: string;
+  color: string;
+  dashed?: boolean;
+  dotted?: boolean;
+};
+
+const NODE_LEGEND: NodeLegendItem[] = [
+  { key: "eco:npm", label: "npm", color: COLORS.ecoNpm },
+  { key: "eco:pypi", label: "pypi", color: COLORS.ecoPypi },
+  { key: "status:cve", label: "CVE", color: COLORS.cve, ring: true },
+  { key: "status:malware", label: "malware", color: COLORS.malware },
+  { key: "status:typosquat", label: "typosquat", color: COLORS.yanked, ring: true, dashed: true },
+  { key: "status:root", label: "root", color: COLORS.root, ring: true, thick: true },
+];
+
+const EDGE_LEGEND: EdgeLegendItem[] = [
+  { kind: "runtime", label: "runtime", color: COLORS.edgeRuntime },
+  { kind: "dev", label: "dev", color: COLORS.edgeDev },
+  { kind: "peer", label: "peer", color: COLORS.edgePeer, dashed: true },
+  { kind: "optional", label: "optional", color: COLORS.edgeOptional, dotted: true },
+];
+
+function Legend({
+  graph,
+  hidden,
+  kinds,
+  kindExplicit,
+  onToggleHide,
+  onToggleKind,
+}: {
+  graph: GraphResponse | null | undefined;
+  hidden: Set<string>;
+  kinds: Kind[];
+  // True when the URL has an explicit `?kind=` param — a kind not in
+  // `kinds` was deliberately deselected and should stay visible in the
+  // legend (desaturated) so the user can click to restore.
+  kindExplicit: boolean;
+  onToggleHide: (key: string) => void;
+  onToggleKind: (k: Kind) => void;
+}) {
   const present = useMemo(() => collectPresentCategories(graph), [graph]);
-  if (present.size === 0) return null;
+  const activeKinds = useMemo(() => new Set(kinds), [kinds]);
 
-  const nodeEntries: { key: string; node: ReactElement }[] = [];
-  if (present.has("eco:npm")) {
-    nodeEntries.push({
-      key: "eco:npm",
-      node: <LegendSwatch color={COLORS.ecoNpm} label="npm" />,
-    });
-  }
-  if (present.has("eco:pypi")) {
-    nodeEntries.push({
-      key: "eco:pypi",
-      node: <LegendSwatch color={COLORS.ecoPypi} label="pypi" />,
-    });
-  }
-  if (present.has("status:cve")) {
-    nodeEntries.push({
-      key: "status:cve",
-      node: <LegendSwatch color={COLORS.cve} label="CVE" ring />,
-    });
-  }
-  if (present.has("status:malware")) {
-    nodeEntries.push({
-      key: "status:malware",
-      node: <LegendSwatch color={COLORS.malware} label="malware" />,
-    });
-  }
-  if (present.has("status:typosquat")) {
-    nodeEntries.push({
-      key: "status:typosquat",
-      node: <LegendSwatch color={COLORS.yanked} label="typosquat" ring dashed />,
-    });
-  }
-  if (present.has("status:root")) {
-    nodeEntries.push({
-      key: "status:root",
-      node: <LegendSwatch color={COLORS.root} label="root" ring thick />,
-    });
-  }
+  const nodeItems = NODE_LEGEND.filter(
+    (item) => present.has(item.key) || hidden.has(item.key),
+  );
+  const edgeItems = EDGE_LEGEND.filter(
+    (item) =>
+      present.has(`edge:${item.kind}`) || (kindExplicit && !activeKinds.has(item.kind)),
+  );
 
-  const edgeKinds: {
-    key: string;
-    label: string;
-    color: string;
-    dashed?: boolean;
-    dotted?: boolean;
-  }[] = [];
-  if (present.has("edge:runtime")) {
-    edgeKinds.push({ key: "edge:runtime", label: "runtime", color: COLORS.edgeRuntime });
-  }
-  if (present.has("edge:dev")) {
-    edgeKinds.push({ key: "edge:dev", label: "dev", color: COLORS.edgeDev });
-  }
-  if (present.has("edge:peer")) {
-    edgeKinds.push({ key: "edge:peer", label: "peer", color: COLORS.edgePeer, dashed: true });
-  }
-  if (present.has("edge:optional")) {
-    edgeKinds.push({
-      key: "edge:optional",
-      label: "optional",
-      color: COLORS.edgeOptional,
-      dotted: true,
-    });
-  }
+  if (nodeItems.length === 0 && edgeItems.length === 0) return null;
 
   return (
     <div
-      className="flex flex-wrap items-center gap-3 text-[11px] text-zinc-500"
+      className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500"
       data-testid="graph-legend"
     >
-      {nodeEntries.map((entry) => (
-        <span key={entry.key}>{entry.node}</span>
+      {nodeItems.map((item) => (
+        <LegendSwatch
+          key={item.key}
+          color={item.color}
+          label={item.label}
+          ring={item.ring}
+          dashed={item.dashed}
+          thick={item.thick}
+          off={hidden.has(item.key)}
+          onClick={() => onToggleHide(item.key)}
+          testId={`legend-${item.key}`}
+        />
       ))}
-      {edgeKinds.length > 0 && (
+      {edgeItems.length > 0 && (
         <span
           className={cn(
-            "flex flex-wrap items-center gap-2",
-            nodeEntries.length > 0 && "ml-1 border-l border-zinc-200 pl-3",
+            "flex flex-wrap items-center gap-1.5",
+            nodeItems.length > 0 && "ml-1 border-l border-zinc-200 pl-3",
           )}
         >
           <span>edges:</span>
-          {edgeKinds.map((e, i) => (
-            <span key={e.key} className="inline-flex items-center gap-1">
-              {e.label} <EdgeLabel color={e.color} dashed={e.dashed} dotted={e.dotted} />
-              {i < edgeKinds.length - 1 && <span aria-hidden>·</span>}
-            </span>
+          {edgeItems.map((item) => (
+            <LegendEdgeButton
+              key={item.kind}
+              label={item.label}
+              color={item.color}
+              dashed={item.dashed}
+              dotted={item.dotted}
+              off={!activeKinds.has(item.kind)}
+              onClick={() => onToggleKind(item.kind)}
+              testId={`legend-edge-${item.kind}`}
+            />
           ))}
         </span>
       )}
@@ -453,15 +537,31 @@ function LegendSwatch({
   ring = false,
   dashed = false,
   thick = false,
+  off = false,
+  onClick,
+  testId,
 }: {
   color: string;
   label: string;
   ring?: boolean;
   dashed?: boolean;
   thick?: boolean;
+  off?: boolean;
+  onClick?: () => void;
+  testId?: string;
 }) {
   return (
-    <span className="inline-flex items-center gap-1">
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={!off}
+      data-testid={testId}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-sm px-1 py-0.5 transition-opacity",
+        "hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-400",
+        off && "text-zinc-400 line-through opacity-60",
+      )}
+    >
       <span
         className="inline-block h-3 w-3 rounded-full"
         style={{
@@ -469,27 +569,52 @@ function LegendSwatch({
           border: ring
             ? `${thick ? 3 : 2}px ${dashed ? "dashed" : "solid"} ${color}`
             : undefined,
+          filter: off ? "grayscale(1)" : undefined,
         }}
       />
       {label}
-    </span>
+    </button>
   );
 }
 
-function EdgeLabel({
+function LegendEdgeButton({
   color,
+  label,
   dashed = false,
   dotted = false,
+  off = false,
+  onClick,
+  testId,
 }: {
   color: string;
+  label: string;
   dashed?: boolean;
   dotted?: boolean;
+  off?: boolean;
+  onClick?: () => void;
+  testId?: string;
 }) {
   const style = dashed ? "dashed" : dotted ? "dotted" : "solid";
   return (
-    <span
-      className="inline-block h-0 w-6 align-middle"
-      style={{ borderBottom: `2px ${style} ${color}` }}
-    />
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={!off}
+      data-testid={testId}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-sm px-1 py-0.5 transition-opacity",
+        "hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-400",
+        off && "text-zinc-400 line-through opacity-60",
+      )}
+    >
+      <span>{label}</span>
+      <span
+        className="inline-block h-0 w-6 align-middle"
+        style={{
+          borderBottom: `2px ${style} ${color}`,
+          filter: off ? "grayscale(1)" : undefined,
+        }}
+      />
+    </button>
   );
 }

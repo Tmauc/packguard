@@ -312,6 +312,67 @@ describe("GraphPage", () => {
     }
   });
 
+  it("click on a legend swatch toggles the corresponding hide URL param", async () => {
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    wrap();
+    await screen.findByTestId("graph-legend");
+    const user = userEvent.setup();
+    // Hide the CVE category. Lodash (the only cve-bearing node) must
+    // disappear from the rendered canvas; its swatch stays visible but
+    // aria-pressed flips to false so the user can click it back on.
+    await user.click(screen.getByTestId("legend-status:cve"));
+    await waitFor(() => {
+      expect(screen.queryByTestId("node-npm:lodash@4.17.23")).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId("legend-status:cve")).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("clicking a hidden legend item restores it", async () => {
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    wrap(["/graph?hide=status:cve"]);
+    // Hidden on first render — lodash filtered out, swatch desaturated.
+    await waitFor(() => {
+      expect(screen.queryByTestId("node-npm:lodash@4.17.23")).not.toBeInTheDocument();
+    });
+    const swatch = screen.getByTestId("legend-status:cve");
+    expect(swatch).toHaveAttribute("aria-pressed", "false");
+    const user = userEvent.setup();
+    await user.click(swatch);
+    // After restore: lodash comes back, swatch is active again.
+    expect(await screen.findByTestId("node-npm:lodash@4.17.23")).toBeInTheDocument();
+    expect(screen.getByTestId("legend-status:cve")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("legend edge items stay in sync with the kind filter checkboxes (URL is source of truth)", async () => {
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    // URL deselects `dev` via the existing kind filter. The legend must
+    // reflect that by rendering `dev` desaturated even though it's not
+    // in the current DOM.
+    wrap(["/graph?kind=runtime,peer,optional"]);
+    await waitFor(() => {
+      expect(api.graph).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: "runtime,peer,optional" }),
+        undefined,
+      );
+    });
+    const legendDev = await screen.findByTestId("legend-edge-dev");
+    expect(legendDev).toHaveAttribute("aria-pressed", "false");
+    const legendRuntime = screen.getByTestId("legend-edge-runtime");
+    expect(legendRuntime).toHaveAttribute("aria-pressed", "true");
+    // Click legend `runtime` to toggle it off — same URL param that the
+    // filter bar button writes to. The kind row button for runtime also
+    // flips to the inactive style because it reads from the same URL.
+    const user = userEvent.setup();
+    await user.click(legendRuntime);
+    await waitFor(() => {
+      expect(api.graph).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: "peer,optional" }),
+        undefined,
+      );
+    });
+    expect(screen.getByTestId("legend-edge-runtime")).toHaveAttribute("aria-pressed", "false");
+  });
+
   it("legend stays hidden when the graph has no nodes", async () => {
     (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue({
       nodes: [],
