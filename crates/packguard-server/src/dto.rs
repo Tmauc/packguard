@@ -548,6 +548,34 @@ pub struct ContaminationChain {
     pub workspace: String,
 }
 
+/// One row per (advisory, affected package version) pair observed in the
+/// scoped graph. Powers the `/graph` Focus-CVE command palette so the
+/// user can pick a CVE from a list instead of typing an id they don't
+/// know. `cve_id` is preferred when present; callers fall back to
+/// `advisory_id` (GHSA-/MAL-) otherwise — both are accepted downstream
+/// by `/api/graph/contaminated?vuln_id=...`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "GraphVulnerabilityEntry.ts")]
+pub struct GraphVulnerabilityEntry {
+    pub advisory_id: String,
+    pub cve_id: Option<String>,
+    pub ecosystem: String,
+    pub package_name: String,
+    pub package_version: String,
+    /// "critical" | "high" | "medium" | "low" | "unknown" — the same
+    /// flattened lexicon the rest of the dashboard uses.
+    pub severity: String,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "GraphVulnerabilityList.ts")]
+pub struct GraphVulnerabilityList {
+    /// Sorted by severity desc, then by `cve_id.unwrap_or(advisory_id)`,
+    /// then by `package_name` — stable palette ordering across refetches.
+    pub entries: Vec<GraphVulnerabilityEntry>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export_to = "CompatResponse.ts")]
 pub struct CompatResponse {

@@ -76,6 +76,8 @@ fn export_all(target: &Path) {
         dto::ContaminationResult,
         dto::ContaminationHit,
         dto::ContaminationChain,
+        dto::GraphVulnerabilityEntry,
+        dto::GraphVulnerabilityList,
         dto::CompatResponse,
         dto::CompatRow,
         dto::CompatPeerDep,

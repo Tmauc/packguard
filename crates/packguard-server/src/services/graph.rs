@@ -10,6 +10,7 @@
 use crate::dto::{
     CompatDependent, CompatPeerDep, CompatResponse, CompatRow, ComplianceTag, ContaminationChain,
     ContaminationHit, ContaminationResult, GraphEdge, GraphNode, GraphResponse,
+    GraphVulnerabilityEntry, GraphVulnerabilityList,
 };
 use anyhow::Result;
 use packguard_core::MalwareKind;
@@ -291,6 +292,132 @@ fn ensure_node<'a>(
         }
     }
     Ok(nodes.get(&id).expect("just inserted"))
+}
+
+// ---- Palette: list of CVEs present in scope -------------------------------
+
+/// Enumerate every advisory that hits a concrete (package, version) tuple
+/// observable in the scoped dependency graph. The dashboard's Focus-CVE
+/// command palette reads this to populate its fuzzy-search list, so the
+/// user never has to know a CVE id by heart.
+///
+/// Shape mirrors `contaminated_chains` at a higher zoom-out: we reuse the
+/// same "observed versions = direct installs ∪ resolved edge targets"
+/// derivation, run `match_vulnerabilities` to filter to real hits, then
+/// dedup by (advisory_id, package, version). `chains_count` is
+/// deliberately absent — computing per-CVE contamination BFS at palette
+/// fetch time is wasteful since selection triggers `?focus_cve=…` which
+/// already renders the chains on the canvas.
+pub fn vulnerabilities(store: &Store, project: Option<&Path>) -> Result<GraphVulnerabilityList> {
+    let paths = scope_paths(store, project)?;
+    let mut all_deps: Vec<packguard_store::StoredDependency> = Vec::new();
+    let mut all_edges: Vec<StoredEdge> = Vec::new();
+    for p in &paths {
+        all_deps.extend(store.load_repo_dependencies(p)?);
+        all_edges.extend(store.load_repo_edges(p)?);
+    }
+
+    let mut observed: BTreeSet<(String, String, String)> = BTreeSet::new();
+    for dep in &all_deps {
+        if let Some(v) = &dep.installed {
+            observed.insert((dep.ecosystem.clone(), dep.name.clone(), v.clone()));
+        }
+    }
+    let default_eco = all_deps
+        .first()
+        .map(|d| d.ecosystem.clone())
+        .unwrap_or_else(|| "npm".to_string());
+    for edge in &all_edges {
+        let Some(resolved) = edge.resolved_version.as_deref() else {
+            continue;
+        };
+        let name = edge
+            .resolved_target_name
+            .as_deref()
+            .unwrap_or(&edge.target_name);
+        observed.insert((default_eco.clone(), name.to_string(), resolved.to_string()));
+    }
+
+    let mut vuln_cache: HashMap<(String, String), Vec<packguard_core::Vulnerability>> =
+        HashMap::new();
+    let mut entries: Vec<GraphVulnerabilityEntry> = Vec::new();
+    let mut seen: BTreeSet<(String, String, String, String)> = BTreeSet::new();
+
+    for (eco, name, version) in &observed {
+        let core = vuln_cache
+            .entry((eco.clone(), name.clone()))
+            .or_insert_with(|| {
+                store
+                    .load_vulnerabilities(eco, name)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|v| packguard_core::Vulnerability {
+                        source: v.source,
+                        advisory_id: v.advisory_id,
+                        ecosystem: v.ecosystem,
+                        package_name: v.package_name,
+                        severity: v.severity,
+                        cve_id: v.cve_id,
+                        aliases: v.aliases,
+                        summary: v.summary,
+                        url: v.url,
+                        affected: v.affected,
+                        fixed_versions: v.fixed_versions,
+                        published_at: v.published_at,
+                        modified_at: v.modified_at,
+                    })
+                    .collect()
+            });
+        if core.is_empty() {
+            continue;
+        }
+        let matches = match_vulnerabilities(eco, name, version, core);
+        for m in matches {
+            let key = (
+                m.advisory_id.clone(),
+                eco.clone(),
+                name.clone(),
+                version.clone(),
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+            entries.push(GraphVulnerabilityEntry {
+                advisory_id: m.advisory_id,
+                cve_id: m.cve_id,
+                ecosystem: eco.clone(),
+                package_name: name.clone(),
+                package_version: version.clone(),
+                severity: m.severity.as_str().to_string(),
+                summary: m.summary,
+            });
+        }
+    }
+
+    entries.sort_by(|a, b| {
+        severity_rank(&b.severity)
+            .cmp(&severity_rank(&a.severity))
+            .then_with(|| {
+                a.cve_id
+                    .as_deref()
+                    .unwrap_or(&a.advisory_id)
+                    .cmp(b.cve_id.as_deref().unwrap_or(&b.advisory_id))
+            })
+            .then_with(|| a.package_name.cmp(&b.package_name))
+            .then_with(|| a.package_version.cmp(&b.package_version))
+    });
+
+    Ok(GraphVulnerabilityList { entries })
+}
+
+fn severity_rank(s: &str) -> u8 {
+    match s {
+        "critical" => 4,
+        "high" => 3,
+        "medium" => 2,
+        "low" => 1,
+        _ => 0,
+    }
 }
 
 // ---- Contamination BFS ----------------------------------------------------

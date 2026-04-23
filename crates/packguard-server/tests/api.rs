@@ -973,6 +973,33 @@ async fn contamination_endpoint_returns_chain_to_root_and_caches_result() {
 }
 
 #[tokio::test]
+async fn vulnerabilities_endpoint_lists_cves_hit_in_scope() {
+    let h = spawn(seed_react_chain_with_lodash_cve).await;
+    let body = get_json(&h, "/api/graph/vulnerabilities").await;
+    let entries = body["entries"].as_array().unwrap();
+    // The seeded CVE must land in the list with its package, version and
+    // severity — these are the fields the palette renders.
+    let entry = entries
+        .iter()
+        .find(|e| e["cve_id"] == "CVE-2021-23337")
+        .expect("seeded CVE missing from palette feed");
+    assert_eq!(entry["package_name"], "lodash");
+    assert_eq!(entry["package_version"], "4.17.20");
+    assert_eq!(entry["severity"], "high");
+    assert_eq!(entry["advisory_id"], "GHSA-lodash");
+    // Packages with no matching advisory must not bleed in — react is
+    // in the scan but clean, so it must not produce an entry.
+    assert!(entries.iter().all(|e| e["package_name"] != "react"));
+}
+
+#[tokio::test]
+async fn vulnerabilities_endpoint_returns_empty_when_store_is_empty() {
+    let h = spawn(|_, _| {}).await;
+    let body = get_json(&h, "/api/graph/vulnerabilities").await;
+    assert!(body["entries"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn contamination_endpoint_returns_empty_for_unknown_advisory() {
     let h = spawn(seed_react_chain_with_lodash_cve).await;
     let body = get_json(&h, "/api/graph/contaminated?vuln_id=GHSA-never-seen").await;

@@ -2,9 +2,10 @@
 //! service crate keeps every endpoint testable without spinning up axum.
 
 use crate::dto::{
-    CompatResponse, ContaminatedQuery, ContaminationResult, GraphQuery, GraphResponse, JobAccepted,
-    JobKind, JobView, Overview, PackageDetail, PackagesPage, PackagesQuery, PolicyDocument,
-    PolicyDryRun, PolicyDryRunResult, PolicyWrite, ProjectQuery, WorkspacesResponse,
+    CompatResponse, ContaminatedQuery, ContaminationResult, GraphQuery, GraphResponse,
+    GraphVulnerabilityList, JobAccepted, JobKind, JobView, Overview, PackageDetail, PackagesPage,
+    PackagesQuery, PolicyDocument, PolicyDryRun, PolicyDryRunResult, PolicyWrite, ProjectQuery,
+    WorkspacesResponse,
 };
 use crate::error::ApiError;
 use crate::jobs;
@@ -40,6 +41,7 @@ pub fn router(cfg: ServerConfig) -> Router {
         .route("/api/policies/dry-run", post(policy_dry_run))
         .route("/api/graph", get(graph_get))
         .route("/api/graph/contaminated", get(graph_contaminated))
+        .route("/api/graph/vulnerabilities", get(graph_vulnerabilities))
         .route(
             "/api/packages/{ecosystem}/{name}/compat",
             get(package_compat),
@@ -153,6 +155,18 @@ async fn graph_contaminated(
         &store,
         project.as_deref(),
         &q.vuln_id,
+    )?))
+}
+
+async fn graph_vulnerabilities(
+    State(s): State<AppState>,
+    Query(q): Query<ProjectQuery>,
+) -> Result<Json<GraphVulnerabilityList>, ApiError> {
+    let store = s.store.lock().await;
+    let project = resolve_project_filter(&store, q.project.as_deref())?;
+    Ok(Json(services::graph::vulnerabilities(
+        &store,
+        project.as_deref(),
     )?))
 }
 
