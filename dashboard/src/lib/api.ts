@@ -11,6 +11,7 @@ import type { JobAccepted } from "@/api/types/JobAccepted";
 import type { JobView } from "@/api/types/JobView";
 import type { GraphResponse } from "@/api/types/GraphResponse";
 import type { ContaminationResult } from "@/api/types/ContaminationResult";
+import type { GraphVulnerabilityList } from "@/api/types/GraphVulnerabilityList";
 import type { CompatResponse } from "@/api/types/CompatResponse";
 import type { WorkspacesResponse } from "@/api/types/WorkspacesResponse";
 
@@ -139,6 +140,13 @@ export const api = {
     withProject(params, project);
     return fetch(`/api/graph/contaminated?${params.toString()}`).then(
       handle<ContaminationResult>,
+    );
+  },
+
+  graphVulnerabilities: (project?: ProjectScope) => {
+    const qs = withProject(new URLSearchParams(), project).toString();
+    return fetch(`/api/graph/vulnerabilities${qs ? `?${qs}` : ""}`).then(
+      handle<GraphVulnerabilityList>,
     );
   },
 
