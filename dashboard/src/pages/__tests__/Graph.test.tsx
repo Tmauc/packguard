@@ -24,11 +24,22 @@ vi.mock("@/components/graph/GraphCanvas", () => {
     graph: GraphResponse;
     onSelect: (id: string | null) => void;
     highlight: { kind: string };
+    hidden?: Set<string>;
+    layout?: string;
   };
   return {
     COLORS,
-    GraphCanvas: ({ graph, onSelect, highlight }: Props) => (
-      <div data-testid="graph-canvas" data-mode={highlight.kind}>
+    // Surface `graph.nodes.length` + the `hidden` prop as DOM attributes so
+    // tests can assert "Graph page passed every node through and drove the
+    // hide via the prop" (Phase 11.4 finding B regression guard).
+    GraphCanvas: ({ graph, onSelect, highlight, hidden, layout }: Props) => (
+      <div
+        data-testid="graph-canvas"
+        data-mode={highlight.kind}
+        data-node-count={String(graph.nodes.length)}
+        data-hidden={[...(hidden ?? [])].sort().join(",")}
+        data-layout={layout ?? ""}
+      >
         {graph.nodes.map((n) => (
           <button
             key={n.id}
@@ -349,14 +360,19 @@ describe("GraphPage", () => {
   it("click on a legend swatch toggles the corresponding hide URL param", async () => {
     (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
     wrap();
-    await screen.findByTestId("graph-legend");
+    const canvas = await screen.findByTestId("graph-canvas");
+    expect(canvas).toHaveAttribute("data-hidden", "");
     const user = userEvent.setup();
-    // Hide the CVE category. Lodash (the only cve-bearing node) must
-    // disappear from the rendered canvas; its swatch stays visible but
-    // aria-pressed flips to false so the user can click it back on.
+    // Hide the CVE category. Post-Phase-11.4 the node stays in the DOM
+    // (Cytoscape-side display:none preserves layout positions); we
+    // verify the hide by checking the `hidden` prop threaded through to
+    // the canvas, plus the swatch's aria-pressed toggle.
     await user.click(screen.getByTestId("legend-status:cve"));
     await waitFor(() => {
-      expect(screen.queryByTestId("node-npm:lodash@4.17.23")).not.toBeInTheDocument();
+      expect(screen.getByTestId("graph-canvas")).toHaveAttribute(
+        "data-hidden",
+        "status:cve",
+      );
     });
     expect(screen.getByTestId("legend-status:cve")).toHaveAttribute("aria-pressed", "false");
   });
@@ -364,16 +380,15 @@ describe("GraphPage", () => {
   it("clicking a hidden legend item restores it", async () => {
     (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
     wrap(["/graph?hide=status:cve"]);
-    // Hidden on first render — lodash filtered out, swatch desaturated.
-    await waitFor(() => {
-      expect(screen.queryByTestId("node-npm:lodash@4.17.23")).not.toBeInTheDocument();
-    });
+    const canvas = await screen.findByTestId("graph-canvas");
+    expect(canvas).toHaveAttribute("data-hidden", "status:cve");
     const swatch = screen.getByTestId("legend-status:cve");
     expect(swatch).toHaveAttribute("aria-pressed", "false");
     const user = userEvent.setup();
     await user.click(swatch);
-    // After restore: lodash comes back, swatch is active again.
-    expect(await screen.findByTestId("node-npm:lodash@4.17.23")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId("graph-canvas")).toHaveAttribute("data-hidden", "");
+    });
     expect(screen.getByTestId("legend-status:cve")).toHaveAttribute("aria-pressed", "true");
   });
 
@@ -417,6 +432,43 @@ describe("GraphPage", () => {
     // Wait for the empty-state to render so the query has settled.
     await screen.findByText(/No dependency edges/i);
     expect(screen.queryByTestId("graph-legend")).not.toBeInTheDocument();
+  });
+
+  it("toggling a legend category does not shrink the graph passed to the canvas", async () => {
+    // Regression guard for Phase 11.4 finding B: pre-fix, clicking
+    // `cve` in the legend filtered the node array at the data layer,
+    // which Cytoscape treats as a graph change → positions reset to
+    // origin. After the fix the full node set is always handed to the
+    // canvas and the hide drives a CSS class, not a data edit.
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    wrap();
+    const canvas = await screen.findByTestId("graph-canvas");
+    expect(canvas).toHaveAttribute("data-node-count", "2");
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId("legend-status:cve"));
+    await waitFor(() => {
+      expect(screen.getByTestId("graph-canvas")).toHaveAttribute(
+        "data-hidden",
+        "status:cve",
+      );
+    });
+    // Same count: lodash didn't get pulled from the element set.
+    expect(screen.getByTestId("graph-canvas")).toHaveAttribute("data-node-count", "2");
+    // And the reported "X nodes · Y edges" label tracks visible-only
+    // state, so the legend toggle still feels like it did something.
+    expect(screen.getByText(/1 nodes · 0 edges/i)).toBeInTheDocument();
+  });
+
+  it("initial mount with ?hide=… still hands the full graph to the canvas", async () => {
+    // Cytoscape needs every node on the first layout run to compute
+    // positions — if we short-circuit the pre-hidden ones at the data
+    // layer on mount, they pop back to (0,0) the moment the user
+    // clicks the swatch to reveal them.
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    wrap(["/graph?hide=status:cve"]);
+    const canvas = await screen.findByTestId("graph-canvas");
+    expect(canvas).toHaveAttribute("data-node-count", "2");
+    expect(canvas).toHaveAttribute("data-hidden", "status:cve");
   });
 
   it("shows a helpful empty-state when the advisory hits nothing", async () => {

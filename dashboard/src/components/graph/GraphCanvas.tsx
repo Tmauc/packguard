@@ -36,12 +36,19 @@ export function GraphCanvas({
   graph,
   layout,
   highlight,
+  hidden,
   selectedId,
   onSelect,
 }: {
   graph: GraphResponse;
   layout: LayoutName;
   highlight: HighlightMode;
+  /// Legend-driven hide set (keys like `eco:npm`, `status:cve`). Applied
+  /// as a CSS class on the Cytoscape instance — nodes/edges are never
+  /// removed from the element set, so layout runs once at mount on the
+  /// full graph and subsequent toggles preserve positions (Phase 11.4,
+  /// finding B). `undefined` is treated as empty.
+  hidden?: Set<string>;
   selectedId: string | null;
   onSelect: (id: string | null) => void;
 }) {
@@ -230,6 +237,15 @@ export function GraphCanvas({
           width: 2.5,
         },
       },
+      // Phase 11.4 finding B: `.hidden` is toggled by a class effect
+      // below instead of by filtering the `elements` prop. `display:
+      // 'none'` keeps the element in Cytoscape's internal bookkeeping
+      // (position, adjacency) but skips rendering + hit testing — so
+      // clicking the legend doesn't bounce nodes back to origin.
+      {
+        selector: ".hidden",
+        style: { display: "none" },
+      },
     ],
     [],
   );
@@ -282,6 +298,49 @@ export function GraphCanvas({
       }
     });
   }, [selectedId, highlight]);
+
+  // Apply the legend hide set via class toggles instead of filtering the
+  // element array — same reasoning as the focus-class effect above, but
+  // this one is what lets positions survive across toggles. An edge is
+  // hidden whenever either endpoint is hidden, so dangling lines don't
+  // fly off into the void when a category disappears.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.batch(() => {
+      cy.elements().removeClass("hidden");
+      if (!hidden || hidden.size === 0) return;
+      cy.nodes().forEach((n) => {
+        const eco = n.data("ecosystem");
+        if (typeof eco === "string" && hidden.has(`eco:${eco}`)) {
+          n.addClass("hidden");
+          return;
+        }
+        if (hidden.has("status:cve") && n.data("cve_severity")) {
+          n.addClass("hidden");
+          return;
+        }
+        if (hidden.has("status:malware") && n.data("has_malware") === "1") {
+          n.addClass("hidden");
+          return;
+        }
+        if (hidden.has("status:typosquat") && n.data("has_typosquat") === "1") {
+          n.addClass("hidden");
+          return;
+        }
+        if (hidden.has("status:root") && n.data("is_root") === "1") {
+          n.addClass("hidden");
+        }
+      });
+      cy.edges().forEach((e) => {
+        const src = cy.getElementById(e.data("source"));
+        const tgt = cy.getElementById(e.data("target"));
+        if (src.hasClass("hidden") || tgt.hasClass("hidden")) {
+          e.addClass("hidden");
+        }
+      });
+    });
+  }, [hidden]);
 
   return (
     <CytoscapeComponent

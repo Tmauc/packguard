@@ -129,26 +129,35 @@ export function GraphPage() {
     return { ...graphQuery.data, nodes, edges };
   }, [graphQuery.data, highlight]);
 
-  // Client-side hide filter driven by clicks on the legend. Legend keeps
-  // the deselected entries visible (desaturated) so the user can always
-  // click back in — that's why Legend receives `contaminationGraph`
-  // (pre-hide) rather than the post-hide view below.
-  const displayGraph = useMemo(() => {
-    if (!contaminationGraph) return contaminationGraph;
-    if (hideSet.size === 0) return contaminationGraph;
-    const nodes = contaminationGraph.nodes.filter((n) => {
-      if (hideSet.has(`eco:${n.ecosystem}`)) return false;
-      if (hideSet.has("status:cve") && n.cve_severity) return false;
-      if (hideSet.has("status:malware") && n.has_malware) return false;
-      if (hideSet.has("status:typosquat") && n.has_typosquat) return false;
-      if (hideSet.has("status:root") && n.is_root) return false;
-      return true;
-    });
-    const nodeIds = new Set(nodes.map((n) => n.id));
-    const edges = contaminationGraph.edges.filter(
-      (e) => nodeIds.has(e.source) && nodeIds.has(e.target),
-    );
-    return { ...contaminationGraph, nodes, edges };
+  // Visible node/edge counts after legend-category hide. Kept as scalars
+  // rather than a full post-hide `GraphResponse` subset because filtering
+  // the node array on every toggle spawns a new `elements` prop for
+  // GraphCanvas, which Cytoscape treats as "graph changed → re-layout"
+  // and resets every node to the origin. The canvas now gets the stable
+  // pre-hide graph + a `hidden` prop and toggles a CSS class internally,
+  // so positions survive the round-trip (Phase 11.4 / finding B).
+  const visibleCounts = useMemo(() => {
+    if (!contaminationGraph) return { nodes: 0, edges: 0 };
+    if (hideSet.size === 0) {
+      return {
+        nodes: contaminationGraph.nodes.length,
+        edges: contaminationGraph.edges.length,
+      };
+    }
+    const kept = new Set<string>();
+    for (const n of contaminationGraph.nodes) {
+      if (hideSet.has(`eco:${n.ecosystem}`)) continue;
+      if (hideSet.has("status:cve") && n.cve_severity) continue;
+      if (hideSet.has("status:malware") && n.has_malware) continue;
+      if (hideSet.has("status:typosquat") && n.has_typosquat) continue;
+      if (hideSet.has("status:root") && n.is_root) continue;
+      kept.add(n.id);
+    }
+    let edgeCount = 0;
+    for (const e of contaminationGraph.edges) {
+      if (kept.has(e.source) && kept.has(e.target)) edgeCount += 1;
+    }
+    return { nodes: kept.size, edges: edgeCount };
   }, [contaminationGraph, hideSet]);
 
   const selectedNode = useMemo(() => {
@@ -377,19 +386,19 @@ export function GraphPage() {
                 the graph.
               </div>
             )}
-            {displayGraph && displayGraph.nodes.length > 0 && (
+            {contaminationGraph && contaminationGraph.nodes.length > 0 && (
               <GraphCanvas
-                graph={displayGraph}
+                graph={contaminationGraph}
                 layout={layout}
                 highlight={highlight}
+                hidden={hideSet}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
               />
             )}
-            {displayGraph && (
+            {contaminationGraph && (
               <div className="absolute bottom-2 left-2 rounded-md bg-white/80 px-2 py-0.5 text-[10px] text-zinc-500 shadow">
-                {displayGraph.nodes.length} nodes ·{" "}
-                {displayGraph.edges.length} edges
+                {visibleCounts.nodes} nodes · {visibleCounts.edges} edges
                 {highlight.kind === "contamination" && graphQuery.data && (
                   <span className="ml-1 text-zinc-400">
                     / {graphQuery.data.nodes.length} total
