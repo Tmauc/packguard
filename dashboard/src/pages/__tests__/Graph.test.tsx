@@ -10,6 +10,7 @@ vi.mock("@/lib/api", () => ({
   api: {
     graph: vi.fn(),
     contaminated: vi.fn(),
+    graphVulnerabilities: vi.fn(),
   },
 }));
 
@@ -109,6 +110,20 @@ function wrap(initialEntries: string[] = ["/graph"]) {
 beforeEach(() => {
   (api.graph as ReturnType<typeof vi.fn>).mockReset();
   (api.contaminated as ReturnType<typeof vi.fn>).mockReset();
+  (api.graphVulnerabilities as ReturnType<typeof vi.fn>).mockReset();
+  (api.graphVulnerabilities as ReturnType<typeof vi.fn>).mockResolvedValue({
+    entries: [
+      {
+        advisory_id: "GHSA-seed",
+        cve_id: "CVE-2026-4800",
+        ecosystem: "npm",
+        package_name: "lodash",
+        package_version: "4.17.23",
+        severity: "high",
+        summary: null,
+      },
+    ],
+  });
 });
 
 describe("GraphPage", () => {
@@ -146,25 +161,44 @@ describe("GraphPage", () => {
     });
   });
 
-  it("activates contamination mode when a CVE is typed + Trace is clicked", async () => {
+  it("activates contamination mode when a CVE is picked from the palette", async () => {
     (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
     (api.contaminated as ReturnType<typeof vi.fn>).mockResolvedValue(CONTAMINATION);
     wrap();
     await screen.findByTestId("graph-canvas");
     const user = userEvent.setup();
-    await user.type(
-      screen.getByPlaceholderText(/Focus CVE/i),
-      "CVE-2026-4800",
-    );
-    await user.click(screen.getByRole("button", { name: /^Trace$/i }));
+    await user.click(screen.getByTestId("open-cve-palette"));
+    const row = await screen.findByTestId("cve-palette-row-CVE-2026-4800");
+    await user.click(row);
     await waitFor(() => {
       expect(api.contaminated).toHaveBeenCalledWith("CVE-2026-4800", undefined);
     });
     const canvas = await screen.findByTestId("graph-canvas");
     expect(canvas.getAttribute("data-mode")).toBe("contamination");
-    expect(
-      screen.getByText(/1 contamination chain/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/1 contamination chain/i)).toBeInTheDocument();
+  });
+
+  it("opens the CVE palette via the Cmd+K / Ctrl+K shortcut", async () => {
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    wrap();
+    await screen.findByTestId("graph-canvas");
+    expect(screen.queryByTestId("cve-palette")).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    expect(await screen.findByTestId("cve-palette")).toBeInTheDocument();
+    // Toggle closes it again.
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    await waitFor(() => {
+      expect(screen.queryByTestId("cve-palette")).not.toBeInTheDocument();
+    });
+  });
+
+  it("opens the palette via click on the Focus CVE trigger", async () => {
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    wrap();
+    await screen.findByTestId("graph-canvas");
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId("open-cve-palette"));
+    expect(await screen.findByTestId("cve-palette")).toBeInTheDocument();
   });
 
   it("opens the side panel with package detail link when a node is clicked", async () => {

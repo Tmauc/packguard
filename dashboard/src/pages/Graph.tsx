@@ -9,6 +9,7 @@ import { api } from "@/lib/api";
 import { GraphCanvas, COLORS } from "@/components/graph/GraphCanvas";
 import type { HighlightMode } from "@/components/graph/GraphCanvas";
 import { NodePanel } from "@/components/graph/NodePanel";
+import { CvePalette } from "@/components/graph/CvePalette";
 import type { LayoutName } from "@/components/graph/register-layouts";
 import { LAYOUTS } from "@/components/graph/register-layouts";
 import { ScopeBadge } from "@/components/layout/ScopeBadge";
@@ -60,11 +61,21 @@ export function GraphPage() {
         .filter((s) => HIDEABLE_KEYS.has(s)),
     );
   }, [params]);
-  const [cveInput, setCveInput] = useState(focusCve);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
+  // Cmd+K / Ctrl+K toggle the palette while the /graph page is mounted.
+  // Scoped to this effect (not a global shortcut registry) because the
+  // trigger is only meaningful where the focus target lives.
   useEffect(() => {
-    setCveInput(focusCve);
-  }, [focusCve]);
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const graphQuery = useQuery({
     queryKey: ["graph", { kinds, maxDepth }, scope ?? null],
@@ -201,17 +212,16 @@ export function GraphPage() {
     });
   }
 
-  function applyCveFilter() {
+  function selectCveFromPalette(vulnId: string) {
+    setPaletteOpen(false);
     setParams((prev) => {
       const next = new URLSearchParams(prev);
-      if (cveInput.trim()) next.set("focus_cve", cveInput.trim());
-      else next.delete("focus_cve");
+      next.set("focus_cve", vulnId);
       return next;
     });
   }
 
   function clearCveFilter() {
-    setCveInput("");
     setParams((prev) => {
       const next = new URLSearchParams(prev);
       next.delete("focus_cve");
@@ -293,19 +303,20 @@ export function GraphPage() {
             </select>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <SearchIcon className="h-4 w-4 text-zinc-400" />
-            <input
-              type="search"
-              placeholder="Focus CVE (e.g. CVE-2026-4800)"
-              value={cveInput}
-              onChange={(e) => setCveInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") applyCveFilter();
-              }}
-              className="h-7 w-56 rounded-md border border-zinc-300 bg-white px-2 text-sm"
-            />
-            <Button size="sm" variant="outline" onClick={applyCveFilter}>
-              Trace
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setPaletteOpen(true)}
+              data-testid="open-cve-palette"
+              className="gap-1.5"
+            >
+              <SearchIcon className="h-3.5 w-3.5 text-zinc-400" />
+              <span className="text-xs text-zinc-700">
+                {focusCve ? `Focus: ${focusCve}` : "Focus CVE…"}
+              </span>
+              <kbd className="rounded border border-zinc-200 bg-zinc-50 px-1 py-0 text-[10px] text-zinc-500">
+                ⌘K
+              </kbd>
             </Button>
             {focusCve && (
               <Button size="sm" variant="outline" onClick={clearCveFilter}>
@@ -392,6 +403,11 @@ export function GraphPage() {
           )}
         </CardContent>
       </Card>
+      <CvePalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        onSelect={selectCveFromPalette}
+      />
     </div>
   );
 }
