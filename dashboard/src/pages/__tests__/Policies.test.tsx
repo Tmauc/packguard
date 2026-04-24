@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { vi } from "vitest";
 import { PoliciesPage } from "@/pages/Policies";
+import { EditorView } from "@uiw/react-codemirror";
 import { ApiError } from "@/lib/api";
 import type { PolicyDocument } from "@/api/types/PolicyDocument";
 import type { PolicyDryRunResult } from "@/api/types/PolicyDryRunResult";
@@ -21,22 +22,42 @@ vi.mock("@/lib/api", async () => {
 });
 
 // CodeMirror struggles inside happy-dom; stub it with a plain textarea so
-// the UI interactions we actually care about stay observable.
-vi.mock("@uiw/react-codemirror", () => ({
-  default: ({
-    value,
-    onChange,
-  }: {
-    value: string;
-    onChange: (v: string) => void;
-  }) => (
-    <textarea
-      data-testid="policy-editor"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-    />
-  ),
-}));
+// the UI interactions we actually care about stay observable. The stub
+// also captures the `extensions` array so the overflow-fix test below can
+// assert `EditorView.lineWrapping` is wired in without rendering real CM.
+const cm = vi.hoisted(() => ({ extensions: [] as unknown[] }));
+vi.mock("@uiw/react-codemirror", async () => {
+  // Re-expose the real module's named exports (EditorView, etc.) so
+  // Policies.tsx's `import { EditorView }` resolves, while swapping the
+  // default export for a lightweight textarea and capturing the
+  // extensions array for the overflow-fix test below.
+  const actual =
+    await vi.importActual<typeof import("@uiw/react-codemirror")>(
+      "@uiw/react-codemirror",
+    );
+  return {
+    ...actual,
+    __esModule: true,
+    default: ({
+      value,
+      onChange,
+      extensions,
+    }: {
+      value: string;
+      onChange: (v: string) => void;
+      extensions?: unknown[];
+    }) => {
+      cm.extensions = extensions ?? [];
+      return (
+        <textarea
+          data-testid="policy-editor"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      );
+    },
+  };
+});
 
 import { api } from "@/lib/api";
 
@@ -173,6 +194,28 @@ describe("PoliciesPage", () => {
     });
     const editor = (await screen.findByTestId("policy-editor")) as HTMLTextAreaElement;
     await waitFor(() => expect(editor.value).toContain("# /tmp/ws-b"));
+  });
+
+  it("enables line wrapping on the YAML editor so long lines don't trigger horizontal scroll", async () => {
+    (api.policies as ReturnType<typeof vi.fn>).mockResolvedValue(DOC);
+    wrap();
+    await screen.findByTestId("policy-editor");
+    // EditorView.lineWrapping is a CodeMirror extension singleton; strict
+    // identity check confirms Policies.tsx threads it into the array
+    // instead of just enabling a soft-wrap CSS hack.
+    expect(cm.extensions).toContain(EditorView.lineWrapping);
+  });
+
+  it("stacks the editor and dry-run panels below the 1200px breakpoint", async () => {
+    (api.policies as ReturnType<typeof vi.fn>).mockResolvedValue(DOC);
+    wrap();
+    const grid = await screen.findByTestId("policies-grid");
+    // Default (mobile-first): single column — no columns class is active.
+    // min-[1200px]: arbitrary breakpoint kicks the 2-column layout in
+    // only once the viewport clears 1200px. The old `lg:` (1024px)
+    // breakpoint was the overflow trigger on 1100px-wide laptops.
+    expect(grid.className).toContain("min-[1200px]:grid-cols-[1fr_22rem]");
+    expect(grid.className).not.toContain("lg:grid-cols-");
   });
 
   it("renders hover-tooltips on the action buttons and status badges", async () => {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import CodeMirror from "@uiw/react-codemirror";
+import CodeMirror, { EditorView } from "@uiw/react-codemirror";
 import { yaml as yamlLang } from "@codemirror/lang-yaml";
 import { toast } from "sonner";
 import { FolderTreeIcon } from "lucide-react";
@@ -96,7 +96,7 @@ export function PoliciesPage() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 overflow-x-hidden">
       <header className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
           Policy
@@ -155,7 +155,10 @@ export function PoliciesPage() {
         </div>
       </header>
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_22rem]">
+      <div
+        className="grid gap-4 min-[1200px]:grid-cols-[1fr_22rem]"
+        data-testid="policies-grid"
+      >
         <Card>
           <CardHeader>
             <CardTitle>.packguard.yml</CardTitle>
@@ -171,7 +174,7 @@ export function PoliciesPage() {
               <CodeMirror
                 value={draft}
                 height="420px"
-                extensions={[yamlLang()]}
+                extensions={[yamlLang(), EditorView.lineWrapping]}
                 onChange={(v) => setDraft(v)}
                 basicSetup={{
                   lineNumbers: true,
@@ -323,7 +326,7 @@ function DryRunCard({
 
 function SelectWorkspaceState() {
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 overflow-x-hidden">
       <header className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
           Policy
