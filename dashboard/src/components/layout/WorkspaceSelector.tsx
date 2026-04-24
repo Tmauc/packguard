@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { useCollapsedFolders } from "@/lib/useCollapsedFolders";
 import {
   buildWorkspaceTree,
   foldersWithMatches,
@@ -65,21 +66,15 @@ export function WorkspaceSelector() {
 
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [collapsed, setCollapsed] = useState<Set<string>>(
-    () => new Set(collectFolderIds(tree)),
+  // Collapse state hydrates from localStorage once on mount (see
+  // useCollapsedFolders) and persists any user toggle on the way out.
+  // Newly scanned folders default to collapsed via seedFrom().
+  const { collapsed, toggle: toggleFolder, seedFrom } = useCollapsedFolders(
+    collectFolderIds(tree),
   );
-  // Re-seed the collapse state when the workspace set changes — newly
-  // scanned folders should start collapsed so the tree doesn't spring
-  // open on every refresh.
   useEffect(() => {
-    setCollapsed((prev) => {
-      const next = new Set<string>(prev);
-      for (const id of collectFolderIds(tree)) {
-        if (!prev.has(id)) next.add(id);
-      }
-      return next;
-    });
-  }, [tree]);
+    seedFrom(collectFolderIds(tree));
+  }, [tree, seedFrom]);
 
   const popoverRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -127,15 +122,6 @@ export function WorkspaceSelector() {
     : scope
       ? scopeLabel(scope)
       : "All workspaces";
-
-  const toggleFolder = (id: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
 
   const pick = (path: string | undefined) => {
     setScope(path);
