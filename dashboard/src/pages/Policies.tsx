@@ -10,11 +10,40 @@ import { Button } from "@/components/ui/button";
 import { api, ApiError } from "@/lib/api";
 import { ScopeBadge } from "@/components/layout/ScopeBadge";
 import { scopeLabel, useScope } from "@/components/layout/workspace-scope";
+import { useTheme } from "@/components/theme/useTheme";
 import type { PolicyDryRunResult } from "@/api/types/PolicyDryRunResult";
+
+// Minimal dark theme for CodeMirror — no preset dep. Targets the
+// selectors that show the white backdrop in light mode (editor body,
+// gutter, active line, selection, cursor) and leaves token highlighting
+// to CM's default highlight style which is dark-mode-safe already.
+// `{ dark: true }` also swaps CM's default highlight colors to the dark
+// variant.
+const codeMirrorDark = EditorView.theme(
+  {
+    "&": {
+      color: "#e4e4e7", // zinc-200
+      backgroundColor: "#18181b", // zinc-900
+    },
+    ".cm-content": { caretColor: "#fafafa" },
+    "&.cm-focused .cm-cursor": { borderLeftColor: "#fafafa" },
+    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection":
+      { backgroundColor: "#3f3f46" }, // zinc-700
+    ".cm-activeLine": { backgroundColor: "#27272a" }, // zinc-800
+    ".cm-activeLineGutter": { backgroundColor: "#27272a" },
+    ".cm-gutters": {
+      backgroundColor: "#18181b",
+      color: "#71717a", // zinc-500
+      border: "none",
+    },
+  },
+  { dark: true },
+);
 
 export function PoliciesPage() {
   const qc = useQueryClient();
   const scope = useScope();
+  const { resolved } = useTheme();
   const policy = useQuery({
     queryKey: ["policies", scope ?? null],
     queryFn: () => api.policies(scope),
@@ -174,7 +203,11 @@ export function PoliciesPage() {
               <CodeMirror
                 value={draft}
                 height="420px"
-                extensions={[yamlLang(), EditorView.lineWrapping]}
+                extensions={
+                  resolved === "dark"
+                    ? [yamlLang(), EditorView.lineWrapping, codeMirrorDark]
+                    : [yamlLang(), EditorView.lineWrapping]
+                }
                 onChange={(v) => setDraft(v)}
                 basicSetup={{
                   lineNumbers: true,

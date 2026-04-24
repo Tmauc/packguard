@@ -3,6 +3,7 @@ import CytoscapeComponent from "react-cytoscapejs";
 import type { Core, ElementDefinition, NodeSingular, EventObject } from "cytoscape";
 import type { GraphResponse } from "@/api/types/GraphResponse";
 import type { LayoutName } from "@/components/graph/register-layouts";
+import { useTheme } from "@/components/theme/useTheme";
 import "@/components/graph/register-layouts";
 
 /// Loose cytoscape stylesheet typing — the @types/cytoscape surface for
@@ -13,6 +14,9 @@ type CyStyleRule = { selector: string; style: Record<string, unknown> };
 /// Colour palette — mirrors the CLI + dashboard's existing semantics.
 /// Ecosystem fills pair with the Badge component's `muted` tone so the
 /// graph feels like the same product, not a separate visualization.
+/// The `root` + `edgeRuntime` tokens flip toward white in dark mode
+/// (otherwise a black root on a zinc-950 backdrop vanishes); everything
+/// else has enough saturation to read on either backdrop.
 export const COLORS = {
   ecoNpm: "#2563eb", // blue-600
   ecoPypi: "#16a34a", // green-600
@@ -27,6 +31,15 @@ export const COLORS = {
   edgeOptional: "#a1a1aa",
   highlight: "#dc2626",
 } as const;
+
+const DARK_OVERRIDES = {
+  root: "#fafafa", // zinc-50
+  edgeRuntime: "#d4d4d8", // zinc-300
+  edgeOptional: "#52525b", // zinc-600 — a notch darker than light mode so it still reads as "muted"
+  label: "#d4d4d8", // zinc-300 for node labels on the dark canvas
+} as const;
+
+const LIGHT_LABEL = "#3f3f46"; // zinc-700
 
 export type HighlightMode =
   | { kind: "none" }
@@ -53,6 +66,12 @@ export function GraphCanvas({
   onSelect: (id: string | null) => void;
 }) {
   const cyRef = useRef<Core | null>(null);
+  const { resolved } = useTheme();
+  const isDark = resolved === "dark";
+  const rootColor = isDark ? DARK_OVERRIDES.root : COLORS.root;
+  const edgeRuntimeColor = isDark ? DARK_OVERRIDES.edgeRuntime : COLORS.edgeRuntime;
+  const edgeOptionalColor = isDark ? DARK_OVERRIDES.edgeOptional : COLORS.edgeOptional;
+  const labelColor = isDark ? DARK_OVERRIDES.label : LIGHT_LABEL;
 
   const elements: ElementDefinition[] = useMemo(() => {
     const out: ElementDefinition[] = [];
@@ -104,7 +123,7 @@ export function GraphCanvas({
           "text-valign": "bottom",
           "text-halign": "center",
           "text-margin-y": 4,
-          color: "#3f3f46",
+          color: labelColor,
           "background-color": (ele: NodeSingular) => {
             const eco = ele.data("ecosystem");
             if (eco === "npm") return COLORS.ecoNpm;
@@ -114,7 +133,7 @@ export function GraphCanvas({
           width: 14,
           height: 14,
           "border-width": 1.5,
-          "border-color": "#ffffff",
+          "border-color": isDark ? "#18181b" : "#ffffff",
           "transition-property": "opacity, background-color, border-color",
           "transition-duration": 180,
         },
@@ -164,7 +183,7 @@ export function GraphCanvas({
           width: 22,
           height: 22,
           "border-width": 3,
-          "border-color": COLORS.root,
+          "border-color": rootColor,
           "font-weight": 700,
           "font-size": 11,
         },
@@ -174,9 +193,9 @@ export function GraphCanvas({
         selector: "edge",
         style: {
           width: 1,
-          "line-color": COLORS.edgeRuntime,
+          "line-color": edgeRuntimeColor,
           "target-arrow-shape": "triangle",
-          "target-arrow-color": COLORS.edgeRuntime,
+          "target-arrow-color": edgeRuntimeColor,
           "arrow-scale": 0.6,
           "curve-style": "bezier",
           opacity: 0.55,
@@ -197,8 +216,8 @@ export function GraphCanvas({
       {
         selector: "edge[kind = 'optional']",
         style: {
-          "line-color": COLORS.edgeOptional,
-          "target-arrow-color": COLORS.edgeOptional,
+          "line-color": edgeOptionalColor,
+          "target-arrow-color": edgeOptionalColor,
           "line-style": "dotted",
         },
       },
@@ -247,7 +266,7 @@ export function GraphCanvas({
         style: { display: "none" },
       },
     ],
-    [],
+    [rootColor, edgeRuntimeColor, edgeOptionalColor, labelColor, isDark],
   );
 
   const layoutOptions = useMemo(() => {

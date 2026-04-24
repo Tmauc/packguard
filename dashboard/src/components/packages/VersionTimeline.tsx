@@ -4,6 +4,7 @@ import { Group } from "@visx/group";
 import { scaleTime } from "@visx/scale";
 import { localPoint } from "@visx/event";
 import { useTooltip, TooltipWithBounds, defaultStyles } from "@visx/tooltip";
+import { useTheme } from "@/components/theme/useTheme";
 import type { MalwareEntry } from "@/api/types/MalwareEntry";
 import type { VersionRow } from "@/api/types/VersionRow";
 
@@ -104,6 +105,16 @@ export function VersionTimeline({
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(800);
   const [focus, setFocus] = useState<[number, number] | null>(null);
+  const { resolved } = useTheme();
+  const isDark = resolved === "dark";
+  // Axis / baseline palette. Light uses zinc-200/500; dark drops the
+  // baseline two shades and pushes tick labels one shade lighter so
+  // they stay legible on the zinc-900 panel backdrop.
+  const baselineStroke = isDark ? "#3f3f46" : "#e4e4e7"; // zinc-700 / zinc-200
+  const axisTickStroke = baselineStroke;
+  const axisLabelFill = isDark ? "#a1a1aa" : "#71717a"; // zinc-400 / zinc-500
+  const installedStroke = isDark ? "#fafafa" : "#18181b"; // zinc-50 / zinc-900
+  const markerRing = isDark ? "#18181b" : "#ffffff"; // zinc-900 / white
 
   // ResizeObserver keeps the SVG in sync with the container width. Happy-dom
   // lacks it; we guard so tests don't explode.
@@ -274,7 +285,7 @@ export function VersionTimeline({
               x2={innerWidth}
               y1={rowY}
               y2={rowY}
-              stroke="#e4e4e7"
+              stroke={baselineStroke}
               strokeWidth={1}
             />
 
@@ -302,7 +313,7 @@ export function VersionTimeline({
                         cy={rowY}
                         r={isInstalled ? MARKER_RADIUS + 2 : MARKER_RADIUS}
                         fill={COLORS[m.kind]}
-                        stroke={isInstalled ? "#18181b" : "#ffffff"}
+                        stroke={isInstalled ? installedStroke : markerRing}
                         strokeWidth={isInstalled ? 2 : 1}
                         onMouseMove={(e) => showMarkerTooltip(e, m)}
                         onMouseLeave={tooltip.hideTooltip}
@@ -330,7 +341,7 @@ export function VersionTimeline({
                 x={xScale(new Date(installedMarker.time)) ?? 0}
                 rowY={rowY}
                 label="installed"
-                color="#18181b"
+                color={installedStroke}
               />
             )}
             {clustered && recommendedMarker && (
@@ -347,12 +358,12 @@ export function VersionTimeline({
               scale={xScale}
               numTicks={Math.max(3, Math.floor(innerWidth / 110))}
               tickLabelProps={() => ({
-                fill: "#71717a",
+                fill: axisLabelFill,
                 fontSize: 10,
                 textAnchor: "middle",
               })}
-              stroke="#e4e4e7"
-              tickStroke="#e4e4e7"
+              stroke={baselineStroke}
+              tickStroke={axisTickStroke}
             />
           </Group>
         </svg>
@@ -408,6 +419,9 @@ function ClusterMarker({
   onLeave: () => void;
   onClick: () => void;
 }) {
+  const { resolved } = useTheme();
+  const ring = resolved === "dark" ? "#18181b" : "#ffffff"; // zinc-900 / white
+  const labelFill = resolved === "dark" ? "#a1a1aa" : "#52525b"; // zinc-400 / zinc-600
   const r = Math.min(9, 3 + Math.log2(c.markers.length + 1) * 1.4);
   return (
     <g style={{ cursor: "pointer" }} onClick={onClick}>
@@ -416,7 +430,7 @@ function ClusterMarker({
         cy={y}
         r={r}
         fill={COLORS[c.kind]}
-        stroke="#ffffff"
+        stroke={ring}
         strokeWidth={1}
         onMouseMove={onHover}
         onMouseLeave={onLeave}
@@ -426,7 +440,7 @@ function ClusterMarker({
         y={y - r - 2}
         textAnchor="middle"
         fontSize={9}
-        fill="#52525b"
+        fill={labelFill}
       >
         +{c.markers.length}
       </text>

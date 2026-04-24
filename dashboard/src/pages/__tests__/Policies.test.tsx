@@ -6,8 +6,20 @@ import { vi } from "vitest";
 import { PoliciesPage } from "@/pages/Policies";
 import { EditorView } from "@uiw/react-codemirror";
 import { ApiError } from "@/lib/api";
+import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import type { PolicyDocument } from "@/api/types/PolicyDocument";
 import type { PolicyDryRunResult } from "@/api/types/PolicyDryRunResult";
+
+// happy-dom has no matchMedia; the Policies page reads `useTheme()` to
+// swap CodeMirror into its dark theme, so we have to stub the media
+// query for tests that wrap in an explicit ThemeProvider.
+function stubMatchMedia(matches: boolean) {
+  window.matchMedia = vi.fn().mockReturnValue({
+    matches,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  }) as unknown as typeof window.matchMedia;
+}
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -216,6 +228,34 @@ describe("PoliciesPage", () => {
     // breakpoint was the overflow trigger on 1100px-wide laptops.
     expect(grid.className).toContain("min-[1200px]:grid-cols-[1fr_22rem]");
     expect(grid.className).not.toContain("lg:grid-cols-");
+  });
+
+  it("activates the CodeMirror dark theme when the resolved theme is dark", async () => {
+    // Wrap in a real ThemeProvider + force the OS media query to dark
+    // so the provider's `resolved` settles on "dark". The CodeMirror
+    // stub then captures whatever extensions the page passed.
+    stubMatchMedia(true);
+    window.localStorage.setItem("packguard.theme", "system");
+    (api.policies as ReturnType<typeof vi.fn>).mockResolvedValue(DOC);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <ThemeProvider>
+        <QueryClientProvider client={client}>
+          <MemoryRouter initialEntries={[SCOPED_URL]}>
+            <PoliciesPage />
+          </MemoryRouter>
+        </QueryClientProvider>
+      </ThemeProvider>,
+    );
+    await screen.findByTestId("policy-editor");
+    // Dark-mode extensions = [yamlLang(), lineWrapping, codeMirrorDark]
+    // (length 3). Light mode would capture 2.
+    expect(cm.extensions.length).toBe(3);
+    // lineWrapping is still wired even with the dark theme added.
+    expect(cm.extensions).toContain(EditorView.lineWrapping);
+    window.localStorage.removeItem("packguard.theme");
   });
 
   it("renders hover-tooltips on the action buttons and status badges", async () => {

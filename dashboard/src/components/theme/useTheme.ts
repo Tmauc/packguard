@@ -13,10 +13,20 @@ export const STORAGE_KEY = "packguard.theme";
 
 export const ThemeContext = createContext<ThemeContextValue | null>(null);
 
+// Safe defaults returned when a component calls useTheme() without an
+// ancestor ThemeProvider. Production code always mounts one high in
+// main.tsx, but tests that render a leaf component in isolation don't —
+// rather than force every test to wrap, we fall back to a "light,
+// unchangeable" context. setTheme is a no-op so misuse in prod still
+// shows up visually (the toggle will click and do nothing) rather than
+// crashing the whole page.
+const DEFAULT_CONTEXT: ThemeContextValue = {
+  theme: "system",
+  resolved: "light",
+  setTheme: () => {},
+};
+
 export function useTheme(): ThemeContextValue {
   const ctx = useContext(ThemeContext);
-  if (!ctx) {
-    throw new Error("useTheme must be used inside a <ThemeProvider>.");
-  }
-  return ctx;
+  return ctx ?? DEFAULT_CONTEXT;
 }
