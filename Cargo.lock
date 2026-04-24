@@ -1425,6 +1425,7 @@ dependencies = [
  "dirs",
  "open",
  "owo-colors",
+ "packguard-actions",
  "packguard-core",
  "packguard-intel",
  "packguard-policy",

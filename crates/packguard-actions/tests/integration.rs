@@ -445,7 +445,8 @@ fn defer_expires_after_days_and_action_reappears() {
     assert!(!hidden.iter().any(|a| a.id == target.id));
 
     // Past the defer window → resurfaces with the same id (stable).
-    let resurfaced = collect_all(&store, Some(&repo), now + Duration::days(8), false, false).unwrap();
+    let resurfaced =
+        collect_all(&store, Some(&repo), now + Duration::days(8), false, false).unwrap();
     let back = resurfaced
         .iter()
         .find(|a| a.id == target.id)
@@ -525,7 +526,10 @@ fn collect_all_include_deferred_surfaces_deferred_until() {
         .find(|a| a.id == target.id)
         .expect("include_deferred should surface the deferred row");
     assert!(row.dismissed_at.is_some());
-    assert!(row.deferred_until.is_some(), "deferred_until missing: {row:?}");
+    assert!(
+        row.deferred_until.is_some(),
+        "deferred_until missing: {row:?}"
+    );
 
     // include_dismissed alone does NOT bring a deferred row back — the
     // two flags address different buckets.

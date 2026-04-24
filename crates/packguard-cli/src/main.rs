@@ -1,3 +1,5 @@
+mod actions_cli;
+
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -230,6 +232,12 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Prioritized list of remediation actions (read-only + copy-paste).
+    /// Phase 12c — mirrors the `/actions` dashboard page: same data,
+    /// same priority order. Subcommands `dismiss` / `defer` / `restore`
+    /// share the dashboard's SQLite persistence so a CLI dismiss is
+    /// respected in the UI and vice-versa.
+    Actions(actions_cli::ActionsArgs),
 }
 
 #[tokio::main]
@@ -348,6 +356,7 @@ async fn main() -> Result<()> {
             )
         }
         Cmd::Scans { json } => scans(json, &store_path),
+        Cmd::Actions(args) => actions_cli::run(args, &store_path),
     }
 }
 

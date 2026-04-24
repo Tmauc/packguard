@@ -17,7 +17,9 @@ use packguard_intel::match_vulnerabilities;
 use packguard_policy::{
     compute_recommended_version_full, evaluate_dependency_full, Compliance, Dialect, Policy,
 };
-use packguard_store::{normalize_repo_path, Store, StoredActionDismissal, StoredDependency, StoredMalware};
+use packguard_store::{
+    normalize_repo_path, Store, StoredActionDismissal, StoredDependency, StoredMalware,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
