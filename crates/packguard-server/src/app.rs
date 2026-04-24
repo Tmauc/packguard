@@ -4,7 +4,7 @@
 use crate::dto::{
     ActionDeferRequest, ActionDeferResponse, ActionDismissRequest, ActionDismissResponse,
     ActionsQuery, ActionsResponse, CompatResponse, ContaminatedQuery, ContaminationResult,
-    GraphQuery, GraphResponse, GraphVulnerabilityList, JobAccepted, JobKind, JobView, Overview,
+    GraphQuery, GraphResponse, GraphVulnerabilityList, JobAccepted, JobView, Overview,
     PackageDetail, PackagesPage, PackagesQuery, PolicyDocument, PolicyDryRun, PolicyDryRunResult,
     PolicyWrite, ProjectQuery, WorkspacesResponse,
 };
@@ -252,17 +252,54 @@ fn resolve_project_filter(
     }
 }
 
+#[derive(serde::Deserialize)]
+struct ScanQuery {
+    path: Option<PathBuf>,
+}
+
 async fn scan_create(
     State(s): State<AppState>,
+    Query(q): Query<ScanQuery>,
 ) -> Result<(StatusCode, Json<JobAccepted>), ApiError> {
-    let id = jobs::spawn(s, JobKind::Scan).await?;
+    // Phase 13.6: the dashboard's AddWorkspaceModal hands us a raw
+    // absolute path typed by the user. Canonicalize + existence check
+    // happen here so a typo surfaces as a 400 before we queue a job
+    // that would fail 5s later with a cryptic scan-layer error.
+    //
+    // `None` keeps the pre-13.6 semantics intact — the CLI's
+    // `packguard ui` without a user interaction still scans
+    // `state.repo_path`.
+    let target = match q.path {
+        Some(p) => Some(validate_scan_target(&p)?),
+        None => None,
+    };
+    let id = jobs::spawn(s, jobs::JobSpec::Scan(target)).await?;
     Ok((StatusCode::ACCEPTED, Json(JobAccepted { id })))
+}
+
+fn validate_scan_target(raw: &std::path::Path) -> Result<PathBuf, ApiError> {
+    if !raw.is_absolute() {
+        return Err(ApiError::BadRequest(format!(
+            "path must be absolute: {}",
+            raw.display()
+        )));
+    }
+    let canonical = raw.canonicalize().map_err(|e| {
+        ApiError::BadRequest(format!("path does not exist: {} ({e})", raw.display()))
+    })?;
+    if !canonical.is_dir() {
+        return Err(ApiError::BadRequest(format!(
+            "path is not a directory: {}",
+            canonical.display()
+        )));
+    }
+    Ok(canonical)
 }
 
 async fn sync_create(
     State(s): State<AppState>,
 ) -> Result<(StatusCode, Json<JobAccepted>), ApiError> {
-    let id = jobs::spawn(s, JobKind::Sync).await?;
+    let id = jobs::spawn(s, jobs::JobSpec::Sync).await?;
     Ok((StatusCode::ACCEPTED, Json(JobAccepted { id })))
 }
 

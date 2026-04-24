@@ -9,31 +9,57 @@ use anyhow::Result;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+/// Internal runner spec. Decoupled from the wire-facing `JobKind` (which
+/// is a ts-rs-exported flat enum) so the scan handler can attach an
+/// optional custom path without breaking the DTO surface or leaking a
+/// discriminated union into the dashboard.
+///
+/// `Scan(None)` reuses `AppState::repo_path` — the backcompat path that
+/// existed before Phase 13.6 and that the CLI's `packguard ui` still
+/// relies on when the operator hasn't picked a workspace from the
+/// header selector.
+pub enum JobSpec {
+    Scan(Option<PathBuf>),
+    Sync,
+}
+
+impl JobSpec {
+    fn dto(&self) -> JobKind {
+        match self {
+            JobSpec::Scan(_) => JobKind::Scan,
+            JobSpec::Sync => JobKind::Sync,
+        }
+    }
+}
+
 /// Spawn a job and persist it as `pending`. Returns the new id; callers
 /// poll `GET /api/jobs/:id` to track progress.
-pub async fn spawn(state: AppState, kind: JobKind) -> Result<String> {
+pub async fn spawn(state: AppState, spec: JobSpec) -> Result<String> {
     let id = Uuid::new_v4().to_string();
     {
         let mut store = state.store.lock().await;
-        store.create_job(&id, kind.as_str())?;
+        store.create_job(&id, spec.dto().as_str())?;
     }
     let id_clone = id.clone();
     let state_clone = state.clone();
     tokio::spawn(async move {
-        run_job(state_clone, id_clone, kind).await;
+        run_job(state_clone, id_clone, spec).await;
     });
     Ok(id)
 }
 
-async fn run_job(state: AppState, id: String, kind: JobKind) {
+async fn run_job(state: AppState, id: String, spec: JobSpec) {
     {
         let mut store = state.store.lock().await;
         let _ = store.update_job_status(&id, "running", None, None);
     }
 
-    let outcome: Result<serde_json::Value> = match kind {
-        JobKind::Scan => run_scan_job(&state, state.repo_path.clone()).await,
-        JobKind::Sync => run_sync_job(&state).await,
+    let outcome: Result<serde_json::Value> = match spec {
+        JobSpec::Scan(target) => {
+            let repo = target.unwrap_or_else(|| state.repo_path.clone());
+            run_scan_job(&state, repo).await
+        }
+        JobSpec::Sync => run_sync_job(&state).await,
     };
 
     let mut store = state.store.lock().await;

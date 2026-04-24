@@ -669,6 +669,110 @@ async fn job_unknown_returns_404() {
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
 }
 
+// ---------- Phase 13.6: /api/scan?path=<abs> -------------------------------
+
+#[tokio::test]
+async fn scan_with_custom_path_returns_job_id_and_scans_that_path() {
+    // The harness's default repo has no manifest. For this test we drop a
+    // manifest into a *sibling* tempdir and hand it to /api/scan via the
+    // new ?path= query. The job should accept it and — crucially — scan
+    // that path rather than the server's configured repo_path.
+    let alt = tempfile::tempdir().unwrap();
+    std::fs::write(
+        alt.path().join("package.json"),
+        r#"{"name":"from-ui","dependencies":{"lodash":"^4.17.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        alt.path().join("package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"":{},"node_modules/lodash":{"version":"4.17.20"}}}"#,
+    )
+    .unwrap();
+
+    let h = spawn(|_, _| {}).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/scan", h.base))
+        .query(&[("path", alt.path().to_str().unwrap())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let id = body["id"].as_str().unwrap().to_string();
+
+    let final_state = poll_job(&h, &id).await;
+    assert_eq!(
+        final_state["status"], "succeeded",
+        "custom-path scan should succeed: {final_state}"
+    );
+    // The new workspace row is now visible in /api/workspaces — which is
+    // exactly what the dashboard relies on for the auto-switch-scope
+    // hand-off after the modal submit.
+    let workspaces = get_json(&h, "/api/workspaces").await;
+    let paths: Vec<&str> = workspaces["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|w| w["path"].as_str())
+        .collect();
+    let canonical = alt.path().canonicalize().unwrap();
+    assert!(
+        paths.iter().any(|p| *p == canonical.to_str().unwrap()),
+        "expected {} in {:?}",
+        canonical.display(),
+        paths
+    );
+}
+
+#[tokio::test]
+async fn scan_with_nonexistent_path_returns_400() {
+    let h = spawn(|_, _| {}).await;
+    // Use a path we know doesn't exist. Whatever tempdir randomness
+    // there is, /tmp/packguard-dne-<uuid> won't collide.
+    let phantom = format!("/tmp/packguard-dne-{}", uuid::Uuid::new_v4());
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/scan", h.base))
+        .query(&[("path", phantom.as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let msg = body["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("does not exist"),
+        "expected 'does not exist' in message, got: {msg}"
+    );
+    assert!(
+        msg.contains(&phantom),
+        "message should echo the bad path: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn scan_with_file_path_returns_400() {
+    // Canonicalizable path but it's a file, not a directory — scan
+    // wants a repo root.
+    let temp = tempfile::tempdir().unwrap();
+    let file_path = temp.path().join("not-a-dir.txt");
+    std::fs::write(&file_path, "hi").unwrap();
+
+    let h = spawn(|_, _| {}).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/scan", h.base))
+        .query(&[("path", file_path.to_str().unwrap())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let msg = body["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("not a directory"),
+        "expected 'not a directory' in message, got: {msg}"
+    );
+}
+
 async fn poll_job(harness: &Harness, id: &str) -> serde_json::Value {
     for _ in 0..40 {
         let body = get_json(harness, &format!("/api/jobs/{id}")).await;
