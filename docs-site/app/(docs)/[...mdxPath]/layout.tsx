@@ -1,10 +1,12 @@
 import { Footer, Layout, Navbar } from 'nextra-theme-docs'
 import { getPageMap } from 'nextra/page-map'
-import Link from 'next/link'
 
 function BrandMark() {
+  // Nextra's <Navbar logo={...}> already wraps the slot in its own <a href="/">,
+  // so this component renders just the visual — wrapping in another <Link>
+  // would nest <a> tags and break hydration.
   return (
-    <Link href="/" className="flex items-center gap-2.5">
+    <span className="flex items-center gap-2.5">
       <svg
         width="22"
         height="22"
@@ -29,7 +31,7 @@ function BrandMark() {
         />
       </svg>
       <span className="font-semibold tracking-tight text-[15px]">PackGuard</span>
-    </Link>
+    </span>
   )
 }
 
