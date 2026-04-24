@@ -70,7 +70,10 @@ beforeEach(() => {
 });
 
 describe("ActionsPage", () => {
-  it("groups actions by severity with Critical first", async () => {
+  it("groups actions by severity with Malware first", async () => {
+    // Phase 12-fix: Malware now sits above Critical in SEVERITY_ORDER.
+    // Seed one row per severity tier and assert the headers land in
+    // the right DOM order.
     (api.actions as ReturnType<typeof vi.fn>).mockResolvedValue(
       resp([
         pkgAction({
@@ -81,6 +84,12 @@ describe("ActionsPage", () => {
           title: "Workspace scanned 5d ago",
           suggested_command: "packguard scan .",
           recommended_version: null,
+        }),
+        pkgAction({
+          id: "mal-1",
+          kind: "FixMalware",
+          severity: "Malware",
+          title: "posthog-js@1.82.0 flagged as malware (MAL-2026-12)",
         }),
         pkgAction({
           id: "crit-1",
@@ -97,12 +106,13 @@ describe("ActionsPage", () => {
       ]),
     );
     wrap();
-    // Critical header comes before High which comes before Info.
-    const critical = await screen.findByRole("heading", { name: "Critical" });
+    const malware = await screen.findByRole("heading", { name: "Malware" });
+    const critical = screen.getByRole("heading", { name: "Critical" });
     const high = screen.getByRole("heading", { name: "High" });
     const info = screen.getByRole("heading", { name: "Info" });
-    const order = [critical, high, info].map((h) =>
-      h.compareDocumentPosition(info),
+    // Malware > Critical > High > Info.
+    expect(malware.compareDocumentPosition(critical)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
     );
     expect(critical.compareDocumentPosition(high)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
@@ -110,7 +120,6 @@ describe("ActionsPage", () => {
     expect(high.compareDocumentPosition(info)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
-    expect(order.length).toBe(3);
   });
 
   it("renders workspace-agnostic actions in the global banner, not in the severity list", async () => {

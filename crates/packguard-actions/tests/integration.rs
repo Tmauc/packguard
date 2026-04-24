@@ -272,12 +272,11 @@ fn collect_all_produces_expected_actions_on_nalo_like_fixture() {
     assert_eq!(count(&actions, ActionKind::RefreshSync), 1);
     assert_eq!(count(&actions, ActionKind::RescanStale), 0);
 
-    // First action is malware (Critical severity, lexicographically
-    // before the critical CVE by (workspace, kind)).
+    // First action is malware — now on its own `Malware` tier above
+    // Critical (Phase 12-fix). Sort invariant: severity desc throughout.
     let top = &actions[0];
-    assert_eq!(top.severity, ActionSeverity::Critical);
-    // Actions are sorted by severity desc → Critical block at the top,
-    // then High, then Medium, then Info.
+    assert_eq!(top.severity, ActionSeverity::Malware);
+    assert_eq!(top.kind, ActionKind::FixMalware);
     let severities: Vec<ActionSeverity> = actions.iter().map(|a| a.severity).collect();
     let mut sorted = severities.clone();
     sorted.sort_by(|a, b| b.cmp(a));

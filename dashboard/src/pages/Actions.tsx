@@ -25,10 +25,13 @@ import type { ActionSeverity } from "@/api/types/ActionSeverity";
 
 /**
  * Severity order for the grouped render. Maps directly to the backend's
- * ActionSeverity enum — kept in one place so the "Critical first" rule
- * can't drift between the header count-dot and the list body.
+ * ActionSeverity enum — kept in one place so the "Malware first" rule
+ * can't drift between the header count-dot and the list body. Malware
+ * sits above Critical because a confirmed malicious release is strictly
+ * worse than a critical CVE (no safe version on disk today).
  */
 const SEVERITY_ORDER: ActionSeverity[] = [
+  "Malware",
   "Critical",
   "High",
   "Medium",
@@ -37,6 +40,7 @@ const SEVERITY_ORDER: ActionSeverity[] = [
 ];
 
 const SEVERITY_LABELS: Record<ActionSeverity, string> = {
+  Malware: "Malware",
   Critical: "Critical",
   High: "High",
   Medium: "Medium",
@@ -53,7 +57,8 @@ const MIN_SEVERITY_OPTIONS: { value: string; label: string }[] = [
   { value: "low", label: "Low+" },
   { value: "medium", label: "Medium+" },
   { value: "high", label: "High+" },
-  { value: "critical", label: "Critical only" },
+  { value: "critical", label: "Critical+" },
+  { value: "malware", label: "Malware only" },
 ];
 
 export function ActionsPage() {
@@ -616,6 +621,10 @@ function SeverityDot({ severity }: { severity: ActionSeverity }) {
 
 function dotClass(severity: ActionSeverity): string {
   switch (severity) {
+    // Malware goes purple — same palette as the malware KindBadge tone
+    // so the two signals reinforce each other visually.
+    case "Malware":
+      return "bg-fuchsia-500";
     case "Critical":
       return "bg-red-500";
     case "High":

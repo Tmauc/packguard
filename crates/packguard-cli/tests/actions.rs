@@ -178,17 +178,18 @@ fn cli_actions_list_default_table_format_renders_severity_groups() {
         String::from_utf8_lossy(&out.stderr)
     );
     let s = String::from_utf8_lossy(&out.stdout);
-    // Severity group headers for the seeded fixture (1 critical malware,
-    // 1 high cve).
+    // Severity group headers for the seeded fixture (1 malware, 1 high
+    // cve). Phase 12-fix: FixMalware lives on its own top tier above
+    // Critical now.
     assert!(
-        s.contains("CRITICAL"),
-        "expected severity group marker in table output: {s}"
+        s.contains("MALWARE"),
+        "expected MALWARE severity group: {s}"
     );
     assert!(s.contains("HIGH"), "expected HIGH severity group: {s}");
     assert!(s.contains("lodash"));
     assert!(s.contains("posthog-js"));
     // Severity column renders the plain label.
-    assert!(s.contains("critical") && s.contains("high"));
+    assert!(s.contains("malware") && s.contains("high"));
     // Footer line with the dismiss hint.
     assert!(
         s.contains("packguard actions dismiss"),
@@ -321,11 +322,11 @@ fn cli_actions_list_sarif_partial_fingerprints_includes_cve_id_for_cve_actions()
 
 #[test]
 fn cli_actions_list_min_severity_filter_drops_lower_rows_from_output() {
-    // Fixture has one Critical (FixMalware) and one High (FixCveHigh).
-    // `--min-severity critical` should leave only the malware row in
+    // Fixture has one Malware (FixMalware) and one High (FixCveHigh).
+    // `--min-severity malware` should leave only the malware row in
     // the JSON payload.
     let env = env();
-    let out = run_actions(&env, &["--format", "json", "--min-severity", "critical"]);
+    let out = run_actions(&env, &["--format", "json", "--min-severity", "malware"]);
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -335,8 +336,8 @@ fn cli_actions_list_min_severity_filter_drops_lower_rows_from_output() {
     let actions = parsed["actions"].as_array().unwrap();
     assert!(!actions.is_empty());
     assert!(
-        actions.iter().all(|a| a["severity"] == "Critical"),
-        "min_severity=critical leaked non-critical rows: {parsed}"
+        actions.iter().all(|a| a["severity"] == "Malware"),
+        "min_severity=malware leaked non-malware rows: {parsed}"
     );
 }
 
@@ -494,30 +495,40 @@ fn cli_actions_fail_on_severity_high_exits_1_when_high_action_present() {
 }
 
 #[test]
-fn cli_actions_fail_on_severity_critical_exits_0_when_no_critical_rows_remain() {
-    // Fixture ships 1 critical malware + 1 high cve. Dismiss the
-    // critical → remaining max severity = high → `--fail-on-severity
-    // critical` should pass (exit 0).
+fn cli_actions_fail_on_severity_malware_exits_0_when_no_malware_rows_remain() {
+    // Fixture ships 1 malware + 1 high cve. Dismiss the malware →
+    // remaining max severity = high → `--fail-on-severity malware`
+    // should pass (exit 0). Proves Phase 12-fix commit 1 gave malware
+    // its own CI gate independent of Critical.
     let env = env();
     let out = run_actions(&env, &["--format", "json"]);
     let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let critical_id = parsed["actions"]
+    let malware_id = parsed["actions"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|a| a["severity"] == "Critical")
-        .expect("fixture seeds a critical row")["id"]
+        .find(|a| a["severity"] == "Malware")
+        .expect("fixture seeds a malware row")["id"]
         .as_str()
         .unwrap()
         .to_string();
 
-    let out = run_actions(&env, &["dismiss", &critical_id[..8]]);
+    let out = run_actions(&env, &["dismiss", &malware_id[..8]]);
     assert!(out.status.success());
 
-    let out = run_actions(&env, &["--fail-on-severity", "critical"]);
+    let out = run_actions(&env, &["--fail-on-severity", "malware"]);
     assert!(
         out.status.success(),
-        "with no critical rows left, the gate must pass; stderr: {}",
+        "with no malware rows left, the gate must pass; stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+#[test]
+fn cli_actions_fail_on_severity_malware_exits_1_when_malware_active() {
+    // Fixture has 1 active malware → gate fires.
+    let env = env();
+    let out = run_actions(&env, &["--fail-on-severity", "malware"]);
+    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1));
 }

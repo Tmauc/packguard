@@ -33,10 +33,14 @@ const SEVERITY_RANK: Record<ActionSeverity, number> = {
   Medium: 2,
   High: 3,
   Critical: 4,
+  // Phase 12-fix: confirmed malware outranks a critical CVE.
+  Malware: 5,
 };
 
 function severityDotClass(severity: ActionSeverity): string {
   switch (severity) {
+    case "Malware":
+      return "bg-fuchsia-500";
     case "Critical":
       return "bg-red-500";
     case "High":

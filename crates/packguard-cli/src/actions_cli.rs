@@ -279,6 +279,9 @@ fn header(s: &str) -> Cell {
 
 fn severity_color(sev: ActionSeverity) -> Color {
     match sev {
+        // Malware is a notch above Critical visually — magenta so it
+        // pops against the usual red/yellow ladder.
+        ActionSeverity::Malware => Color::Magenta,
         ActionSeverity::Critical => Color::Red,
         ActionSeverity::High => Color::DarkRed,
         ActionSeverity::Medium => Color::Yellow,
@@ -522,7 +525,10 @@ fn rule_help(kind: ActionKind) -> &'static str {
 
 fn sarif_level(sev: ActionSeverity) -> &'static str {
     match sev {
-        ActionSeverity::Critical | ActionSeverity::High => "error",
+        // SARIF 2.1.0 has no level above `error`, so Malware shares
+        // the same bucket as Critical + High. Consumers that care
+        // can still distinguish via the ruleId (`packguard/fix-malware`).
+        ActionSeverity::Malware | ActionSeverity::Critical | ActionSeverity::High => "error",
         ActionSeverity::Medium => "warning",
         ActionSeverity::Low | ActionSeverity::Info => "note",
     }

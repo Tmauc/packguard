@@ -46,7 +46,12 @@ impl ActionKind {
     /// is `Low` or `Info`, for instance.
     pub fn severity(self) -> ActionSeverity {
         match self {
-            ActionKind::FixMalware => ActionSeverity::Critical,
+            // Malware gets its own top-level severity so CI gates can
+            // distinguish "critical CVE" from "known-malicious release"
+            // via `--fail-on-severity malware`. Phase 12a pragmatically
+            // collapsed this into `Critical`; Phase 12-fix restores the
+            // distinction.
+            ActionKind::FixMalware => ActionSeverity::Malware,
             ActionKind::FixCveCritical => ActionSeverity::Critical,
             ActionKind::FixCveHigh => ActionSeverity::High,
             ActionKind::ClearViolation => ActionSeverity::Medium,
@@ -58,6 +63,10 @@ impl ActionKind {
     }
 }
 
+/// Severity ladder. Declaration order matters — `derive(PartialOrd, Ord)`
+/// uses it, so filters like `actions.retain(|a| a.severity >= threshold)`
+/// and the sort in `collect_all` depend on `Malware > Critical > High >
+/// Medium > Low > Info`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
 #[ts(export_to = "ActionSeverity.ts")]
 pub enum ActionSeverity {
@@ -66,11 +75,13 @@ pub enum ActionSeverity {
     Medium,
     High,
     Critical,
+    Malware,
 }
 
 impl ActionSeverity {
     pub fn as_str(self) -> &'static str {
         match self {
+            ActionSeverity::Malware => "malware",
             ActionSeverity::Critical => "critical",
             ActionSeverity::High => "high",
             ActionSeverity::Medium => "medium",
@@ -81,6 +92,7 @@ impl ActionSeverity {
 
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s.trim().to_ascii_lowercase().as_str() {
+            "malware" => ActionSeverity::Malware,
             "critical" => ActionSeverity::Critical,
             "high" => ActionSeverity::High,
             "medium" | "med" => ActionSeverity::Medium,
@@ -234,7 +246,9 @@ mod tests {
 
     #[test]
     fn action_kind_severity_mapping_is_stable() {
-        assert_eq!(ActionKind::FixMalware.severity(), ActionSeverity::Critical);
+        // Phase 12-fix: FixMalware lives on its own top tier now, not
+        // collapsed into Critical.
+        assert_eq!(ActionKind::FixMalware.severity(), ActionSeverity::Malware);
         assert_eq!(
             ActionKind::FixCveCritical.severity(),
             ActionSeverity::Critical
@@ -248,10 +262,25 @@ mod tests {
     }
 
     #[test]
-    fn severity_orders_critical_highest() {
+    fn severity_orders_malware_highest() {
+        assert!(ActionSeverity::Malware > ActionSeverity::Critical);
         assert!(ActionSeverity::Critical > ActionSeverity::High);
         assert!(ActionSeverity::High > ActionSeverity::Medium);
         assert!(ActionSeverity::Medium > ActionSeverity::Low);
         assert!(ActionSeverity::Low > ActionSeverity::Info);
+    }
+
+    #[test]
+    fn severity_parse_accepts_malware() {
+        assert_eq!(
+            ActionSeverity::parse("malware"),
+            Some(ActionSeverity::Malware)
+        );
+        assert_eq!(
+            ActionSeverity::parse("MALWARE"),
+            Some(ActionSeverity::Malware)
+        );
+        // Unknown tokens still return None.
+        assert_eq!(ActionSeverity::parse("deadly"), None);
     }
 }
