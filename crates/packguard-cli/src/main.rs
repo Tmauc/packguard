@@ -393,8 +393,19 @@ async fn sync(
             match packguard_intel::osv::fetch_dump(dump, &prior, &watched).await {
                 Ok(fetched) => {
                     if fetched.summary.skipped_not_modified {
+                        // 304 Not Modified — the dump hasn't changed
+                        // since last sync, but we've *verified* that.
+                        // Bump `synced_at` so `RefreshSync` (generator)
+                        // doesn't treat the CI-run as "never re-checked"
+                        // while keeping etag/last_modified/record_count
+                        // so the next If-None-Match keeps short-circuiting.
+                        // See `packguard-intel/src/osv.rs:89-101` for
+                        // the 304 branch that returns
+                        // `updated_state: None`.
+                        let state = refreshed_sync_state_for_304(prior_state, Utc::now());
+                        store.put_sync_state(dump.id, &state)?;
                         println!(
-                            "{} {} — not modified since last sync (skipped)",
+                            "{} {} — not modified since last sync (re-checked)",
                             "=".dimmed(),
                             dump.id
                         );
@@ -482,6 +493,21 @@ async fn sync(
         mal_total,
     );
     Ok(())
+}
+
+/// Build the refreshed `sync_log` row when OSV returned `304 Not
+/// Modified`. Keeps `etag` / `last_modified` / `record_count` as they
+/// were (the upstream dump is byte-identical to last sync) and bumps
+/// only `synced_at` so the `RefreshSync` generator sees the
+/// re-verification. Extracted so the unit tests below can assert the
+/// semantics without spinning up a mock HTTP server.
+fn refreshed_sync_state_for_304(
+    prior: Option<packguard_store::SyncState>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> packguard_store::SyncState {
+    let mut state = prior.unwrap_or_default();
+    state.synced_at = Some(now.to_rfc3339());
+    state
 }
 
 /// Refresh the PyPI top-N reference list when the cache is older than 7
@@ -3325,4 +3351,54 @@ fn render_sarif(rows: &[ReportRow]) -> Result<()> {
     });
     println!("{}", serde_json::to_string_pretty(&sarif)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+    use packguard_store::SyncState;
+
+    #[test]
+    fn osv_sync_updates_synced_at_on_304_not_modified() {
+        // Prior sync stamped etag/last_modified/record_count on 2026-04-14.
+        let prior = SyncState {
+            etag: Some("\"abc123\"".to_string()),
+            last_modified: Some("Mon, 14 Apr 2026 10:00:00 GMT".to_string()),
+            last_commit: None,
+            synced_at: Some("2026-04-14T10:00:00+00:00".to_string()),
+            record_count: 1481,
+        };
+        let now = chrono::DateTime::parse_from_rfc3339("2026-04-24T12:34:56+00:00")
+            .unwrap()
+            .to_utc();
+
+        let refreshed = refreshed_sync_state_for_304(Some(prior.clone()), now);
+
+        // synced_at bumps forward…
+        assert_eq!(
+            refreshed.synced_at.as_deref(),
+            Some("2026-04-24T12:34:56+00:00")
+        );
+        // …and the etag / last_modified / record_count survive so the
+        // next If-None-Match keeps short-circuiting upstream.
+        assert_eq!(refreshed.etag, prior.etag);
+        assert_eq!(refreshed.last_modified, prior.last_modified);
+        assert_eq!(refreshed.record_count, prior.record_count);
+    }
+
+    #[test]
+    fn osv_sync_304_handles_missing_prior_state_gracefully() {
+        // First-ever sync that immediately returns 304 is a degenerate
+        // case (we wouldn't have an etag to send) but make sure the
+        // helper doesn't panic: it should just produce a row with only
+        // synced_at populated.
+        let now = chrono::DateTime::parse_from_rfc3339("2026-04-24T12:34:56+00:00")
+            .unwrap()
+            .to_utc();
+        let refreshed = refreshed_sync_state_for_304(None, now);
+        assert!(refreshed.synced_at.is_some());
+        assert_eq!(refreshed.etag, None);
+        assert_eq!(refreshed.last_modified, None);
+        assert_eq!(refreshed.record_count, 0);
+    }
 }
