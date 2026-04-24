@@ -354,6 +354,52 @@ fn collect_all_refresh_sync_triggers_when_sync_log_stale_beyond_7_days() {
 }
 
 #[test]
+fn refresh_sync_generator_renders_unrecognized_for_non_iso_synced_at() {
+    // Thomas repro: a SQL UPDATE stamped `synced_at = "1776165002"`
+    // (unix timestamp, not RFC 3339). Pre-fix the generator collapsed
+    // it to "(never)" alongside a truly-absent entry. Post-fix it
+    // renders a distinct "(unrecognized timestamp)" hint so the user
+    // can tell corruption from absence.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("nalo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &repo);
+    // Overwrite osv-npm with a non-ISO synced_at. osv-pypi stays at
+    // the stale-but-parseable value from seed_nalo_like so we can
+    // confirm the two labels coexist in one action.
+    store
+        .put_sync_state(
+            "osv-npm",
+            &SyncState {
+                etag: None,
+                last_modified: None,
+                last_commit: None,
+                synced_at: Some("1776165002".to_string()),
+                record_count: 42,
+            },
+        )
+        .unwrap();
+
+    let now = now_anchor();
+    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let refresh = actions
+        .iter()
+        .find(|a| a.kind == ActionKind::RefreshSync)
+        .expect("corrupted synced_at must still surface a RefreshSync action");
+    assert!(
+        refresh.explanation.contains("unrecognized timestamp"),
+        "explanation should flag the non-ISO source: {}",
+        refresh.explanation
+    );
+    assert!(
+        refresh.title.contains("out of date"),
+        "unrecognized-only title should read 'out of date', not 'Nd stale': {}",
+        refresh.title
+    );
+}
+
+#[test]
 fn collect_all_refresh_sync_silent_when_fresh() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path().join("nalo");

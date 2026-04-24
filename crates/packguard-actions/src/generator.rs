@@ -437,17 +437,21 @@ fn generate_refresh_sync(store: &Store, now: DateTime<Utc>) -> Result<Vec<Action
     for src in sources {
         if let Some(state) = store.get_sync_state(src)? {
             saw_any = true;
-            if let Some(synced) = state
-                .synced_at
-                .as_deref()
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            {
-                if synced.to_utc() <= threshold {
-                    let age = (now - synced.to_utc()).num_days();
-                    stale.push((src.to_string(), age));
-                }
-            } else {
-                stale.push((src.to_string(), i64::MAX));
+            // Three buckets: parseable (days), absent (MAX → "never"),
+            // non-ISO garbage (MIN → "unrecognized timestamp"). The
+            // corruption path exists because a third-party UPDATE could
+            // stamp a unix timestamp or junk; Bug 2 eliminates the
+            // common case (304 flush) but we still want honest output
+            // when it happens.
+            match state.synced_at.as_deref() {
+                None => stale.push((src.to_string(), i64::MAX)),
+                Some(s) => match DateTime::parse_from_rfc3339(s) {
+                    Ok(dt) if dt.to_utc() <= threshold => {
+                        stale.push((src.to_string(), (now - dt.to_utc()).num_days()))
+                    }
+                    Ok(_) => {}
+                    Err(_) => stale.push((src.to_string(), i64::MIN)),
+                },
             }
         }
     }
@@ -476,14 +480,13 @@ fn generate_refresh_sync(store: &Store, now: DateTime<Utc>) -> Result<Vec<Action
         return Ok(Vec::new());
     }
     let max_age = stale.iter().map(|(_, age)| *age).max().unwrap_or(0);
+    let has_unrecognized = stale.iter().any(|(_, age)| *age == i64::MIN);
     let labels: Vec<String> = stale
         .iter()
-        .map(|(src, age)| {
-            if *age == i64::MAX {
-                format!("{src} (never)")
-            } else {
-                format!("{src} ({age}d)")
-            }
+        .map(|(src, age)| match *age {
+            i64::MAX => format!("{src} (never)"),
+            i64::MIN => format!("{src} (unrecognized timestamp)"),
+            n => format!("{src} ({n}d)"),
         })
         .collect();
     let target = ActionTarget::Workspace;
@@ -494,7 +497,7 @@ fn generate_refresh_sync(store: &Store, now: DateTime<Utc>) -> Result<Vec<Action
         severity: ActionKind::RefreshSync.severity(),
         workspace: GLOBAL_WORKSPACE.to_string(),
         target,
-        title: if max_age == i64::MAX {
+        title: if max_age == i64::MAX || has_unrecognized {
             "Advisory DB out of date — refresh".to_string()
         } else {
             format!("Advisory DB {max_age}d stale — refresh")
