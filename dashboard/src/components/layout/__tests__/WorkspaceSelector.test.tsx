@@ -7,7 +7,21 @@ import type { WorkspacesResponse } from "@/api/types/WorkspacesResponse";
 import { WorkspaceSelector } from "@/components/layout/WorkspaceSelector";
 import { WORKSPACE_SCOPE_STORAGE_KEY } from "@/components/layout/workspace-scope";
 
-vi.mock("@/lib/api", () => ({ api: { workspaces: vi.fn() } }));
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+  return {
+    ...actual,
+    api: {
+      workspaces: vi.fn(),
+      startScan: vi.fn(),
+      job: vi.fn(),
+    },
+  };
+});
+
+vi.mock("sonner", () => ({
+  toast: { message: vi.fn(), error: vi.fn(), success: vi.fn() },
+}));
 
 import { api } from "@/lib/api";
 
@@ -165,12 +179,26 @@ describe("WorkspaceSelector", () => {
     expect(screen.getByTestId("url").textContent).not.toContain("project=");
   });
 
-  it("disables the trigger when no workspaces have been scanned", async () => {
+  it("shows the empty-state CTA that opens the add-workspace modal when nothing has been scanned", async () => {
     (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue({ workspaces: [] });
     wrap();
-    const trigger = (await screen.findByTestId("workspace-selector")) as HTMLButtonElement;
-    await waitFor(() => expect(trigger).toBeDisabled());
-    expect(trigger).toHaveTextContent(/No scans yet/i);
+    const cta = (await screen.findByTestId("workspace-empty-cta")) as HTMLButtonElement;
+    expect(cta).toHaveTextContent(/No workspaces yet/i);
+    expect(cta).not.toBeDisabled();
+    const user = userEvent.setup();
+    await user.click(cta);
+    expect(await screen.findByTestId("add-workspace-modal")).toBeInTheDocument();
+  });
+
+  it("exposes a footer 'Scan new path' button that opens the add-workspace modal", async () => {
+    (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue(TWO_WORKSPACES);
+    wrap();
+    const user = await openPicker();
+    await user.click(screen.getByTestId("workspace-add-cta"));
+    expect(await screen.findByTestId("add-workspace-modal")).toBeInTheDocument();
+    // Opening the modal also closes the picker so the backdrop click
+    // is unambiguous.
+    expect(screen.queryByTestId("workspace-picker")).not.toBeInTheDocument();
   });
 
   it("groups a Nalo-style monorepo into folders under a common prefix", async () => {
@@ -223,6 +251,59 @@ describe("WorkspaceSelector", () => {
     // Aggregate row is never filtered — it stays at the top regardless
     // of the query.
     expect(screen.getByTestId("workspace-aggregate")).toBeInTheDocument();
+  });
+
+  it("tracks the scan job the modal starts and auto-switches scope when it succeeds", async () => {
+    // Start with one existing workspace so the trigger is not in the
+    // empty-CTA branch. After the scan completes, the next
+    // /api/workspaces refetch includes the new path → the selector's
+    // pendingScan effect calls setScope(newPath).
+    const newPath = "/tmp/from-ui-scan";
+    (api.workspaces as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(TWO_WORKSPACES)
+      // After invalidation, the workspace list includes the newly
+      // scanned path alongside the existing pair.
+      .mockResolvedValue({
+        workspaces: [
+          ...TWO_WORKSPACES.workspaces,
+          {
+            path: newPath,
+            ecosystem: "npm",
+            last_scan_at: "2026-04-24T12:00:00Z",
+            fingerprint: "n",
+            dependency_count: 5,
+          },
+        ],
+      });
+    (api.startScan as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "job-from-ui" });
+    (api.job as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "job-from-ui",
+      kind: "scan",
+      status: "succeeded",
+      started_at: "2026-04-24T12:00:00Z",
+      finished_at: "2026-04-24T12:00:05Z",
+      result: { projects_scanned: 1 },
+      error: null,
+    });
+    wrap();
+    const user = await openPicker();
+    await user.click(screen.getByTestId("workspace-add-cta"));
+    const input = await screen.findByTestId("add-workspace-path-input");
+    await user.type(input, newPath);
+    await user.click(screen.getByTestId("add-workspace-submit"));
+    await waitFor(() =>
+      expect(api.startScan).toHaveBeenCalledWith(newPath),
+    );
+    // useJobStatus's poller (real here) hits /api/jobs/:id, sees the
+    // succeeded mock, and invalidates queries → the URL flips to
+    // ?project=<newPath> once the pendingScan effect runs.
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("url").textContent).toContain(
+          `project=${encodeURIComponent(newPath)}`,
+        ),
+      { timeout: 3000 },
+    );
   });
 
   it("toggles folder collapse when its chevron button is clicked", async () => {

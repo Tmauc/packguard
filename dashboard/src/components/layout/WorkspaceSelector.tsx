@@ -4,6 +4,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   FolderIcon,
+  FolderPlusIcon,
   FolderTreeIcon,
   PackageIcon,
   SearchIcon,
@@ -11,6 +12,9 @@ import {
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { useCollapsedFolders } from "@/lib/useCollapsedFolders";
+import { useJobStatus } from "@/lib/useJobStatus";
+import { AddWorkspaceModal } from "@/components/layout/AddWorkspaceModal";
+import { Button } from "@/components/ui/button";
 import {
   buildWorkspaceTree,
   foldersWithMatches,
@@ -66,6 +70,28 @@ export function WorkspaceSelector() {
 
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [pendingScan, setPendingScan] = useState<
+    { jobId: string; path: string } | null
+  >(null);
+  const { trackJob, jobs } = useJobStatus();
+
+  // Auto-switch scope when the scan kicked off by the modal completes.
+  // Until then the user keeps their existing scope — no surprise reload
+  // mid-session if they're still inspecting another workspace.
+  useEffect(() => {
+    if (!pendingScan) return;
+    const job = jobs.find((j) => j.id === pendingScan.jobId);
+    if (!job) return;
+    if (job.status === "succeeded") {
+      setScope(pendingScan.path);
+      setPendingScan(null);
+    } else if (job.status === "failed") {
+      // The toast from useJobStatus already surfaced the error; we just
+      // drop the pending handoff so a retry starts clean.
+      setPendingScan(null);
+    }
+  }, [jobs, pendingScan, setScope]);
   // Collapse state hydrates from localStorage once on mount (see
   // useCollapsedFolders) and persists any user toggle on the way out.
   // Newly scanned folders default to collapsed via seedFrom().
@@ -128,26 +154,59 @@ export function WorkspaceSelector() {
     setOpen(false);
   };
 
+  const handleScanStarted = (jobId: string, path: string) => {
+    trackJob(jobId);
+    setPendingScan({ jobId, path });
+    setOpen(false);
+  };
+
+  // Empty store (fresh install, or after a --reset) → the trigger
+  // becomes an inline CTA that opens the modal directly. Makes
+  // `packguard ui` self-sufficient on a cold workspace; avoids forcing
+  // the user back to the CLI to run their first scan (Phase 13.6's
+  // flagship adoption closer).
+  if (empty) {
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => setModalOpen(true)}
+          data-testid="workspace-empty-cta"
+          title="No scans yet — click to add a workspace to the store."
+          className={cn(
+            "inline-flex h-8 items-center gap-2 rounded-md border px-2 text-sm",
+            "border-dashed border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900",
+            "text-zinc-700 dark:text-zinc-300",
+            "hover:bg-zinc-50 dark:hover:bg-zinc-800 focus:outline-2 focus:outline-zinc-900",
+          )}
+        >
+          <FolderPlusIcon className="h-4 w-4 text-zinc-500 dark:text-zinc-400" />
+          <span className="font-medium">No workspaces yet</span>
+          <span className="text-zinc-500 dark:text-zinc-400">— scan a new path</span>
+        </button>
+        <AddWorkspaceModal
+          open={modalOpen}
+          onClose={() => setModalOpen(false)}
+          onStarted={handleScanStarted}
+        />
+      </>
+    );
+  }
+
   return (
     <div className="relative" ref={popoverRef}>
       <button
         type="button"
-        onClick={() => !empty && setOpen((v) => !v)}
-        disabled={empty}
+        onClick={() => setOpen((v) => !v)}
         data-testid="workspace-selector"
         aria-haspopup="dialog"
         aria-expanded={open}
-        title={
-          empty
-            ? "No scans yet — run `packguard scan <path>` to register a workspace"
-            : scope ?? "All scanned workspaces (aggregate view)"
-        }
+        title={scope ?? "All scanned workspaces (aggregate view)"}
         className={cn(
           "inline-flex h-8 max-w-72 items-center gap-2 rounded-md border px-2 text-sm",
           "border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900",
           "text-zinc-900 dark:text-zinc-100",
           "hover:bg-zinc-50 dark:hover:bg-zinc-800 focus:outline-2 focus:outline-zinc-900",
-          empty && "cursor-not-allowed opacity-60",
         )}
       >
         <FolderTreeIcon className="h-4 w-4 text-zinc-400 dark:text-zinc-500" />
@@ -210,8 +269,28 @@ export function WorkspaceSelector() {
               </div>
             )}
           </div>
+          <div className="flex items-center justify-end border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 px-2 py-1.5">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              data-testid="workspace-add-cta"
+              onClick={() => {
+                setOpen(false);
+                setModalOpen(true);
+              }}
+            >
+              <FolderPlusIcon className="h-3.5 w-3.5" />
+              Scan new path
+            </Button>
+          </div>
         </div>
       )}
+      <AddWorkspaceModal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onStarted={handleScanStarted}
+      />
     </div>
   );
 }
