@@ -186,9 +186,13 @@ fn generate_for_workspace(
             dialect,
             now,
         );
-        let suggested = recommended
+        // Don't surface a "move to X" when X is already what's installed.
+        let recommended_version = recommended
             .as_deref()
             .filter(|v| *v != installed.as_str())
+            .map(|v| v.to_string());
+        let suggested = recommended_version
+            .as_deref()
             .map(|v| suggest_upgrade(pm, &dep.name, v));
 
         // FixMalware — installed version flagged as malware on that
@@ -218,6 +222,7 @@ fn generate_for_workspace(
                 title,
                 explanation,
                 suggested_command: suggested.clone(),
+                recommended_version: recommended_version.clone(),
                 dismissed_at: None,
                 deferred_until: None,
             });
@@ -258,6 +263,7 @@ fn generate_for_workspace(
                 title,
                 explanation,
                 suggested_command: suggested.clone(),
+                recommended_version: recommended_version.clone(),
                 dismissed_at: None,
                 deferred_until: None,
             });
@@ -279,6 +285,7 @@ fn generate_for_workspace(
                     title,
                     explanation: msg,
                     suggested_command: suggested.clone(),
+                    recommended_version: recommended_version.clone(),
                     dismissed_at: None,
                     deferred_until: None,
                 });
@@ -296,6 +303,10 @@ fn generate_for_workspace(
                     title,
                     explanation: msg,
                     suggested_command: None,
+                    // Insufficient ⇒ by definition no candidate survives,
+                    // so leave the version unset. The dashboard renders
+                    // "loosen policy" guidance instead of a version bump.
+                    recommended_version: None,
                     dismissed_at: None,
                     deferred_until: None,
                 });
@@ -324,6 +335,7 @@ fn generate_for_workspace(
                         title,
                         explanation,
                         suggested_command: command,
+                        recommended_version: None,
                         dismissed_at: None,
                         deferred_until: None,
                     });
@@ -372,6 +384,7 @@ fn generate_rescan_stale(
             "Last scan for this workspace was {age_days} days ago (threshold: {SCAN_STALE_DAYS}d). Rerun `packguard scan` to pick up new advisories and version bumps."
         ),
         suggested_command: Some("packguard scan .".to_string()),
+        recommended_version: None,
         dismissed_at: None,
         deferred_until: None,
     }])
@@ -415,6 +428,7 @@ fn generate_refresh_sync(store: &Store, now: DateTime<Utc>) -> Result<Vec<Action
                 "No sync_log entries found. Run `packguard sync` to seed the OSV + GHSA mirrors."
                     .to_string(),
             suggested_command: Some("packguard sync".to_string()),
+            recommended_version: None,
             dismissed_at: None,
             deferred_until: None,
         }]);
@@ -451,6 +465,7 @@ fn generate_refresh_sync(store: &Store, now: DateTime<Utc>) -> Result<Vec<Action
             labels.join(", "),
         ),
         suggested_command: Some("packguard sync".to_string()),
+        recommended_version: None,
         dismissed_at: None,
         deferred_until: None,
     }])

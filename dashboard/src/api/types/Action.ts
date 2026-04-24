@@ -17,6 +17,15 @@ workspace: string, target: ActionTarget, title: string, explanation: string,
  */
 suggested_command: string | null, 
 /**
+ * Version the policy would move the dep to, as a raw string. Split
+ * out from `suggested_command` so the dashboard can render ranges /
+ * badges / diffs without parsing pm-specific command strings
+ * (`pnpm add x@^1`, `uv add 'x>=1,<2'`, etc.). `None` for actions
+ * that don't move a package version (RefreshSync, RescanStale,
+ * WhitelistTyposquat).
+ */
+recommended_version: string | null, 
+/**
  * RFC 3339 timestamp — `Some` when the action was dismissed but
  * `collect_all` decided to surface it anyway (currently we filter
  * them out so this stays `None` in the default read path; kept in

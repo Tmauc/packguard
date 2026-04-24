@@ -297,11 +297,42 @@ fn collect_all_emits_suggested_command_matching_detected_pm() {
     let actions = collect_all(&store, Some(&repo), now).unwrap();
 
     let cve_high = find_for(&actions, ActionKind::FixCveHigh, "lodash").unwrap();
-    // Policy recommends 4.17.21 (the fixed version), emitted via pnpm.
+    // Policy recommends 4.17.21 (the fixed version) via pnpm, surfaced
+    // both as the raw version for the UI and as a caret-form command.
+    assert_eq!(cve_high.recommended_version.as_deref(), Some("4.17.21"));
     assert_eq!(
         cve_high.suggested_command.as_deref(),
-        Some("pnpm up lodash@4.17.21")
+        Some("pnpm add lodash@^4.17.21")
     );
+}
+
+#[test]
+fn collect_all_leaves_recommended_version_none_for_workspace_actions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("nalo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &repo);
+
+    // Advance past the rescan threshold so RescanStale fires.
+    let later = now_anchor() + Duration::days(5);
+    let actions = collect_all(&store, Some(&repo), later).unwrap();
+
+    for a in &actions {
+        match a.kind {
+            ActionKind::RefreshSync
+            | ActionKind::RescanStale
+            | ActionKind::WhitelistTyposquat
+            | ActionKind::ResolveInsufficient => assert!(
+                a.recommended_version.is_none(),
+                "{:?} should not carry a recommended_version, got {:?}",
+                a.kind,
+                a.recommended_version
+            ),
+            _ => {}
+        }
+    }
 }
 
 #[test]
