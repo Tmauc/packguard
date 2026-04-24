@@ -1,0 +1,149 @@
+# packguard actions
+
+Prioritized list of concrete next steps PackGuard has derived from the store. Reads **only** the local SQLite store — zero network. Same data feeds the [`/actions`](/dashboard/actions) dashboard page, dismissals persist across both.
+
+## Synopsis
+
+```bash
+packguard actions [list] \
+  [--project <workspace>] \
+  [--format table|json|sarif] \
+  [--min-severity malware|critical|high|medium|low|info] \
+  [--include-dismissed] \
+  [--include-deferred] \
+  [--fail-on-severity <level>]
+
+packguard actions dismiss <id-prefix> [--reason "…"]
+packguard actions defer   <id-prefix> --days <N> [--reason "…"]
+packguard actions restore <id-prefix>
+```
+
+## What an action is
+
+One actionable next step, derived from the store by cross-referencing vulnerabilities + malware + policy verdicts + sync freshness. Every action has a stable id (blake3 of `kind · target · workspace`), so dismissing an action survives rescans — unless the underlying target moves (e.g. `next@16.0.1 → 16.0.2`), in which case the id changes and the action legitimately reappears.
+
+### Seven kinds
+
+| Kind | Trigger | Example |
+|---|---|---|
+| `FixMalware` | `malware_reports` kind=Malware | `posthog-js@1.82.0 → bump to 1.83.1 (MAL-2026-12)` |
+| `FixCveCritical` | `vulnerabilities` severity=critical | `next@16.0.1 → 15.5.15 (GHSA-9qr9-h5gf-34mp)` |
+| `FixCveHigh` | `vulnerabilities` severity=high | `pillow@9.0.1 → 10.3.0 (CVE-2024-28219)` |
+| `ClearViolation` | Policy verdict = violation | `react@19.0.0 → pin to 18.3.1 (offset major cap)` |
+| `ResolveInsufficient` | Policy verdict = insufficient | `aiohttp@3.9.1 → loosen offset or pin — no candidate` |
+| `WhitelistTyposquat` | `malware_reports` kind=Typosquat | `eslint-plugin-import → add to typosquat.allowlist` |
+| `RefreshSync` · `RescanStale` | sync/scan older than threshold | Workspace-level maintenance actions |
+
+## Severity
+
+```
+Malware > Critical > High > Medium > Low > Info
+```
+
+`Malware` is its own severity (above Critical) so CI gates can block only on malware while tolerating CVE noise. Matches the dashboard grouping exactly.
+
+## Output — `table`
+
+Grouped by severity descending, 8-char id prefix for copy-paste into `dismiss` / `defer`:
+
+```
+┌──────────┬──────────┬────────────────┬──────────┬──────────────────────┬──────────────────────────┐
+│ ID       ┆ Severity ┆ Kind           ┆ Workspace┆ Target               ┆ Command                  │
+╞══════════╪══════════╪════════════════╪══════════╪══════════════════════╪══════════════════════════╡
+│ ── CRITICAL · 3 ──
+│ 03232f82 ┆ critical ┆ FixCveCritical ┆ mellona  ┆ npm:next@16.0.1      ┆ pnpm add next@^15.5.15   │
+│ 8dfa9912 ┆ critical ┆ FixCveCritical ┆ backend  ┆ pypi:h11@0.14.0      ┆ (see advisory)           │
+│ ── HIGH · 21 ──
+│ …
+180 actions · run `packguard actions dismiss <id>` to dismiss one
+```
+
+Dismissed rows are hidden by default; `--include-dismissed` surfaces them with a `[dismissed]` marker. Deferred rows idem via `--include-deferred` + a `[deferred Nd]` countdown.
+
+## Output — `json`
+
+Flat array of the full `Action` DTO. Every field — `id`, `kind`, `severity`, `workspace`, `target`, `title`, `explanation`, `suggested_command`, `recommended_version`, `dismissed_at`, `deferred_until` — round-trips. Designed for piping into `jq` or feeding a custom dashboard.
+
+```bash
+packguard actions --format json | jq '.actions[] | select(.severity == "Critical")'
+```
+
+## Output — `sarif`
+
+SARIF 2.1.0, ready for upload to GitHub Code Scanning / GitLab SAST / any standard consumer.
+
+- Rule ids: `packguard/<kind>` (e.g. `packguard/fix-cve-critical`) — one rule per `ActionKind` present.
+- Level mapping: `Malware` / `Critical` / `High` → `error`, `Medium` → `warning`, `Low` / `Info` → `note`.
+- `partialFingerprints` carry `packguard.actionId` for cross-run dedup. CVE actions also carry `cveId` so Code Scanning clusters them by advisory.
+- `artifactLocation.uri` routes to the correct lockfile per ecosystem: `pnpm-lock.yaml` / `package-lock.json` / `yarn.lock` for npm, `poetry.lock` / `uv.lock` / `requirements.txt` for PyPI.
+
+## Flags
+
+| Flag | Effect |
+|---|---|
+| `--project <path>` | Scope to a single workspace. Global actions (`RefreshSync`, `RescanStale`) always surface regardless. |
+| `--format table\|json\|sarif` | Default `table`. |
+| `--min-severity <level>` | Drop entries below the threshold (`malware` / `critical` / `high` / `medium` / `low` / `info`). |
+| `--include-dismissed` | Show dismissed actions with a marker. Default `false`. |
+| `--include-deferred` | Show deferred (future-dated) actions. Default `false`. |
+| `--fail-on-severity <level>` | Exit `1` when ≥1 active action ≥ the given severity. CI gate. |
+
+## Dismiss / defer / restore
+
+Dismissals persist to SQLite (`action_dismissals` table, V6 migration), so the dashboard + CLI share the same view:
+
+```bash
+# Git-style prefix matching (min 6 chars). Error + full-id listing on ambiguity.
+packguard actions dismiss 03232f82 --reason "waiting on Next 15 upgrade plan"
+# ✓ dismissed npm:next@16.0.1 (FixCveCritical) — id 03232f82
+
+# Defer resurfaces after N days.
+packguard actions defer 03232f82 --days 7
+# ✓ deferred npm:next@16.0.1 — resurfaces 2026-05-01T11:09:40Z
+
+# Undo.
+packguard actions restore 03232f82
+# ✓ restored npm:next@16.0.1
+```
+
+The id is a blake3 SHA-256 hex; the first 8 chars are what the table prints. If a prefix matches >1 action, the CLI prints the full candidates and exits 2 — same pattern as `git`.
+
+## Examples
+
+```bash
+# Human-readable, every active action.
+packguard actions
+
+# CI gate — fail on any high-or-above.
+packguard actions --fail-on-severity high
+
+# Paranoia gate — fail only on confirmed malware, tolerate CVE noise.
+packguard actions --fail-on-severity malware
+
+# SARIF for GitHub's Security tab.
+packguard actions --format sarif > actions.sarif
+
+# Filter + JSON for scripting.
+packguard actions --format json --min-severity high \
+  | jq '.actions[] | "\(.severity) · \(.workspace) · \(.suggested_command // "see advisory")"'
+
+# Scope to one workspace.
+packguard actions --project ./apps/web
+```
+
+## `actions` vs `report` vs `audit`
+
+Three CLI commands, three questions:
+
+- **`audit`** — *"what are the known risks?"* Raw CVE / malware / typosquat.
+- **`report`** — *"how do those risks interact with our policy?"* Compliance verdict per row.
+- **`actions`** — *"what should I do next?"* Prioritized, deduplicated, with a copyable fix command per row.
+
+A package with a high CVE shows up in all three, but `audit` says "this CVE exists", `report` says "this violates `block.cve_severity`", and `actions` says "`pnpm add pillow@^10.3.0` · dismiss if you're tracking this elsewhere". For CI gating, either `report --fail-on-violation` or `actions --fail-on-severity high` works — pick `actions` when you also want SARIF that lists the exact fix commands for reviewers.
+
+## Related
+
+- [Dashboard — Actions](/dashboard/actions) — same list, grouped UI.
+- [`packguard report`](/cli/report) — the policy compliance view.
+- [`packguard audit`](/cli/audit) — the raw risk view.
+- [GitHub Actions recipe](/integrations/github-actions) — SARIF upload + CI gate wiring.

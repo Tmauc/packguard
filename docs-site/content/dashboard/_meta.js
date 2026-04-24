@@ -4,4 +4,5 @@ export default {
   'package-detail': 'Package detail',
   graph: 'Graph',
   policies: 'Policies',
+  actions: 'Actions',
 }

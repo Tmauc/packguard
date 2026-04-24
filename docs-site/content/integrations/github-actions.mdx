@@ -115,7 +115,22 @@ steps:
 
 Each `category:` gets its own row in the Security tab, so you can spot which workspace introduced the regression without sifting through a merged report.
 
+## Variant — gate on prioritized actions (v0.4.0+)
+
+If you want the Security tab to list the exact *fix commands* reviewers should run — rather than the policy rule that was violated — swap `report` for `actions`. Same SARIF upload pipeline, richer `message.markdown` per finding:
+
+```yaml
+      - name: actions (SARIF + fail-on-severity)
+        run: |
+          packguard actions --format sarif > packguard.sarif
+          packguard actions --fail-on-severity high
+```
+
+- `packguard actions --format sarif` emits one result per action with `ruleId: packguard/<kind>`, level mapping `Malware/Critical/High → error`, and `partialFingerprints` carrying both the action id and the advisory CVE id (GitHub Code Scanning uses them to dedup across runs + cluster by advisory).
+- `packguard actions --fail-on-severity <level>` exits `1` when ≥1 active action sits at or above the given threshold. Use `malware` for a paranoia gate that tolerates CVE noise; `high` for a tighter bar; `critical` for the strictest.
+
 ## Related
 
 - [`packguard report`](/cli/report) — the command the workflow runs as its gate.
+- [`packguard actions`](/cli/actions) — the alternative gate that emits fix commands inline.
 - [GitLab CI](/integrations/gitlab-ci) — equivalent recipe for GitLab.

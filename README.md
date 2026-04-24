@@ -52,6 +52,19 @@ See [CONTEXT.md](./CONTEXT.md) for the full vision, architecture, and roadmap.
   --with-ci <gitlab|github|jenkins>` generating ready-to-paste pipeline
   snippets, Homebrew formula template, and a full [`PUBLISHING.md`](PUBLISHING.md)
   runbook for the credential-bound Phase 8b steps.
+- ✅ **Phase 12 (v0.4.0) — Page Actions**: a new `packguard-actions`
+  crate turns the store into a prioritized, deduplicated list of next
+  steps (fix malware · bump CVE · clear policy violation · resolve
+  insufficient · whitelist typosquat · refresh sync · rescan stale).
+  New `packguard actions` CLI command (see [Commands](#commands)
+  below) with `table` / `json` / `sarif` output and `dismiss` / `defer`
+  / `restore` subcommands;
+  matching `/actions` dashboard page with severity-grouped cards,
+  copy-to-clipboard commands (package-manager-aware across pnpm / npm /
+  yarn / poetry / uv / pip / pdm), and inline dismiss popover. Stable
+  blake3 ids persisted in a new `action_dismissals` SQLite table
+  (migration V6) so dismissals survive rescans and roundtrip between
+  CLI + dashboard.
 
 ---
 
@@ -80,8 +93,9 @@ is opt-in so debug builds stay fast and don't require pnpm on the PATH.
 | Overview | `/` | Health score · packages tracked · CVE/supply-chain donuts · top-5 risks |
 | Packages | `/packages` | Filterable + sortable table, URL-state filters, paginated |
 | Package detail | `/packages/:eco/:name` | 6-tab view: Versions + visx timeline, Vulnerabilities, Malware, Policy eval, Compatibility (Used by · per-workspace drill-down), Changelog |
-| Graph | `/graph` | Cytoscape (dagre + cose-bilkent), URL-driven filters, focus-CVE contamination mode |
+| Graph | `/graph` | Cytoscape (cose-bilkent default + dagre), URL-driven filters, Cmd+K CVE palette, focus-CVE contamination mode |
 | Policies | `/policies` | CodeMirror YAML editor per-workspace, dry-run preview vs current policy, atomic save |
+| Actions | `/actions` | Prioritized next steps grouped by severity (Malware → Info), copy-to-clipboard package-manager-aware fix commands, dismiss / defer / restore persisted in SQLite |
 
 Every list-returning page reads the active workspace from `?project=<path>`
 and threads it into the backend call. The header `Workspace` selector
@@ -360,6 +374,46 @@ Lists every `(path, ecosystem)` the store knows about — useful when
 `report` / `audit` / `graph` bail with "no cached scan" and you've
 forgotten where the scan ran from. Same rows feed the "Available scans"
 hint on those errors. `--json` for scripting.
+
+### `packguard actions [--project path] [--format table|json|sarif] [--min-severity <level>] [--fail-on-severity <level>]`
+
+Prioritized, deduplicated list of *next steps* derived from the store —
+the *"what should I do now?"* view. Every row has a copyable fix command
+targeted at the workspace's actual package manager (pnpm / npm / yarn /
+poetry / uv / pip / pdm), detected from its lockfile. Seven action
+kinds: `FixMalware`, `FixCveCritical`, `FixCveHigh`, `ClearViolation`,
+`ResolveInsufficient`, `WhitelistTyposquat`, `RefreshSync`,
+`RescanStale`. Severity ordering: **Malware > Critical > High > Medium
+> Low > Info** — so `--fail-on-severity malware` is a paranoia gate
+that tolerates CVE noise, while `--fail-on-severity high` tightens the
+bar.
+
+```bash
+# Human-readable, grouped by severity desc.
+packguard actions
+
+# CI gate — exit 1 on any Malware-or-above.
+packguard actions --fail-on-severity malware
+
+# SARIF for GitHub's Security tab / GitLab SAST panel.
+packguard actions --format sarif > actions.sarif
+```
+
+Subcommands `dismiss` / `defer` / `restore` persist to SQLite (new
+`action_dismissals` table, V6 migration) so the CLI + the `/actions`
+dashboard page share state — dismissing in the UI respects the next CI
+gate, dismissing on the CLI hides from the dashboard. Action ids are
+blake3(`kind` · `target` · `workspace`) so a dismissal survives rescans;
+the action legitimately re-appears when the target version bumps.
+
+```bash
+packguard actions dismiss 03232f82 --reason "tracked in JIRA-1234"
+packguard actions defer   03232f82 --days 7
+packguard actions restore 03232f82
+```
+
+Prefix matching is git-style (min 6 chars, ambiguity errors with the
+full candidates listed). Full reference: [`packguard actions`](https://packguard-docs.vercel.app/cli/actions).
 
 ---
 

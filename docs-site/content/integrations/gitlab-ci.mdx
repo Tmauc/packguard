@@ -96,7 +96,22 @@ script:
 
 Useful when a vendor advisory just dropped and you want an explicit hard gate for that exact CVE across every repo, independent of the policy's severity rules.
 
+## Variant — gate on prioritized actions (v0.4.0+)
+
+Swap `report` for `actions` when you'd rather have the SAST panel list the exact fix commands instead of the policy rule that tripped:
+
+```yaml
+script:
+  - packguard scan .
+  - packguard sync
+  - packguard actions --format sarif > packguard.sarif
+  - packguard actions --fail-on-severity high
+```
+
+Same SARIF panel, richer `message.markdown` per finding (one result per action, `ruleId: packguard/<kind>`, level `Malware/Critical/High → error`). Use `--fail-on-severity malware` for a paranoia gate that tolerates CVE noise.
+
 ## Related
 
 - [`packguard report`](/cli/report) — the command this recipe runs as its gate.
+- [`packguard actions`](/cli/actions) — the alternative gate that emits fix commands inline.
 - [GitHub Actions](/integrations/github-actions) — equivalent recipe with SARIF upload.

@@ -4,6 +4,7 @@ export default {
   sync: 'sync',
   audit: 'audit',
   report: 'report',
+  actions: 'actions',
   graph: 'graph',
   ui: 'ui',
   scans: 'scans',
