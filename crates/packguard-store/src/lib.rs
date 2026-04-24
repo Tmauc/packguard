@@ -160,6 +160,21 @@ pub struct ScanIndexRow {
     pub dependency_count: u32,
 }
 
+/// One `action_dismissals` row as read back for the Page Actions engine.
+/// `deferred_until = None` means a permanent dismissal; any value means
+/// "re-surface once `now >= deferred_until`". Timestamps are seconds
+/// since the Unix epoch (UTC).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredActionDismissal {
+    pub id: String,
+    pub kind: String,
+    pub target_json: String,
+    pub workspace: String,
+    pub dismissed_at: i64,
+    pub deferred_until: Option<i64>,
+    pub reason: Option<String>,
+}
+
 /// A full dependency row as read back from the store, in display-friendly form.
 #[derive(Debug, Clone)]
 pub struct StoredDependency {
@@ -1115,6 +1130,121 @@ impl Store {
             .context("put_sync_state")?;
         Ok(())
     }
+
+    /// Upsert a dismissal for `action_id`. Re-dismissing the same id
+    /// overwrites the previous row so callers can promote a 7-day defer
+    /// into a permanent dismissal (or the reverse) without a separate
+    /// delete step. Timestamps are unix seconds (UTC).
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_action_dismissal(
+        &mut self,
+        id: &str,
+        kind: &str,
+        target_json: &str,
+        workspace: &str,
+        dismissed_at: i64,
+        deferred_until: Option<i64>,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO action_dismissals \
+                   (id, kind, target_json, workspace, dismissed_at, deferred_until, reason) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                 ON CONFLICT(id) DO UPDATE SET \
+                    kind = excluded.kind, \
+                    target_json = excluded.target_json, \
+                    workspace = excluded.workspace, \
+                    dismissed_at = excluded.dismissed_at, \
+                    deferred_until = excluded.deferred_until, \
+                    reason = excluded.reason",
+                params![
+                    id,
+                    kind,
+                    target_json,
+                    workspace,
+                    dismissed_at,
+                    deferred_until,
+                    reason,
+                ],
+            )
+            .context("upsert action_dismissal")?;
+        Ok(())
+    }
+
+    /// Delete a dismissal by id. Idempotent — returns the number of rows
+    /// removed (0 when the id isn't present).
+    pub fn delete_action_dismissal(&mut self, id: &str) -> Result<usize> {
+        let n = self
+            .conn
+            .execute("DELETE FROM action_dismissals WHERE id = ?1", params![id])
+            .context("delete action_dismissal")?;
+        Ok(n)
+    }
+
+    /// Load every dismissal that is still active at `now_unix` (permanent
+    /// or with a `deferred_until` in the future). Scoped to `workspace`
+    /// when provided, otherwise returns the global set.
+    pub fn load_active_dismissals(
+        &self,
+        workspace: Option<&str>,
+        now_unix: i64,
+    ) -> Result<Vec<StoredActionDismissal>> {
+        let sql = if workspace.is_some() {
+            "SELECT id, kind, target_json, workspace, dismissed_at, deferred_until, reason \
+             FROM action_dismissals \
+             WHERE workspace = ?1 \
+               AND (deferred_until IS NULL OR deferred_until > ?2) \
+             ORDER BY dismissed_at DESC"
+        } else {
+            "SELECT id, kind, target_json, workspace, dismissed_at, deferred_until, reason \
+             FROM action_dismissals \
+             WHERE (deferred_until IS NULL OR deferred_until > ?2) \
+             ORDER BY dismissed_at DESC"
+        };
+        let mut stmt = self
+            .conn
+            .prepare(sql)
+            .context("prepare load_active_dismissals")?;
+        let ws = workspace.unwrap_or("");
+        let rows = stmt
+            .query_map(params![ws, now_unix], read_stored_action_dismissal)
+            .context("query action_dismissals")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Remove dismissals whose defer window has elapsed (i.e.
+    /// `deferred_until <= now_unix`). Permanent dismissals (NULL) are left
+    /// untouched. Returns the number of rows deleted.
+    pub fn purge_expired_action_dismissals(&mut self, now_unix: i64) -> Result<usize> {
+        let n = self
+            .conn
+            .execute(
+                "DELETE FROM action_dismissals \
+                 WHERE deferred_until IS NOT NULL AND deferred_until <= ?1",
+                params![now_unix],
+            )
+            .context("purge expired action_dismissals")?;
+        Ok(n)
+    }
+}
+
+fn read_stored_action_dismissal(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredActionDismissal> {
+    Ok(StoredActionDismissal {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        target_json: row.get(2)?,
+        workspace: row.get(3)?,
+        dismissed_at: row.get(4)?,
+        deferred_until: row.get(5)?,
+        reason: row.get(6)?,
+    })
 }
 
 fn read_stored_vulnerability(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVulnerability> {
@@ -1957,5 +2087,135 @@ mod tests {
             store.watched_packages().unwrap().into_iter().collect();
         assert!(all.is_superset(&a_pkgs));
         assert!(all.is_superset(&b_pkgs));
+    }
+
+    #[test]
+    fn action_dismissal_upsert_and_load_active() {
+        let mut store = Store::open_in_memory().unwrap();
+        let now = 1_700_000_000i64;
+        // Permanent dismissal on workspace A.
+        store
+            .upsert_action_dismissal(
+                "id-perm",
+                "FixCveCritical",
+                r#"{"ecosystem":"npm","name":"lodash","version":"4.17.20"}"#,
+                "/tmp/a",
+                now,
+                None,
+                Some("false positive"),
+            )
+            .unwrap();
+        // 7-day defer on workspace B.
+        let one_week = 7 * 86_400;
+        store
+            .upsert_action_dismissal(
+                "id-defer",
+                "RefreshSync",
+                r#"{"kind":"Workspace"}"#,
+                "/tmp/b",
+                now,
+                Some(now + one_week),
+                None,
+            )
+            .unwrap();
+
+        let a_active = store
+            .load_active_dismissals(Some("/tmp/a"), now + 3600)
+            .unwrap();
+        assert_eq!(a_active.len(), 1);
+        assert_eq!(a_active[0].id, "id-perm");
+        assert!(a_active[0].deferred_until.is_none());
+
+        let b_active = store
+            .load_active_dismissals(Some("/tmp/b"), now + 3600)
+            .unwrap();
+        assert_eq!(b_active.len(), 1);
+        assert_eq!(b_active[0].deferred_until, Some(now + one_week));
+
+        // Global scope merges both.
+        let global = store.load_active_dismissals(None, now + 3600).unwrap();
+        assert_eq!(global.len(), 2);
+    }
+
+    #[test]
+    fn action_dismissal_purge_expired_defers() {
+        let mut store = Store::open_in_memory().unwrap();
+        let now = 1_700_000_000i64;
+        store
+            .upsert_action_dismissal("id-perm", "FixMalware", "{}", "/tmp/a", now, None, None)
+            .unwrap();
+        store
+            .upsert_action_dismissal(
+                "id-defer-gone",
+                "RefreshSync",
+                "{}",
+                "/tmp/b",
+                now,
+                Some(now + 10),
+                None,
+            )
+            .unwrap();
+        store
+            .upsert_action_dismissal(
+                "id-defer-future",
+                "RescanStale",
+                "{}",
+                "/tmp/b",
+                now,
+                Some(now + 10_000),
+                None,
+            )
+            .unwrap();
+
+        // Jump past the 10s defer.
+        let later = now + 100;
+        let purged = store.purge_expired_action_dismissals(later).unwrap();
+        assert_eq!(purged, 1, "only the 10s defer should be purged");
+
+        let remaining_ids: std::collections::BTreeSet<String> = store
+            .load_active_dismissals(None, later)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        assert!(remaining_ids.contains("id-perm"));
+        assert!(remaining_ids.contains("id-defer-future"));
+        assert!(!remaining_ids.contains("id-defer-gone"));
+
+        // load_active_dismissals excludes the 10s defer even if purge didn't
+        // run (evaluates the same boundary).
+        let pre_purge = store.load_active_dismissals(None, now + 11).unwrap();
+        assert!(pre_purge.iter().all(|d| d.id != "id-defer-gone"));
+    }
+
+    #[test]
+    fn action_dismissal_upsert_overwrites_same_id() {
+        let mut store = Store::open_in_memory().unwrap();
+        let now = 1_700_000_000i64;
+        store
+            .upsert_action_dismissal("abc", "FixCveHigh", "{}", "/tmp/a", now, None, Some("v1"))
+            .unwrap();
+        store
+            .upsert_action_dismissal(
+                "abc",
+                "FixCveHigh",
+                "{}",
+                "/tmp/a",
+                now + 60,
+                Some(now + 86_400),
+                Some("v2"),
+            )
+            .unwrap();
+        let rows = store.load_active_dismissals(None, now + 100).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].reason.as_deref(), Some("v2"));
+        assert_eq!(rows[0].deferred_until, Some(now + 86_400));
+
+        let deleted = store.delete_action_dismissal("abc").unwrap();
+        assert_eq!(deleted, 1);
+        assert!(store
+            .load_active_dismissals(None, now + 100)
+            .unwrap()
+            .is_empty());
     }
 }
