@@ -1440,6 +1440,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "packguard-actions"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "packguard-core",
+ "packguard-intel",
+ "packguard-policy",
+ "packguard-store",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "ts-rs",
+]
+
+[[package]]
 name = "packguard-core"
 version = "0.3.0"
 dependencies = [

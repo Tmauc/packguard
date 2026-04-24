@@ -1,0 +1,25 @@
+[package]
+name = "packguard-actions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PackGuard Page Actions engine: generates prioritized remediation actions from the store + policy + intel, with dismiss/defer persistence."
+
+[dependencies]
+packguard-core = { path = "../packguard-core", version = "0.3.0" }
+packguard-store = { path = "../packguard-store", version = "0.3.0" }
+packguard-policy = { path = "../packguard-policy", version = "0.3.0" }
+packguard-intel = { path = "../packguard-intel", version = "0.3.0" }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }
+ts-rs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

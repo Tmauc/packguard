@@ -5,6 +5,7 @@ members = [
     "crates/packguard-store",
     "crates/packguard-policy",
     "crates/packguard-intel",
+    "crates/packguard-actions",
     "crates/packguard-server",
     "crates/packguard-cli",
 ]

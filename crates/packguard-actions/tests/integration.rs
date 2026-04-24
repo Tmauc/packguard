@@ -1,0 +1,384 @@
+//! End-to-end tests for the Page Actions engine.
+//!
+//! Seeds a Nalo-like fixture store (1 malware + 2 CVE + 1 insufficient +
+//! 1 stale sync_log + 1 stale scan) and asserts that `collect_all`
+//! emits the expected set of actions in the right priority order.
+
+use chrono::{DateTime, Duration, Utc};
+use packguard_actions::{
+    collect_all, filter_min_severity, Action, ActionKind, ActionSeverity, ActionTarget,
+};
+use packguard_core::{
+    AffectedEvent, AffectedRange, AffectedRangeKind, AffectedSpec, DepKind, Dependency,
+    MalwareKind, MalwareReport, Project, RemotePackage, Severity, Vulnerability,
+};
+use packguard_store::{normalize_repo_path, Store, SyncState};
+use std::collections::BTreeMap;
+use std::path::Path;
+
+/// Permissive policy so the test fixture can exercise the generators
+/// without the conservative defaults shadowing the recommended versions
+/// (which would leave `suggested_command` empty and the generator
+/// without a clean "here's the fix" signal).
+const PERMISSIVE_POLICY_YAML: &str = r#"defaults:
+  offset:
+    major: 0
+    minor: 0
+    patch: 0
+  stability: stable
+  min_age_days: 0
+  block:
+    cve_severity: [high, critical]
+    malware: true
+    deprecated: true
+    yanked: true
+    typosquat: warn
+"#;
+
+fn now_anchor() -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339("2026-04-24T12:00:00Z")
+        .unwrap()
+        .to_utc()
+}
+
+fn seed_nalo_like(store: &mut Store, repo: &Path) {
+    // Drop the permissive policy at the repo root so `collect_all`'s
+    // policy cascade picks it up. Without it the `offset.minor: -1`
+    // default rejects every published version and the recommended
+    // hint goes empty, masking what we're actually testing.
+    std::fs::write(repo.join(".packguard.yml"), PERMISSIVE_POLICY_YAML).unwrap();
+
+    // Two deps: lodash@4.17.20 (critical + high CVE) +
+    // posthog-js@1.82.0 (malware). `ghost-pkg` is a prerelease-only
+    // package: the policy demands `stability: stable`, so the resolver
+    // drops every candidate → `InsufficientCandidates`.
+    let project = Project {
+        ecosystem: "npm",
+        root: repo.to_path_buf(),
+        manifest_path: repo.join("package.json"),
+        name: Some("nalo".into()),
+        workspace: None,
+        dependencies: vec![
+            Dependency {
+                name: "lodash".into(),
+                declared_range: "^4.17.0".into(),
+                installed: Some("4.17.20".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("pnpm-lock.yaml".into()),
+            },
+            Dependency {
+                name: "posthog-js".into(),
+                declared_range: "^1.82.0".into(),
+                installed: Some("1.82.0".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("pnpm-lock.yaml".into()),
+            },
+            Dependency {
+                name: "ghost-pkg".into(),
+                declared_range: "1.0.0-beta".into(),
+                installed: Some("1.0.0-beta".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("pnpm-lock.yaml".into()),
+            },
+        ],
+        edges: Vec::new(),
+        compatibility: Vec::new(),
+    };
+    let mut remotes = BTreeMap::new();
+    remotes.insert(
+        "lodash".into(),
+        RemotePackage {
+            name: "lodash".into(),
+            latest: Some("4.17.21".into()),
+            latest_published_at: Some("2024-06-01T00:00:00Z".into()),
+            versions: vec![
+                packguard_core::RemoteVersion {
+                    version: "4.17.20".into(),
+                    published_at: Some("2020-01-01T00:00:00Z".into()),
+                    deprecated: false,
+                    yanked: false,
+                },
+                packguard_core::RemoteVersion {
+                    version: "4.17.21".into(),
+                    published_at: Some("2021-03-01T00:00:00Z".into()),
+                    deprecated: false,
+                    yanked: false,
+                },
+            ],
+        },
+    );
+    remotes.insert(
+        "posthog-js".into(),
+        RemotePackage {
+            name: "posthog-js".into(),
+            latest: Some("1.83.1".into()),
+            latest_published_at: Some("2024-01-01T00:00:00Z".into()),
+            versions: vec![
+                packguard_core::RemoteVersion {
+                    version: "1.82.0".into(),
+                    published_at: Some("2023-12-01T00:00:00Z".into()),
+                    deprecated: false,
+                    yanked: false,
+                },
+                packguard_core::RemoteVersion {
+                    version: "1.83.1".into(),
+                    published_at: Some("2024-01-01T00:00:00Z".into()),
+                    deprecated: false,
+                    yanked: false,
+                },
+            ],
+        },
+    );
+    // ghost-pkg registry only publishes a prerelease → `stability: stable`
+    // filters it out → no candidate survives → InsufficientCandidates.
+    remotes.insert(
+        "ghost-pkg".into(),
+        RemotePackage {
+            name: "ghost-pkg".into(),
+            latest: Some("1.0.0-beta".into()),
+            latest_published_at: Some("2024-01-01T00:00:00Z".into()),
+            versions: vec![packguard_core::RemoteVersion {
+                version: "1.0.0-beta".into(),
+                published_at: Some("2024-01-01T00:00:00Z".into()),
+                deprecated: false,
+                yanked: false,
+            }],
+        },
+    );
+    store
+        .save_project(repo, &project, &remotes, "fp-nalo")
+        .unwrap();
+
+    // High CVE on lodash@4.17.20 (fixed in 4.17.21).
+    let cve = Vulnerability {
+        source: "osv".into(),
+        advisory_id: "GHSA-nalo-lodash".into(),
+        ecosystem: "npm".into(),
+        package_name: "lodash".into(),
+        severity: Severity::High,
+        cve_id: Some("CVE-2021-23337".into()),
+        aliases: vec![],
+        summary: Some("Command injection".into()),
+        url: None,
+        affected: AffectedSpec {
+            ranges: vec![AffectedRange {
+                kind: AffectedRangeKind::Semver,
+                events: vec![
+                    AffectedEvent::Introduced("0.0.0".into()),
+                    AffectedEvent::Fixed("4.17.21".into()),
+                ],
+            }],
+            versions: vec![],
+        },
+        fixed_versions: vec!["4.17.21".into()],
+        published_at: None,
+        modified_at: None,
+    };
+    let cve_crit = Vulnerability {
+        source: "osv".into(),
+        advisory_id: "GHSA-nalo-lodash-crit".into(),
+        ecosystem: "npm".into(),
+        package_name: "lodash".into(),
+        severity: Severity::Critical,
+        cve_id: Some("CVE-2021-99999".into()),
+        aliases: vec![],
+        summary: Some("Critical demo".into()),
+        url: None,
+        affected: AffectedSpec {
+            ranges: vec![AffectedRange {
+                kind: AffectedRangeKind::Semver,
+                events: vec![
+                    AffectedEvent::Introduced("0.0.0".into()),
+                    AffectedEvent::Fixed("4.17.21".into()),
+                ],
+            }],
+            versions: vec![],
+        },
+        fixed_versions: vec!["4.17.21".into()],
+        published_at: None,
+        modified_at: None,
+    };
+    store.persist_vulnerabilities(&[cve, cve_crit]).unwrap();
+
+    let malware = MalwareReport {
+        source: "osv-mal".into(),
+        ref_id: "MAL-2026-12".into(),
+        ecosystem: "npm".into(),
+        package_name: "posthog-js".into(),
+        version: "1.82.0".into(),
+        kind: MalwareKind::Malware,
+        summary: Some("Compromised release".into()),
+        url: None,
+        evidence: serde_json::json!({}),
+        reported_at: None,
+    };
+    store.persist_malware_reports(&[malware]).unwrap();
+
+    // Stale sync_log: osv-npm synced 10 days ago → triggers RefreshSync.
+    let stale = (now_anchor() - Duration::days(10)).to_rfc3339();
+    store
+        .put_sync_state(
+            "osv-npm",
+            &SyncState {
+                etag: None,
+                last_modified: None,
+                last_commit: None,
+                synced_at: Some(stale),
+                record_count: 42,
+            },
+        )
+        .unwrap();
+}
+
+fn count(actions: &[Action], kind: ActionKind) -> usize {
+    actions.iter().filter(|a| a.kind == kind).count()
+}
+
+fn find_for(actions: &[Action], kind: ActionKind, name: &str) -> Option<Action> {
+    actions
+        .iter()
+        .find(|a| {
+            a.kind == kind
+                && matches!(
+                    &a.target,
+                    ActionTarget::Package { name: n, .. } if n == name
+                )
+        })
+        .cloned()
+}
+
+#[test]
+fn collect_all_produces_expected_actions_on_nalo_like_fixture() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("nalo");
+    std::fs::create_dir_all(&repo).unwrap();
+    // Drop a pnpm-lock.yaml so pm_detect picks Pnpm.
+    std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &repo);
+
+    let now = now_anchor();
+    let actions = collect_all(&store, Some(&repo), now).unwrap();
+
+    // 1 malware + 1 critical CVE + 1 high CVE + 1 insufficient + 1 refresh.
+    // RescanStale only fires if last_scan_at < now - 3d; the save just
+    // happened so it shouldn't fire here.
+    assert_eq!(count(&actions, ActionKind::FixMalware), 1);
+    assert_eq!(count(&actions, ActionKind::FixCveCritical), 1);
+    assert_eq!(count(&actions, ActionKind::FixCveHigh), 1);
+    assert_eq!(count(&actions, ActionKind::ResolveInsufficient), 1);
+    assert_eq!(count(&actions, ActionKind::RefreshSync), 1);
+    assert_eq!(count(&actions, ActionKind::RescanStale), 0);
+
+    // First action is malware (Critical severity, lexicographically
+    // before the critical CVE by (workspace, kind)).
+    let top = &actions[0];
+    assert_eq!(top.severity, ActionSeverity::Critical);
+    // Actions are sorted by severity desc → Critical block at the top,
+    // then High, then Medium, then Info.
+    let severities: Vec<ActionSeverity> = actions.iter().map(|a| a.severity).collect();
+    let mut sorted = severities.clone();
+    sorted.sort_by(|a, b| b.cmp(a));
+    assert_eq!(severities, sorted, "actions must be sorted severity desc");
+}
+
+#[test]
+fn collect_all_emits_suggested_command_matching_detected_pm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("nalo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &repo);
+    let now = now_anchor();
+    let actions = collect_all(&store, Some(&repo), now).unwrap();
+
+    let cve_high = find_for(&actions, ActionKind::FixCveHigh, "lodash").unwrap();
+    // Policy recommends 4.17.21 (the fixed version), emitted via pnpm.
+    assert_eq!(
+        cve_high.suggested_command.as_deref(),
+        Some("pnpm up lodash@4.17.21")
+    );
+}
+
+#[test]
+fn collect_all_refresh_sync_triggers_when_sync_log_stale_beyond_7_days() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("nalo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &repo);
+    let now = now_anchor();
+    let actions = collect_all(&store, Some(&repo), now).unwrap();
+    let refresh = actions
+        .iter()
+        .find(|a| a.kind == ActionKind::RefreshSync)
+        .unwrap();
+    assert_eq!(refresh.workspace, "_global");
+    assert!(refresh.title.contains("stale") || refresh.title.contains("date"));
+    assert_eq!(refresh.suggested_command.as_deref(), Some("packguard sync"));
+}
+
+#[test]
+fn collect_all_refresh_sync_silent_when_fresh() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("nalo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &repo);
+    // Overwrite sync_log so osv-npm is fresh.
+    let now = now_anchor();
+    store
+        .put_sync_state(
+            "osv-npm",
+            &SyncState {
+                etag: None,
+                last_modified: None,
+                last_commit: None,
+                synced_at: Some(now.to_rfc3339()),
+                record_count: 42,
+            },
+        )
+        .unwrap();
+    let actions = collect_all(&store, Some(&repo), now).unwrap();
+    assert_eq!(count(&actions, ActionKind::RefreshSync), 0);
+}
+
+#[test]
+fn collect_all_emits_rescan_stale_when_last_scan_beyond_3_days() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("nalo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &repo);
+    // Time-travel 5 days forward: the scan saved by `seed_nalo_like` is
+    // now 5d old; `collect_all` should emit a RescanStale action.
+    let later = now_anchor() + Duration::days(5);
+    let actions = collect_all(&store, Some(&repo), later).unwrap();
+    let rescan = actions
+        .iter()
+        .find(|a| a.kind == ActionKind::RescanStale)
+        .unwrap();
+    assert_eq!(rescan.workspace, normalize_repo_path(&repo));
+    assert!(rescan.title.contains("5d") || rescan.title.contains("ago"));
+}
+
+#[test]
+fn filter_min_severity_drops_lower_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("nalo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &repo);
+    let mut actions = collect_all(&store, Some(&repo), now_anchor()).unwrap();
+    let before = actions.len();
+    filter_min_severity(&mut actions, ActionSeverity::High);
+    assert!(actions.len() < before);
+    assert!(actions.iter().all(|a| a.severity >= ActionSeverity::High));
+}
