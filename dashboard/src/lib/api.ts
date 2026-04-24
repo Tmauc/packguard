@@ -14,6 +14,9 @@ import type { ContaminationResult } from "@/api/types/ContaminationResult";
 import type { GraphVulnerabilityList } from "@/api/types/GraphVulnerabilityList";
 import type { CompatResponse } from "@/api/types/CompatResponse";
 import type { WorkspacesResponse } from "@/api/types/WorkspacesResponse";
+import type { ActionsResponse } from "@/api/types/ActionsResponse";
+import type { ActionDismissResponse } from "@/api/types/ActionDismissResponse";
+import type { ActionDeferResponse } from "@/api/types/ActionDeferResponse";
 
 /**
  * Phase 7b scope hint. `undefined` (or empty) = aggregate view across
@@ -158,4 +161,42 @@ export const api = {
   },
 
   workspaces: () => fetch("/api/workspaces").then(handle<WorkspacesResponse>),
+
+  actions: (
+    q: { min_severity?: string } = {},
+    project?: ProjectScope,
+  ) => {
+    const params = new URLSearchParams();
+    if (q.min_severity) params.set("min_severity", q.min_severity);
+    withProject(params, project);
+    const qs = params.toString();
+    return fetch(`/api/actions${qs ? `?${qs}` : ""}`).then(
+      handle<ActionsResponse>,
+    );
+  },
+
+  dismissAction: (id: string, reason?: string) =>
+    fetch(`/api/actions/${encodeURIComponent(id)}/dismiss`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: reason ?? null }),
+    }).then(handle<ActionDismissResponse>),
+
+  deferAction: (id: string, days: number, reason?: string) =>
+    fetch(`/api/actions/${encodeURIComponent(id)}/defer`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ days, reason: reason ?? null }),
+    }).then(handle<ActionDeferResponse>),
+
+  restoreAction: (id: string) =>
+    fetch(`/api/actions/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }).then(async (res) => {
+      if (!res.ok && res.status !== 204) {
+        // Reuse the generic JSON error path so the caller surfaces the
+        // same error envelope as every other mutation.
+        await handle<unknown>(res);
+      }
+    }),
 };

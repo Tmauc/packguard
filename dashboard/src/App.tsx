@@ -5,6 +5,7 @@ import { PackagesPage } from "@/pages/Packages";
 import { PackageDetailPage } from "@/pages/PackageDetail";
 import { PoliciesPage } from "@/pages/Policies";
 import { GraphPage } from "@/pages/Graph";
+import { ActionsPage } from "@/pages/Actions";
 
 export function App() {
   return (
@@ -18,6 +19,7 @@ export function App() {
         />
         <Route path="graph" element={<GraphPage />} />
         <Route path="policies" element={<PoliciesPage />} />
+        <Route path="actions" element={<ActionsPage />} />
       </Route>
     </Routes>
   );
