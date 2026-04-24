@@ -2157,6 +2157,169 @@ Thomas ship séquence : `./scripts/bump-version.sh 0.3.0` → `git push origin m
 
 ---
 
+## 14.19. v0.4.0 — Plan (thème "Adoption", validé 2026-04-24)
+
+**Thème produit** : *"Adoption"*. v0.3.0 a corrigé les fondations (offset lex, cascade, UX surfacing, graph usable). v0.4.0 adresse le vrai blocker d'adoption remonté par Thomas en dogfood v0.2.0 : *"les tableaux c'est beau mais je suis perdu, je ne sais pas quoi faire"*. Transforme l'observation en action priorisée.
+
+**Scope v0.4.0** : Phase 12 uniquement (Page Actions flagship). Les quick wins polish (tooltips restants, workspace tree, favicon, dark mode, policies overflow) vont en **v0.4.1** (Phase 13).
+
+### Phase 12 — Page Actions ⭐ (flagship)
+
+**Principe** : read-only + copy-to-clipboard. Pas d'apply v0.4 (trop risqué pour un outil local-first qui vise la confiance). Pas de batch. Génère une liste d'actions priorisées depuis le store existant + surface via UI + CLI.
+
+**Types d'actions générées** (priorité décroissante) :
+
+| Kind | Source store | Exemple |
+|---|---|---|
+| `FixMalware` | `malware_reports` kind=Malware | `posthog-js@1.82.0 → bump to 1.83.1 (MAL-2026-12)` |
+| `FixCveCritical` / `FixCveHigh` | `vulnerabilities` | `pillow@9.0.1 → 10.3.0 (CVE-2024-28219)` |
+| `ClearViolation` | policy verdict=violation | `react@19.0.0 → pin to 18.3.1 (offset major cap)` |
+| `ResolveInsufficient` | policy verdict=insufficient | `aiohttp@3.9.1 → loosen offset or pin — no candidate` |
+| `WhitelistTyposquat` | `malware_reports` kind=Typosquat | `eslint-plugin-import → add to typosquat.allowlist (FP fork)` |
+| `RefreshSync` | `sync_log.synced_at < now-7d` | `advisory DB 9 days stale — packguard sync` |
+| `RescanStale` | `scans.ts < now-3d` | `workspace vesta scanned 5d ago` |
+
+**Stable id** : hash de `(kind, target, workspace)` → dismissals survivent aux rescans.
+
+### Décisions design verrouillées (Thomas, 2026-04-24)
+
+1. **Persistance dismiss/defer = SQLite** (nouvelle table `action_dismissals`). Raison : CLI `packguard actions` doit respecter les dismisses pour rester utilisable en CI (sinon dismiss côté UI mais CI continue de bloquer). localStorage écarté.
+2. **Nouveau crate `packguard-actions`**. Raison : c'est une couche d'agrégation au-dessus de policy/intel/store, séparation propre. Même pattern que `packguard-intel` Phase 2.
+3. **Package manager detection obligatoire** : commande suggérée ciblée au lockfile détecté (`pnpm-lock.yaml` → `pnpm up`, `poetry.lock` → `poetry add`, `uv.lock` → `uv add`, etc.). Fallback ecosystem default si aucun lockfile. Sans ça la commande est inutilisable.
+4. **Read-only v0.4** confirmé. Pas d'apply, pas de patching fichiers. v0.5.0 candidate pour apply.
+5. **Phase 13 polish → v0.4.1** (tooltips, workspace tree, favicon, dark mode, policies overflow). v0.4.0 = flagship seul.
+
+### Split Phase 12 en 3 sous-phases
+
+**12a ✅ done (2026-04-24)** — Engine backend
+
+Livré : 4 commits atomiques (`4512af8` V6 migration + `29a69da` crate packguard-actions + generator + pm_detect + `50eef19` dismiss/defer persistence + stable IDs + `8f5739a` server endpoints), 362 Rust tests (+28 : store +3, actions unit +12, actions integration +8, server api +5). Vitest 76 inchangé. 10 nouveaux bindings ts-rs dans `dashboard/src/api/types/` (Action, ActionKind, ActionSeverity, ActionTarget + 6 request/response DTOs). Tous quality gates verts.
+
+7 generators couverts : FixMalware · FixCveCritical · FixCveHigh · ClearViolation · ResolveInsufficient · WhitelistTyposquat · RefreshSync (workspace=`_global`) · RescanStale. Sortie `collect_all` triée (severity desc, workspace, kind, target canonical).
+
+Stable id : `blake3(kind || target_canonical || workspace)` hex → dismissals survivent aux rescans. Version bump = nouvel id = action ré-apparaît (comportement attendu).
+
+**Smoke Nalo réel** (~180 actions, top 5 Critical) :
+1. [Critical] FixCveCritical · mellona · next@16.0.1 → GHSA-9qr9-h5gf-34mp
+2. [Critical] FixCveCritical · frontend · nanoid@5.1.0 → CVE-2025-43859
+3. [Critical] FixCveCritical · backend · python-jose@3.3.0 → CVE-2024-33663
+4. [High] FixCveHigh · front · pnpm@9.12.2 → CVE-2025-69262
+5. [High] FixCveHigh · (…) → GHSA-q4gf-8mx6-v5v3
+
+Filter `?min_severity=high` → 24/180 (fonctionne).
+
+**Questions ouvertes remontées par l'agent (décisions pour 12b)** :
+1. `suggested_command` = `None` quand installed = recommended OU recommended absent. Backend reste None (data truth). UI 12b affichera un fallback CTA "Voir advisory →" pour ces cas.
+2. `ActionTarget::Package` porte `version` (installed). Pour que l'UI affiche aussi `recommended`, **extension DTO mineure** en suivi 12a : ajouter `recommended_version: Option<String>` à `Action` (parse `suggested_command` côté client est fragile, dépend du format pm).
+3. Format commandes : agent a choisi exact pour poetry (`poetry add pillow@10.3.0`). Brief suggérait caret (`^10.3.0`). Décision Thomas : **caret** est plus aligné avec l'intention PackGuard ("minimum safe version, patch updates OK"). Pnpm : `pnpm add X@^Y` préférable à `pnpm up X@Y`. À amender dans 12a-follow-up.
+4. `RefreshSync` workspace=`_global`, le handler ne le filtre pas quand `?project=X` — comportement voulu. UI 12b affichera les globals en section séparée.
+
+**Follow-up 12a ✅ done (2026-04-24)** — 1 commit `02c65fd` feat(actions): expose recommended_version + caret/range commands. Tests 362 → 365 (+3 : `suggest_upgrade_format_per_pm` étendu aux 7 pm, `next_major_parses_leading_integer` semver + PEP 440 + prerelease + short form + unparseable, `collect_all_leaves_recommended_version_none_for_workspace_actions`). `Action.ts` regen. Vitest 76 inchangé.
+
+Smoke Nalo confirmé :
+- `next@16.0.1 → recommended=15.5.15 · pnpm add next@^15.5.15`
+- `python-jose@3.3.0 → recommended=3.4.0 · uv add 'python-jose>=3.4.0,<4'`
+- `pnpm@9.12.2 → recommended=10.32.1 · pnpm add pnpm@^10.32.1`
+- Cas sans recommandation (ex h11) : `recommended_version=None` + `suggested_command=None` → UI 12b rend fallback "Voir advisory →".
+
+Helper `next_major()` gère PEP 440 + formes courtes + prerelease, fallback open-ended si parsing échoue. 7 pm couverts (pnpm / npm / yarn / poetry / uv / pip / pdm).
+
+**12b ✅ done (2026-04-24)** — Dashboard UI
+
+Livré : 3 commits atomiques (`7026168` page + severity grouping + copy + `c78efa2` dismiss/defer/restore flows + `53ad0ec` nav link + count badge), 89 Vitest (+13 : 11 Actions tests + 2 layout count badge). Rust 365 inchangé. Tous quality gates verts. Zéro nouvelle dep (popovers inline, copy via `navigator.clipboard`, sonner déjà utilisé pour toasts).
+
+**Smoke Nalo** (~180 actions) :
+- 3 Critical CVE / 25 High CVE / 14 ClearViolation / 25 WhitelistTyposquat (etc.)
+- Copy flow top card : `next@16.0.1 → recommended=15.5.15 · pnpm add next@^15.5.15` → writeText + toast "Copied" 2s OK
+- Dismiss → reload → restore cycle validé end-to-end via `POST /api/actions/:id/dismiss` + `DELETE /api/actions/:id/dismiss`
+- Pas d'action `_global` au moment du smoke (sync frais) → bannière top pas testée (à re-valider au smoke 12c avec sync intentionnellement stale)
+
+**Questions ouvertes remontées pour 12c** :
+1. **Show dismissed/deferred UI** : backend 12a filtre en amont dans `collect_all`. Pour support du toggle "show archived" côté UI + besoin `--format json` CLI → **étendre endpoint** avec `?include_dismissed=true&include_deferred=true`. Mini-follow-up 12a en début de 12c.
+2. **CLI dismiss par id** : id = SHA-256 hex (64 chars), pas copy-friendly. Décision : **prefix match git-style** (min 6 chars, error si ambigu). Pas de `--target name@version` (clunk).
+3. **SARIF ruleIds** : GitHub Code Scanning accepte tout string. Décision : ruleId = `packguard/<kind>` (ex `packguard/fix-cve-critical`) + `partialFingerprints` avec CVE id pour dedup cross-run. `level` mapping : Malware/Critical/High → `error`, Medium → `warning`, Low/Info → `note`.
+4. **`_global` rendering** : validé via smoke 12c avec `UPDATE sync_log SET synced_at = strftime('%s','now','-10 days')` pour forcer RefreshSync.
+
+**12c ✅ done (2026-04-24)** — CLI
+
+Livré : 4 commits atomiques (`c834b0a` include_dismissed/deferred flags + `ff13c78` actions CLI avec table/json/sarif + prefix id matching + `6f90695` dismiss/defer/restore + --fail-on-severity + `3a0e391` fix SARIF artifactLocation ecosystem-aware), 385 Rust (+20 : +3 include flags, +6 format tests, +11 subcommand tests dont 4 match_prefix unit). Vitest 89 inchangé. Tous quality gates verts. SARIF hand-rolled (zéro nouvelle dep).
+
+**Smoke Nalo finalisé** :
+- Table output : 180 actions, top 3 Critical (next / h11 / python-jose) rendus correctement
+- SARIF 2.1.0 : 5 rules, 180 results, level mapping `Malware/Critical/High → error`, `Medium → warning`, `Low/Info → note`. `partialFingerprints.packguard.actionId` partout, `cveId` additionnel pour CVE actions (ex h11 → CVE-2025-43859).
+- **URI ecosystem-aware (catch smoke commit 4)** : h11 (pypi) route vers `…/backend/uv.lock`, pas `package-lock.json`. Fix critique pour GitHub Code Scanning qui attache les alerts au bon fichier source.
+- Dismiss/restore cycle via prefix id `03232f82` (8 chars) → OK, action ré-affichée après restore.
+- **RefreshSync `_global` validé** avec `UPDATE sync_log SET synced_at = strftime('%s','now','-10 days')` → bannière info ressort. Ferme la Q4 12b.
+- `--fail-on-severity high` exit 1 sur Nalo (24 High+ actions présentes).
+
+**Déviations brief** (documentées par l'agent) :
+- 4 commits au lieu de 3 : commit 4 = fix SARIF URI trouvé au smoke, split légitime post-hoc pour bisectabilité.
+- dismiss/defer/restore ajoutés dans commit 2 mais tests dans commit 3 — nit organisationnel, pas bisectable strictement. Accepté.
+- +20 tests vs ~13 estimés : suite `match_prefix` unit dédiée (4 tests) car collisions SHA-256 impraticables à reproduire en fixture integration. Justifié.
+
+---
+
+**Total Phase 12** : 12 commits atomiques (5 en 12a [4 + 1 follow-up] + 3 en 12b + 4 en 12c), 385 Rust (+51 depuis v0.3.0), 89 Vitest (+13 depuis v0.3.0), 1 nouveau crate `packguard-actions`, 1 migration DB V6, 1 nouvelle page dashboard `/actions`, 1 nouvelle CLI command `packguard actions` avec sous-commandes dismiss/defer/restore + 3 formats (table/json/sarif).
+
+### Reporté v0.4.1 (Phase 13 polish)
+
+- 13.1 tooltips restants (Graph, Package detail, Policies) — finir finding #1
+- 13.2 workspace selector vue arbre (common-prefix detection + fuzzy search + collapse state localStorage)
+- 13.3 dashboard favicon SVG (P + shield)
+- 13.4 Policies page overflow horizontal (CodeMirror `lineWrapping` + responsive stack < 1200px)
+- 13.5 dark mode dashboard (toggle + tokens Tailwind)
+
+### Reporté v0.5.0+
+
+- Apply des actions (au lieu de copy-to-clipboard) — gros scope sécurité + UX
+- Graph rework complet (WebGL, LOD, pagination server-side) — le reste du finding #5
+- Tier 2 écosystèmes (Cargo, Go)
+- i18n / Settings page FR+EN
+- Refinery 0.9 → latest (tech-debt)
+
+### Ordre de livraison v0.4.0
+
+Strict : **12a → 12b → 12c**. Chaque sous-phase = 1 agent dédié. Bump `0.3.0 → 0.4.0` après 12c (pattern v0.3.0).
+
+### Phase 12-fix — smoke bugs pre-tag ✅ done (2026-04-24)
+
+Smoke Nalo par Thomas sur v0.4.0-rc a remonté 2 bugs bloquants + 1 opportunité défensive :
+
+1. `packguard actions --fail-on-severity malware` rejeté — `ActionSeverity` collapsait `FixMalware → Critical`, pas de variante `Malware` distincte alors que la doc de brief le prévoyait.
+2. `packguard sync` re-run en 304 Not Modified ne refresh pas `synced_at` → le generator `RefreshSync` dit "stale" en boucle même après syncs réussis (pattern daily CI en 304 perpétuel).
+3. Si `sync_log.synced_at` contient une valeur non-ISO (ex corruption par UPDATE SQL manuel), le generator disait `(never)` — confusion avec "absent entirely".
+
+Livré : 3 commits (`fce31fc` Malware severity variant + `bce18c2` fix 304 path + `ce5d310` render `(unrecognized timestamp)`), 390 Rust tests (+5 : severity parser accepts malware, cli fail-on-severity malware active, osv 304 updates synced_at, osv 304 handles missing previous state, generator renders unrecognized). Vitest 89 inchangé.
+
+**Correction de root cause Bug 2** : le short-circuit n'était **pas** dans `packguard-intel/src/osv.rs` (qui appelait déjà `put_sync_state: None` proprement) mais dans `packguard-cli/src/main.rs:393-405`. La CLI sync loop voyait `fetched.summary.skipped_not_modified` → loguait *"(skipped)"* et passait à la source suivante sans appeler `store.put_sync_state`. Fix : le 304 path réinjecte dans `put_sync_state` avec `etag` / `last_modified` / `record_count` préservés, seul `synced_at` → `now()`. Banner CLI passé de *"(skipped)"* à *"(re-checked)"*.
+
+**Smoke Bug 2 validé live Nalo** :
+- 1er `packguard sync` → fetch dumps, `synced_at = 11:34:58 / 11:34:59`, etag set.
+- 2e `packguard sync` quelques secondes plus tard → 304 path imprime *"(re-checked)"*, `synced_at` bumpé à `11:35:10` sur les deux rows osv-npm / osv-pypi.
+
+**Smoke Bug 3 validé** : forcer `UPDATE sync_log SET synced_at = strftime('%s',...)` → generator rend le message avec `(unrecognized timestamp)` au lieu de `(never)`. Signal de corruption clair.
+
+### Critères de sortie v0.4.0 — ✅ all met (2026-04-24)
+
+- [x] Page `/actions` fonctionnelle avec toutes les actions Kind documentées — 180 actions rendues sur Nalo, groupées par severity, global banner `_global` séparée
+- [x] CLI `packguard actions` aligné sur le dashboard — même crate `packguard-actions`, même priorisation, 3 formats (table/json/sarif)
+- [x] Dismissals/defers persistés en SQLite, respectés dashboard + CLI — V6 migration `action_dismissals`, stable id blake3, prefix matching git-style côté CLI
+- [x] Package manager detection prouvée sur ≥3 ecosystèmes — pnpm/poetry/uv validés au smoke, 7 pm couverts au total (+ npm/yarn/pip/pdm), caret/range idiomatiques
+- [x] Zéro régression : 385 Rust pass (vs 334 v0.3.0), 89 Vitest pass (vs 76 v0.3.0)
+- [x] Smoke test Nalo complet : 180 actions, copy-flow, dismiss/restore/defer cycles, RefreshSync `_global` avec sync stale, SARIF ecosystem-aware URIs, `--fail-on-severity` CI-ready
+
+**Bundle Phase 12 + 12-fix (15 commits, toujours locaux)** :
+- 12a : `4512af8` V6, `29a69da` crate + generator + pm_detect, `50eef19` dismiss/defer persistence, `8f5739a` server endpoints, `02c65fd` recommended_version + caret/range
+- 12b : `7026168` page + grouping + copy, `c78efa2` dismiss/defer/restore flows, `53ad0ec` header nav + badge
+- 12c : `c834b0a` include_dismissed/deferred flags, `ff13c78` CLI formats + prefix matching, `6f90695` dismiss/defer/restore subcommands + --fail-on-severity, `3a0e391` SARIF URI ecosystem-aware
+- 12-fix : `fce31fc` Malware severity variant, `bce18c2` CLI sync 304 path refresh synced_at, `ce5d310` generator renders (unrecognized) for non-ISO
+
+**Reste à commit avant le tag** : CONTEXT.md (cette section) + docs-site Phase 12 (2 nouveaux MDX cli/actions + dashboard/actions, 2 _meta.js updates, cross-refs cli/report+audit, integrations github-actions+gitlab-ci, README Phase 12 section + pages table + commands section).
+
+Thomas ship séquence : `./scripts/bump-version.sh 0.4.0` → `git push origin main --follow-tags` → attendre `release.yml` → `gh workflow run crates-publish.yml -f dry_run=false`.
+
+---
+
 ## 14.14. Feature requests v0.2.0 (remontées post-release)
 
 Thomas a utilisé l'outil sur son monorepo Nalo dès la post-release et a remonté deux **manques produit substantiels** :
