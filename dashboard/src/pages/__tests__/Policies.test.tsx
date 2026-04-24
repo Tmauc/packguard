@@ -174,4 +174,24 @@ describe("PoliciesPage", () => {
     const editor = (await screen.findByTestId("policy-editor")) as HTMLTextAreaElement;
     await waitFor(() => expect(editor.value).toContain("# /tmp/ws-b"));
   });
+
+  it("renders hover-tooltips on the action buttons and status badges", async () => {
+    (api.policies as ReturnType<typeof vi.fn>).mockResolvedValue(DOC);
+    wrap();
+    await screen.findByTestId("policy-editor");
+    // Action buttons — each spells out exactly what it does.
+    expect(
+      screen.getByRole("button", { name: /Preview impact/i }).getAttribute("title"),
+    ).toMatch(/candidate YAML/i);
+    expect(
+      screen.getByRole("button", { name: /^Save$/i }).getAttribute("title"),
+    ).toMatch(/\.packguard\.yml/i);
+    expect(
+      screen.getByRole("button", { name: /^Revert$/i }).getAttribute("title"),
+    ).toMatch(/on disk/i);
+    // Status badge — "on disk" explains the hydration source.
+    expect(screen.getByText(/^on disk$/i).getAttribute("title")).toMatch(
+      /\.packguard\.yml/i,
+    );
+  });
 });

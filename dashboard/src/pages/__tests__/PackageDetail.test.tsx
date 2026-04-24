@@ -406,4 +406,37 @@ describe("PackageDetailPage", () => {
     expect(screen.getByText(/2 parents/)).toBeInTheDocument();
     expect(screen.getByText(/1 parent\b/)).toBeInTheDocument();
   });
+
+  it("carries hover-tooltips on the 6 tab triggers", async () => {
+    wrap(fixture());
+    await screen.findByText("lodash");
+    expect(
+      screen.getByRole("button", { name: /Versions/i }).getAttribute("title"),
+    ).toMatch(/timeline/i);
+    expect(
+      screen.getByRole("button", { name: /Policy/i }).getAttribute("title"),
+    ).toMatch(/cascade trace/i);
+    expect(
+      screen.getByRole("button", { name: /Compatibility/i }).getAttribute("title"),
+    ).toMatch(/Peer dependencies/i);
+  });
+
+  it("explains every severity level on hover, not just the one on the installed row", async () => {
+    wrap(fixture());
+    await screen.findByText("lodash");
+    // Two `high` SeverityBadges render on the default tab: one in the
+    // versions table (4.17.20 row), one in the affecting-CVE card (not
+    // yet visible until the user clicks Vulnerabilities, but the Phase
+    // 10c ComplianceBadge ship already has a `title` — this test guards
+    // that the Versions-tab severity badge also carries one now).
+    const highBadges = screen.getAllByText(/^high$/i);
+    expect(highBadges.length).toBeGreaterThan(0);
+    expect(highBadges[0].getAttribute("title")).toMatch(
+      /significant impact/i,
+    );
+    // Compliance badge in the header — Phase 13.1 extended Phase 10c's
+    // insufficient-only title to every verdict.
+    const compliance = screen.getByText("cve-violation");
+    expect(compliance.getAttribute("title")).toMatch(/matches an advisory/i);
+  });
 });

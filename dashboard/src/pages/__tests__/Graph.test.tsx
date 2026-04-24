@@ -497,4 +497,28 @@ describe("GraphPage", () => {
       await screen.findByText(/no installed package is affected/i),
     ).toBeInTheDocument();
   });
+
+  it("renders hover-tooltips on the Kind filter buttons and legend swatches", async () => {
+    (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
+    wrap();
+    await screen.findByTestId("graph-canvas");
+    // Kind buttons — the Kind filter runtime button carries the
+    // "alongside your app" phrasing; the edge legend's runtime button
+    // carries a different title, so the match is unambiguous.
+    expect(
+      screen.getByTitle(/shipped to production alongside your app/i).textContent,
+    ).toMatch(/runtime/i);
+    // Legend swatches — CVE swatch explains the ring-intensity mapping.
+    expect(
+      screen.getByTestId("legend-status:cve").getAttribute("title"),
+    ).toMatch(/severity/i);
+    // Edge legend — runtime edge title distinguishes edges from the Kind row.
+    expect(
+      screen.getByTestId("legend-edge-runtime").getAttribute("title"),
+    ).toMatch(/runtime dependency edge/i);
+    // Focus CVE trigger — mentions ⌘K / Ctrl+K shortcut.
+    expect(
+      screen.getByTestId("open-cve-palette").getAttribute("title"),
+    ).toMatch(/⌘K|Ctrl\+K/);
+  });
 });
