@@ -6,7 +6,8 @@
 
 use chrono::{DateTime, Duration, Utc};
 use packguard_actions::{
-    collect_all, filter_min_severity, Action, ActionKind, ActionSeverity, ActionTarget,
+    collect_all, defer, dismiss, filter_min_severity, restore, Action, ActionKind, ActionSeverity,
+    ActionTarget,
 };
 use packguard_core::{
     AffectedEvent, AffectedRange, AffectedRangeKind, AffectedSpec, DepKind, Dependency,
@@ -366,6 +367,59 @@ fn collect_all_emits_rescan_stale_when_last_scan_beyond_3_days() {
         .unwrap();
     assert_eq!(rescan.workspace, normalize_repo_path(&repo));
     assert!(rescan.title.contains("5d") || rescan.title.contains("ago"));
+}
+
+#[test]
+fn dismiss_then_collect_all_excludes_action() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("nalo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &repo);
+
+    let now = now_anchor();
+    let actions = collect_all(&store, Some(&repo), now).unwrap();
+    let cve_high = find_for(&actions, ActionKind::FixCveHigh, "lodash").unwrap();
+
+    dismiss(&mut store, &cve_high, Some("accepted risk"), now).unwrap();
+    let after = collect_all(&store, Some(&repo), now).unwrap();
+    assert!(
+        !after.iter().any(|a| a.id == cve_high.id),
+        "dismissed action must not resurface"
+    );
+
+    // Undismiss → action returns.
+    restore(&mut store, &cve_high.id).unwrap();
+    let restored = collect_all(&store, Some(&repo), now).unwrap();
+    assert!(restored.iter().any(|a| a.id == cve_high.id));
+}
+
+#[test]
+fn defer_expires_after_days_and_action_reappears() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("nalo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &repo);
+
+    let now = now_anchor();
+    let actions = collect_all(&store, Some(&repo), now).unwrap();
+    let target = find_for(&actions, ActionKind::FixCveCritical, "lodash").unwrap();
+
+    defer(&mut store, &target, 7, Some("sprint busy"), now).unwrap();
+    // Within the defer window → hidden.
+    let hidden = collect_all(&store, Some(&repo), now + Duration::days(3)).unwrap();
+    assert!(!hidden.iter().any(|a| a.id == target.id));
+
+    // Past the defer window → resurfaces with the same id (stable).
+    let resurfaced = collect_all(&store, Some(&repo), now + Duration::days(8)).unwrap();
+    let back = resurfaced
+        .iter()
+        .find(|a| a.id == target.id)
+        .expect("deferred action must resurface after its window");
+    assert_eq!(back.id, target.id, "stable id survives defer cycle");
 }
 
 #[test]
