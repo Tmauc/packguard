@@ -19,6 +19,18 @@ import type { GraphResponse } from "@/api/types/GraphResponse";
 const KINDS = ["runtime", "dev", "peer", "optional"] as const;
 type Kind = (typeof KINDS)[number];
 
+const KIND_TITLES: Record<Kind, string> = {
+  runtime: "Runtime dependency — shipped to production alongside your app.",
+  dev: "Dev-only dependency — installed locally / in CI but not in production.",
+  peer: "Peer dependency — expected to be provided by the host project.",
+  optional: "Optional dependency — install failures are tolerated.",
+};
+
+const LAYOUT_TITLES: Record<LayoutName, string> = {
+  dagre: "Hierarchical DAG layout — roots at the top, children cascade down. Best for small/medium graphs.",
+  "cose-bilkent": "Force-directed layout — clusters related packages. Best for large mixed graphs (default).",
+};
+
 // Keys the URL `?hide=` param understands. Edge kinds live under the
 // existing `?kind=` param, so the legend toggles wire those separately
 // rather than double-encoding the same filter.
@@ -273,6 +285,7 @@ export function GraphPage() {
                 <button
                   key={k}
                   type="button"
+                  title={KIND_TITLES[k]}
                   onClick={() => setKind(k, !active)}
                   className={cn(
                     "h-7 rounded-md border px-2 text-xs capitalize",
@@ -286,7 +299,10 @@ export function GraphPage() {
               );
             })}
           </div>
-          <div className="flex items-center gap-2 text-xs text-zinc-500">
+          <div
+            className="flex items-center gap-2 text-xs text-zinc-500"
+            title="BFS depth from workspace roots. 1 shows direct deps only; higher values walk transitively. Capped at 32."
+          >
             Depth
             <input
               type="number"
@@ -297,7 +313,10 @@ export function GraphPage() {
               className="h-7 w-14 rounded-md border border-zinc-300 px-1 text-center text-sm text-zinc-900"
             />
           </div>
-          <div className="flex items-center gap-2 text-xs text-zinc-500">
+          <div
+            className="flex items-center gap-2 text-xs text-zinc-500"
+            title="Cytoscape layout algorithm. cose-bilkent is force-directed and handles clusters well; dagre lays out as a hierarchical DAG."
+          >
             Layout
             <select
               value={layout}
@@ -305,7 +324,7 @@ export function GraphPage() {
               className="h-7 rounded-md border border-zinc-300 px-2 text-sm text-zinc-900"
             >
               {LAYOUTS.map((l) => (
-                <option key={l} value={l}>
+                <option key={l} value={l} title={LAYOUT_TITLES[l] ?? undefined}>
                   {l}
                 </option>
               ))}
@@ -317,6 +336,7 @@ export function GraphPage() {
               variant="outline"
               onClick={() => setPaletteOpen(true)}
               data-testid="open-cve-palette"
+              title="Search the store for a CVE and pulse the contaminated sub-graph (⌘K / Ctrl+K)."
               className="gap-1.5"
             >
               <SearchIcon className="h-3.5 w-3.5 text-zinc-400" />
@@ -452,6 +472,7 @@ type NodeLegendItem = {
   key: string;
   label: string;
   color: string;
+  title: string;
   ring?: boolean;
   dashed?: boolean;
   thick?: boolean;
@@ -461,24 +482,82 @@ type EdgeLegendItem = {
   kind: Kind;
   label: string;
   color: string;
+  title: string;
   dashed?: boolean;
   dotted?: boolean;
 };
 
 const NODE_LEGEND: NodeLegendItem[] = [
-  { key: "eco:npm", label: "npm", color: COLORS.ecoNpm },
-  { key: "eco:pypi", label: "pypi", color: COLORS.ecoPypi },
-  { key: "status:cve", label: "CVE", color: COLORS.cve, ring: true },
-  { key: "status:malware", label: "malware", color: COLORS.malware },
-  { key: "status:typosquat", label: "typosquat", color: COLORS.yanked, ring: true, dashed: true },
-  { key: "status:root", label: "root", color: COLORS.root, ring: true, thick: true },
+  {
+    key: "eco:npm",
+    label: "npm",
+    color: COLORS.ecoNpm,
+    title: "Node is an npm package. Click to hide all npm nodes.",
+  },
+  {
+    key: "eco:pypi",
+    label: "pypi",
+    color: COLORS.ecoPypi,
+    title: "Node is a PyPI package. Click to hide all PyPI nodes.",
+  },
+  {
+    key: "status:cve",
+    label: "CVE",
+    color: COLORS.cve,
+    ring: true,
+    title: "Node's installed version matches a CVE in the store. Ring intensity reflects severity.",
+  },
+  {
+    key: "status:malware",
+    label: "malware",
+    color: COLORS.malware,
+    title: "Version flagged in malware_reports. Indelible until the next scan clears it.",
+  },
+  {
+    key: "status:typosquat",
+    label: "typosquat",
+    color: COLORS.yanked,
+    ring: true,
+    dashed: true,
+    title: "Name flagged as a likely typosquat of a popular package.",
+  },
+  {
+    key: "status:root",
+    label: "root",
+    color: COLORS.root,
+    ring: true,
+    thick: true,
+    title: "Workspace root — the scan entrypoint (package.json, pyproject.toml…).",
+  },
 ];
 
 const EDGE_LEGEND: EdgeLegendItem[] = [
-  { kind: "runtime", label: "runtime", color: COLORS.edgeRuntime },
-  { kind: "dev", label: "dev", color: COLORS.edgeDev },
-  { kind: "peer", label: "peer", color: COLORS.edgePeer, dashed: true },
-  { kind: "optional", label: "optional", color: COLORS.edgeOptional, dotted: true },
+  {
+    kind: "runtime",
+    label: "runtime",
+    color: COLORS.edgeRuntime,
+    title: "Runtime dependency edge — shipped to production.",
+  },
+  {
+    kind: "dev",
+    label: "dev",
+    color: COLORS.edgeDev,
+    title: "Dev-only dependency edge — not installed in production.",
+  },
+  {
+    kind: "peer",
+    label: "peer",
+    color: COLORS.edgePeer,
+    dashed: true,
+    title: "Peer dependency edge — expected to be provided by the host.",
+  },
+  {
+    kind: "optional",
+    label: "optional",
+    color: COLORS.edgeOptional,
+    dotted: true,
+    title: "Optional dependency edge — install failures are tolerated.",
+  },
 ];
 
 function Legend({
@@ -522,6 +601,7 @@ function Legend({
           key={item.key}
           color={item.color}
           label={item.label}
+          title={item.title}
           ring={item.ring}
           dashed={item.dashed}
           thick={item.thick}
@@ -543,6 +623,7 @@ function Legend({
               key={item.kind}
               label={item.label}
               color={item.color}
+              title={item.title}
               dashed={item.dashed}
               dotted={item.dotted}
               off={!activeKinds.has(item.kind)}
@@ -559,6 +640,7 @@ function Legend({
 function LegendSwatch({
   color,
   label,
+  title,
   ring = false,
   dashed = false,
   thick = false,
@@ -568,6 +650,7 @@ function LegendSwatch({
 }: {
   color: string;
   label: string;
+  title?: string;
   ring?: boolean;
   dashed?: boolean;
   thick?: boolean;
@@ -581,6 +664,7 @@ function LegendSwatch({
       onClick={onClick}
       aria-pressed={!off}
       data-testid={testId}
+      title={title}
       className={cn(
         "inline-flex items-center gap-1 rounded-sm px-1 py-0.5 transition-opacity",
         "hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-400",
@@ -605,6 +689,7 @@ function LegendSwatch({
 function LegendEdgeButton({
   color,
   label,
+  title,
   dashed = false,
   dotted = false,
   off = false,
@@ -613,6 +698,7 @@ function LegendEdgeButton({
 }: {
   color: string;
   label: string;
+  title?: string;
   dashed?: boolean;
   dotted?: boolean;
   off?: boolean;
@@ -626,6 +712,7 @@ function LegendEdgeButton({
       onClick={onClick}
       aria-pressed={!off}
       data-testid={testId}
+      title={title}
       className={cn(
         "inline-flex items-center gap-1 rounded-sm px-1 py-0.5 transition-opacity",
         "hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-400",

@@ -382,6 +382,7 @@ export function VersionTimeline({
           <button
             type="button"
             onClick={() => setFocus(null)}
+            title="Clear the zoom selection and show every published version again."
             className="absolute right-2 top-2 rounded-md border border-zinc-300 bg-white px-2 py-0.5 text-[10px] text-zinc-600 hover:bg-zinc-50"
           >
             Reset zoom
@@ -463,18 +464,46 @@ function AnchorLine({
 }
 
 function Legend() {
-  const items: { kind: Kind; label: string }[] = [
-    { kind: "normal", label: "normal" },
-    { kind: "medium", label: "medium CVE" },
-    { kind: "high", label: "high CVE" },
-    { kind: "critical", label: "critical CVE" },
-    { kind: "yanked", label: "yanked" },
-    { kind: "malware", label: "malware" },
+  const items: { kind: Kind; label: string; title: string }[] = [
+    {
+      kind: "normal",
+      label: "normal",
+      title: "Published release with no known CVE, malware, or yank signal.",
+    },
+    {
+      kind: "medium",
+      label: "medium CVE",
+      title: "Version affected by a medium-severity advisory.",
+    },
+    {
+      kind: "high",
+      label: "high CVE",
+      title: "Version affected by a high-severity advisory.",
+    },
+    {
+      kind: "critical",
+      label: "critical CVE",
+      title: "Version affected by a critical-severity advisory.",
+    },
+    {
+      kind: "yanked",
+      label: "yanked",
+      title: "Version withdrawn by the maintainer after publication.",
+    },
+    {
+      kind: "malware",
+      label: "malware",
+      title: "Version flagged in malware_reports — do not install.",
+    },
   ];
   return (
     <div className="flex flex-wrap items-center gap-3 text-[11px] text-zinc-500">
       {items.map((it) => (
-        <span key={it.kind} className="inline-flex items-center gap-1">
+        <span
+          key={it.kind}
+          className="inline-flex items-center gap-1"
+          title={it.title}
+        >
           <span
             className="inline-block h-2.5 w-2.5 rounded-full"
             style={{ backgroundColor: COLORS[it.kind] }}
@@ -482,7 +511,12 @@ function Legend() {
           {it.label}
         </span>
       ))}
-      <span className="ml-auto">installed: outlined · recommended: green tick</span>
+      <span
+        className="ml-auto"
+        title="The installed version has a black outline; the policy-recommended version has a green tick underneath."
+      >
+        installed: outlined · recommended: green tick
+      </span>
     </div>
   );
 }
