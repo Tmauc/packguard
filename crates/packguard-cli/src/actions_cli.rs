@@ -625,22 +625,50 @@ fn id_prefix_render(id: &str) -> String {
     id.chars().take(8).collect::<String>().cyan().to_string()
 }
 
+/// Pure prefix-match outcome — extracted from `resolve_prefix` so the
+/// (non-exit) test cases can assert on it without spawning a
+/// subprocess. The CLI wrapper handles exit codes.
+#[derive(Debug)]
+enum PrefixMatch {
+    TooShort(usize),
+    None,
+    Single(Box<Action>),
+    Ambiguous(Vec<Action>),
+}
+
+/// Classify `id_prefix` against an action set. Git-style semantics: a
+/// minimum-6-hex prefix, single exact match, or the sorted list of
+/// colliding full ids. The caller owns the user-facing rendering +
+/// exit codes.
+fn match_prefix(actions: &[Action], id_prefix: &str) -> PrefixMatch {
+    if id_prefix.len() < 6 {
+        return PrefixMatch::TooShort(id_prefix.len());
+    }
+    let mut matches: Vec<Action> = actions
+        .iter()
+        .filter(|a| a.id.starts_with(id_prefix))
+        .cloned()
+        .collect();
+    matches.sort_by(|a, b| a.id.cmp(&b.id));
+    match matches.len() {
+        0 => PrefixMatch::None,
+        1 => PrefixMatch::Single(Box::new(matches.into_iter().next().unwrap())),
+        _ => PrefixMatch::Ambiguous(matches),
+    }
+}
+
 /// Git-style prefix resolution: 0 matches → exit 1, 1 match → use it,
 /// 2+ → exit 2 and print the full ids. Pulls the full set (active +
 /// dismissed + deferred) so a user can restore a dismissed action by
 /// prefix without juggling flags.
 fn resolve_prefix(store: &Store, id_prefix: &str) -> Result<Action> {
-    if id_prefix.len() < 6 {
-        bail!(
-            "id prefix must be at least 6 hex characters (got {})",
-            id_prefix.len()
-        );
-    }
     let now = Utc::now();
     let all = collect_all(store, None, now, true, true)?;
-    let matches: Vec<&Action> = all.iter().filter(|a| a.id.starts_with(id_prefix)).collect();
-    match matches.len() {
-        0 => {
+    match match_prefix(&all, id_prefix) {
+        PrefixMatch::TooShort(n) => {
+            bail!("id prefix must be at least 6 hex characters (got {})", n);
+        }
+        PrefixMatch::None => {
             eprintln!(
                 "{} no action matches prefix {}",
                 "✗".red(),
@@ -648,12 +676,13 @@ fn resolve_prefix(store: &Store, id_prefix: &str) -> Result<Action> {
             );
             std::process::exit(1);
         }
-        1 => Ok(matches[0].clone()),
-        n => {
+        PrefixMatch::Single(a) => Ok(*a),
+        PrefixMatch::Ambiguous(matches) => {
             eprintln!(
-                "{} ambiguous prefix {} — {n} actions match. Full ids:",
+                "{} ambiguous prefix {} — {} actions match. Full ids:",
                 "✗".red(),
-                id_prefix.bold()
+                id_prefix.bold(),
+                matches.len()
             );
             for a in &matches {
                 eprintln!(
@@ -664,6 +693,96 @@ fn resolve_prefix(store: &Store, id_prefix: &str) -> Result<Action> {
                 );
             }
             std::process::exit(2);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_action(id: &str) -> Action {
+        Action {
+            id: id.to_string(),
+            kind: ActionKind::FixCveHigh,
+            severity: ActionSeverity::High,
+            workspace: "/tmp/ws".to_string(),
+            target: ActionTarget::Package {
+                ecosystem: "npm".into(),
+                name: "x".into(),
+                version: "1.0.0".into(),
+            },
+            title: "t".into(),
+            explanation: "e".into(),
+            suggested_command: None,
+            recommended_version: None,
+            dismissed_at: None,
+            deferred_until: None,
+        }
+    }
+
+    #[test]
+    fn match_prefix_single_exact_match_returns_single() {
+        let actions = vec![
+            fake_action("03232f8200000000"),
+            fake_action("aabbccdd00000000"),
+        ];
+        let m = match_prefix(&actions, "03232f");
+        match m {
+            PrefixMatch::Single(a) => assert!(a.id.starts_with("03232f")),
+            other => panic!("expected Single, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn match_prefix_too_short_under_six_chars_is_too_short() {
+        let actions = vec![fake_action("03232f82aabbcc")];
+        let m = match_prefix(&actions, "0323");
+        match m {
+            PrefixMatch::TooShort(n) => assert_eq!(n, 4),
+            other => panic!("expected TooShort, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn match_prefix_no_hit_returns_none() {
+        let actions = vec![fake_action("03232f82aabbcc")];
+        let m = match_prefix(&actions, "deadbe");
+        match m {
+            PrefixMatch::None => {}
+            other => panic!("expected None, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn match_prefix_multiple_hits_returns_ambiguous_sorted() {
+        let actions = vec![
+            fake_action("0323aaaabb"),
+            fake_action("0323bbbbbb"),
+            fake_action("ffffffffff"),
+        ];
+        let m = match_prefix(&actions, "0323aa");
+        match m {
+            PrefixMatch::Single(_) => {} // only one matches at 6 chars
+            other => panic!("expected Single on 6-char unique prefix, got {other:?}"),
+        }
+
+        // Lower prefix boundary at 6 chars with explicit 6-char shared
+        // prefix: both seeded ids start with "0323aa" / "0323bb", so
+        // "0323" (4 chars) is too-short. Craft the ambiguous scenario
+        // at 6 chars:
+        let actions = vec![
+            fake_action("0323aabbbb0000"),
+            fake_action("0323aabbcc1111"),
+            fake_action("ffffffffff"),
+        ];
+        let m = match_prefix(&actions, "0323aa");
+        match m {
+            PrefixMatch::Ambiguous(list) => {
+                assert_eq!(list.len(), 2);
+                assert!(list[0].id < list[1].id, "must be sorted by full id");
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
         }
     }
 }

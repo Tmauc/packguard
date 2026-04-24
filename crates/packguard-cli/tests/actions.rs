@@ -339,3 +339,185 @@ fn cli_actions_list_min_severity_filter_drops_lower_rows_from_output() {
         "min_severity=critical leaked non-critical rows: {parsed}"
     );
 }
+
+// ---- Phase 12c commit 3: dismiss / defer / restore + fail-on-severity -----
+
+fn first_action_id(env: &Env) -> String {
+    let out = run_actions(env, &["--format", "json"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    parsed["actions"][0]["id"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn cli_actions_dismiss_by_prefix_exact_match_succeeds() {
+    let env = env();
+    let id = first_action_id(&env);
+    let prefix = &id[..8];
+    let out = run_actions(&env, &["dismiss", prefix, "--reason", "accepted risk"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("dismissed"),
+        "expected dismiss banner: {stdout}"
+    );
+    // The dismissed action should be gone from the default list.
+    let list = run_actions(&env, &["--format", "json"]);
+    let parsed: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert!(
+        parsed["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["id"] != id),
+        "dismissed action must not resurface: {parsed}"
+    );
+    // But --include-dismissed brings it back.
+    let list = run_actions(&env, &["--format", "json", "--include-dismissed"]);
+    let parsed: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert!(
+        parsed["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == id && !a["dismissed_at"].is_null()),
+        "dismissed row missing dismissed_at in --include-dismissed mode: {parsed}"
+    );
+}
+
+#[test]
+fn cli_actions_dismiss_by_prefix_no_match_errors_with_exit_1() {
+    let env = env();
+    let out = run_actions(&env, &["dismiss", "deadbeefcafe"]);
+    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no action matches prefix"),
+        "expected no-match error: {stderr}"
+    );
+}
+
+#[test]
+fn cli_actions_dismiss_by_prefix_too_short_errors() {
+    // Under 6 chars — the CLI should refuse rather than trust whatever
+    // lands.
+    let env = env();
+    let out = run_actions(&env, &["dismiss", "abc"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("at least 6 hex"),
+        "expected too-short error: {stderr}"
+    );
+}
+
+#[test]
+fn cli_actions_defer_sets_deferred_until_in_future() {
+    let env = env();
+    let id = first_action_id(&env);
+    let prefix = &id[..8];
+    let out = run_actions(&env, &["defer", prefix, "--days", "7"]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Default list now hides the deferred row.
+    let list = run_actions(&env, &["--format", "json"]);
+    let parsed: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert!(parsed["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["id"] != id));
+    // `--include-deferred` surfaces it with deferred_until populated.
+    let list = run_actions(&env, &["--format", "json", "--include-deferred"]);
+    let parsed: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    let row = parsed["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == id)
+        .expect("deferred row missing");
+    let until = row["deferred_until"]
+        .as_str()
+        .expect("deferred_until must be a RFC3339 string");
+    let parsed_until = chrono::DateTime::parse_from_rfc3339(until).expect("valid RFC3339");
+    assert!(
+        parsed_until.to_utc() > chrono::Utc::now(),
+        "deferred_until must lie in the future: {until}"
+    );
+}
+
+#[test]
+fn cli_actions_restore_clears_dismissal() {
+    let env = env();
+    let id = first_action_id(&env);
+    let prefix = &id[..8];
+    // Dismiss then restore.
+    let out = run_actions(&env, &["dismiss", prefix]);
+    assert!(out.status.success());
+    let out = run_actions(&env, &["restore", prefix]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The action must be back in the default (non-archived) list.
+    let list = run_actions(&env, &["--format", "json"]);
+    let parsed: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert!(
+        parsed["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == id),
+        "restored action must resurface: {parsed}"
+    );
+}
+
+#[test]
+fn cli_actions_fail_on_severity_high_exits_1_when_high_action_present() {
+    let env = env();
+    let out = run_actions(&env, &["--fail-on-severity", "high"]);
+    assert!(!out.status.success(), "expected non-zero exit");
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn cli_actions_fail_on_severity_critical_exits_0_when_no_critical_rows_remain() {
+    // Fixture ships 1 critical malware + 1 high cve. Dismiss the
+    // critical → remaining max severity = high → `--fail-on-severity
+    // critical` should pass (exit 0).
+    let env = env();
+    let out = run_actions(&env, &["--format", "json"]);
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let critical_id = parsed["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["severity"] == "Critical")
+        .expect("fixture seeds a critical row")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let out = run_actions(&env, &["dismiss", &critical_id[..8]]);
+    assert!(out.status.success());
+
+    let out = run_actions(&env, &["--fail-on-severity", "critical"]);
+    assert!(
+        out.status.success(),
+        "with no critical rows left, the gate must pass; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
