@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* Class-based dark mode: `dark:` variants activate whenever a `.dark`
+   class sits on an ancestor (convention: the <html> element). The
+   ThemeProvider toggles that class based on the user's preference
+   (localStorage key `packguard.theme`) or prefers-color-scheme. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* Semantic colour tokens — mirrors the CLI palette so the dashboard and
    the terminal speak the same visual language. */
 @theme {
