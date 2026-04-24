@@ -103,17 +103,35 @@ export function PoliciesPage() {
         </h1>
         <ScopeBadge />
         {lastLoadedFromFile ? (
-          <Badge tone="good">on disk</Badge>
+          <Badge
+            tone="good"
+            title="Editor is hydrated from the workspace's .packguard.yml on disk."
+          >
+            on disk
+          </Badge>
         ) : (
-          <Badge tone="muted">conservative defaults</Badge>
+          <Badge
+            tone="muted"
+            title="No .packguard.yml found — showing PackGuard's conservative defaults. Save to create the file."
+          >
+            conservative defaults
+          </Badge>
         )}
-        {dirty && <Badge tone="warn">unsaved</Badge>}
+        {dirty && (
+          <Badge
+            tone="warn"
+            title="Editor has unsaved changes relative to what's on disk."
+          >
+            unsaved
+          </Badge>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <Button
             variant="outline"
             size="sm"
             onClick={() => runDryRun.mutate()}
             disabled={runDryRun.isPending || !dirty}
+            title="Evaluate the candidate YAML against the last scan and show how buckets (compliant/warning/violation/insufficient) would shift. Nothing is persisted."
           >
             {runDryRun.isPending ? "Previewing…" : "Preview impact"}
           </Button>
@@ -122,6 +140,7 @@ export function PoliciesPage() {
             size="sm"
             onClick={revert}
             disabled={!dirty || save.isPending}
+            title="Discard editor changes and reload the YAML currently on disk."
           >
             Revert
           </Button>
@@ -129,6 +148,7 @@ export function PoliciesPage() {
             size="sm"
             onClick={() => save.mutate()}
             disabled={!dirty || save.isPending}
+            title="Atomically write the candidate YAML to .packguard.yml (write + rename). CLI and dashboard will pick up the new policy on the next evaluation."
           >
             {save.isPending ? "Saving…" : "Save"}
           </Button>
@@ -221,9 +241,24 @@ function DryRunCard({
               <thead className="text-zinc-500">
                 <tr>
                   <th className="text-left font-medium">Bucket</th>
-                  <th className="text-right font-medium">Now</th>
-                  <th className="text-right font-medium">Candidate</th>
-                  <th className="text-right font-medium">Δ</th>
+                  <th
+                    className="text-right font-medium"
+                    title="Current bucket count under the policy on disk."
+                  >
+                    Now
+                  </th>
+                  <th
+                    className="text-right font-medium"
+                    title="Bucket count if the candidate YAML in the editor were saved."
+                  >
+                    Candidate
+                  </th>
+                  <th
+                    className="text-right font-medium"
+                    title="Candidate minus Now. Red = more packages fell into that bucket; green = fewer."
+                  >
+                    Δ
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -240,6 +275,13 @@ function DryRunCard({
                             ? "text-red-600"
                             : "text-emerald-600"
                       }`}
+                      title={
+                        d.delta === 0
+                          ? `No change in the ${d.label} bucket.`
+                          : d.delta > 0
+                            ? `${d.delta} more package(s) would fall into the ${d.label} bucket under the candidate policy.`
+                            : `${-d.delta} fewer package(s) would be in the ${d.label} bucket under the candidate policy.`
+                      }
                     >
                       {d.delta > 0 ? `+${d.delta}` : d.delta}
                     </td>
@@ -249,7 +291,10 @@ function DryRunCard({
             </table>
             {result.changed_packages.length > 0 && (
               <div className="mt-3">
-                <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+                <div
+                  className="mb-1 text-xs uppercase tracking-wide text-zinc-500"
+                  title="Individual packages whose compliance verdict would change under the candidate policy, evaluated against the last scan."
+                >
                   First {result.changed_packages.length} flips
                 </div>
                 <ul className="max-h-48 space-y-1 overflow-y-auto text-xs">
@@ -257,6 +302,7 @@ function DryRunCard({
                     <li
                       key={`${c.ecosystem}/${c.name}`}
                       className="rounded border border-zinc-200 bg-white px-2 py-1"
+                      title={`${c.name} (${c.ecosystem}) would flip from "${c.from}" to "${c.to}" if you saved the candidate policy.`}
                     >
                       <span className="font-mono">{c.name}</span>{" "}
                       <span className="text-zinc-500">({c.ecosystem})</span>

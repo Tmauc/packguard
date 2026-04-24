@@ -451,9 +451,21 @@ export function ComplianceBadge({ tag }: { tag: ComplianceTag }) {
                 ? "insufficient"
                 : "muted";
   const title =
-    tag === "insufficient"
-      ? "Insufficient: no release satisfies the resolver's offset bound. Open the Policy eval tab to see the cascade trace, then loosen offset or pin explicitly."
-      : undefined;
+    tag === "compliant"
+      ? "Compliant: installed version satisfies the active policy."
+      : tag === "warning"
+        ? "Warning: installed version drifts past the policy's soft bound but still passes."
+        : tag === "violation"
+          ? "Violation: installed version is outside the policy's hard bound."
+          : tag === "cve-violation"
+            ? "CVE violation: installed version matches an advisory blocked by the policy."
+            : tag === "malware"
+              ? "Malware: installed version is flagged in malware_reports — replace immediately."
+              : tag === "typosquat"
+                ? "Typosquat: package name is flagged as a likely typo of a popular one."
+                : tag === "insufficient"
+                  ? "Insufficient: no release satisfies the resolver's offset bound. Open the Policy eval tab to see the cascade trace, then loosen offset or pin explicitly."
+                  : undefined;
   return (
     <Badge tone={tone} title={title}>
       {tag}

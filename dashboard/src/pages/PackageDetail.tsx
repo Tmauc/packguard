@@ -96,6 +96,7 @@ export function PackageDetailPage() {
           count={data.versions.length}
           active={tab === "versions"}
           onClick={() => setTab("versions")}
+          title="Full published history with a zoomable timeline and per-version severity/yanked/deprecated flags."
         />
         <TabButton
           label="Vulnerabilities"
@@ -103,6 +104,7 @@ export function PackageDetailPage() {
           tone={data.vulnerabilities.some((v) => v.affects_installed) ? "bad" : undefined}
           active={tab === "vulnerabilities"}
           onClick={() => setTab("vulnerabilities")}
+          title="CVE advisories matched to this package. Advisories affecting the installed version are pinned to the top."
         />
         <TabButton
           label="Malware"
@@ -110,21 +112,25 @@ export function PackageDetailPage() {
           tone={data.malware.length > 0 ? "malware" : undefined}
           active={tab === "malware"}
           onClick={() => setTab("malware")}
+          title="Malware + typosquat reports logged in the store for this package."
         />
         <TabButton
           label="Policy"
           active={tab === "policy"}
           onClick={() => setTab("policy")}
+          title="Policy verdict, three-axis offset, and the full cascade trace explaining why the recommended version was picked."
         />
         <TabButton
           label="Compatibility"
           active={tab === "compatibility"}
           onClick={() => setTab("compatibility")}
+          title="Peer dependencies, engine constraints, and the scoped Used-by list broken down by workspace."
         />
         <TabButton
           label="Changelog"
           active={tab === "changelog"}
           onClick={() => setTab("changelog")}
+          title="Inline release notes (Phase 6 — upstream only for now)."
         />
       </div>
 
@@ -176,17 +182,20 @@ function TabButton({
   tone,
   active,
   onClick,
+  title,
 }: {
   label: string;
   count?: number;
   tone?: "bad" | "malware";
   active: boolean;
   onClick: () => void;
+  title?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      title={title}
       className={cn(
         "-mb-px border-b-2 px-3 py-2",
         active
@@ -600,9 +609,19 @@ function CompatibilityTab({
                     </td>
                     <td className="px-3 py-1.5">
                       {p.optional ? (
-                        <Badge tone="muted">optional</Badge>
+                        <Badge
+                          tone="muted"
+                          title="Optional peer — npm/pnpm will skip the install warning if the consumer doesn't provide it."
+                        >
+                          optional
+                        </Badge>
                       ) : (
-                        <Badge tone="warn">required · see graph</Badge>
+                        <Badge
+                          tone="warn"
+                          title="Required peer — the consumer must provide a matching version. Verify the graph to make sure it is satisfied."
+                        >
+                          required · see graph
+                        </Badge>
                       )}
                     </td>
                   </tr>
@@ -700,7 +719,10 @@ function UsedBySection({ dependents }: { dependents: CompatDependent[] }) {
               className="overflow-hidden rounded-md border border-zinc-200 bg-white"
               data-testid={`used-by-group-${workspace}`}
             >
-              <summary className="flex cursor-pointer items-center justify-between gap-3 border-b border-zinc-100 bg-zinc-50 px-3 py-2 text-xs">
+              <summary
+                className="flex cursor-pointer items-center justify-between gap-3 border-b border-zinc-100 bg-zinc-50 px-3 py-2 text-xs"
+                title="Workspace consuming this package. Click to collapse/expand the parents that pull it in."
+              >
                 <span className="flex items-center gap-2">
                   <Badge tone="muted">{scopeLabel(workspace)}</Badge>
                   <span className="font-mono text-[11px] text-zinc-500">
@@ -741,7 +763,12 @@ function UsedBySection({ dependents }: { dependents: CompatDependent[] }) {
                         {d.range}
                       </td>
                       <td className="px-3 py-1.5">
-                        <Badge tone="muted">{d.kind}</Badge>
+                        <Badge
+                          tone="muted"
+                          title="Edge kind declared by the parent: runtime/dev/peer/optional. Drives which production bundles pull this package in."
+                        >
+                          {d.kind}
+                        </Badge>
                       </td>
                     </tr>
                   ))}
@@ -787,7 +814,21 @@ function SeverityBadge({ severity }: { severity: string }) {
           : severity === "low"
             ? "good"
             : "muted";
-  return <Badge tone={tone as never}>{severity}</Badge>;
+  const title =
+    severity === "critical"
+      ? "Critical severity — exploit trivial / widespread impact. Treat as release-blocking."
+      : severity === "high"
+        ? "High severity — significant impact, patch ASAP."
+        : severity === "medium"
+          ? "Medium severity — patch in the next maintenance window."
+          : severity === "low"
+            ? "Low severity — informational, patch on the next upgrade cycle."
+            : "Severity not classified by the advisory source.";
+  return (
+    <Badge tone={tone as never} title={title}>
+      {severity}
+    </Badge>
+  );
 }
 
 function partition<T>(items: T[], pred: (t: T) => boolean): [T[], T[]] {
