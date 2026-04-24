@@ -133,6 +133,30 @@ jobs:
         if: ${{ inputs.dry_run == 'false' }}
         run: sleep 30
 
+      # Phase 12 — packguard-actions depends on core/store/policy/intel,
+      # and packguard-server depends on packguard-actions, so this step
+      # must sit between policy and server. First-time publish uses the
+      # `publish-new` token scope.
+      - name: publish packguard-actions
+        run: |
+          set -euo pipefail
+          CRATE="packguard-actions"
+          ARGS="-p ${CRATE}"
+          [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
+          if ! out=$(cargo publish $ARGS 2>&1); then
+            if echo "$out" | grep -q "already exists on crates.io index"; then
+              echo "::notice::${CRATE} already on crates.io — skipping"
+              exit 0
+            fi
+            printf '%s\n' "$out" >&2
+            exit 1
+          fi
+          printf '%s\n' "$out"
+
+      - name: wait for index refresh (packguard-actions)
+        if: ${{ inputs.dry_run == 'false' }}
+        run: sleep 30
+
       - name: publish packguard-server
         run: |
           set -euo pipefail
