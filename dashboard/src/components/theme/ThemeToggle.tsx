@@ -1,6 +1,6 @@
 import { MonitorIcon, MoonIcon, SunIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { type Theme, useTheme } from "@/components/theme/ThemeProvider";
+import { type Theme, useTheme } from "@/components/theme/useTheme";
 
 const CYCLE: Record<Theme, Theme> = {
   light: "dark",

@@ -34,15 +34,15 @@ function matches(entry: GraphVulnerabilityEntry, query: string): boolean {
 function severityClasses(severity: string): string {
   switch (severity) {
     case "critical":
-      return "bg-red-100 text-red-800 border-red-300";
+      return "bg-red-100 dark:bg-red-950/60 text-red-800 border-red-300 dark:border-red-800";
     case "high":
       return "bg-orange-100 text-orange-800 border-orange-300";
     case "medium":
       return "bg-yellow-100 text-yellow-800 border-yellow-300";
     case "low":
-      return "bg-zinc-100 text-zinc-700 border-zinc-300";
+      return "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border-zinc-300 dark:border-zinc-700";
     default:
-      return "bg-zinc-50 text-zinc-600 border-zinc-200";
+      return "bg-zinc-50 dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 border-zinc-200 dark:border-zinc-800";
   }
 }
 
@@ -140,24 +140,24 @@ export function CvePalette({
         aria-modal="true"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}
-        className="w-full max-w-xl overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-2xl"
+        className="w-full max-w-xl overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xl"
         data-testid="cve-palette"
       >
-        <div className="flex items-center gap-2 border-b border-zinc-200 px-3 py-2">
-          <SearchIcon className="h-4 w-4 text-zinc-400" />
+        <div className="flex items-center gap-2 border-b border-zinc-200 dark:border-zinc-800 px-3 py-2">
+          <SearchIcon className="h-4 w-4 text-zinc-400 dark:text-zinc-500" />
           <input
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search CVE id, package, severity…"
-            className="w-full border-0 bg-transparent text-sm text-zinc-900 focus:outline-none"
+            className="w-full border-0 bg-transparent text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none"
             role="combobox"
             aria-expanded="true"
             aria-controls="cve-palette-list"
             aria-autocomplete="list"
             data-testid="cve-palette-input"
           />
-          <kbd className="rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[10px] text-zinc-500">
+          <kbd className="rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">
             Esc
           </kbd>
         </div>
@@ -169,10 +169,10 @@ export function CvePalette({
           data-testid="cve-palette-list"
         >
           {vulns.isLoading && (
-            <li className="px-3 py-6 text-center text-xs text-zinc-500">Loading…</li>
+            <li className="px-3 py-6 text-center text-xs text-zinc-500 dark:text-zinc-400">Loading…</li>
           )}
           {vulns.error && (
-            <li className="px-3 py-6 text-center text-xs text-red-600">
+            <li className="px-3 py-6 text-center text-xs text-red-600 dark:text-red-400">
               Failed to load CVEs: {String(vulns.error)}
             </li>
           )}
@@ -181,7 +181,7 @@ export function CvePalette({
             filtered.length === 0 &&
             (vulns.data?.entries ?? []).length === 0 && (
               <li
-                className="px-3 py-6 text-center text-xs text-zinc-500"
+                className="px-3 py-6 text-center text-xs text-zinc-500 dark:text-zinc-400"
                 data-testid="cve-palette-empty"
               >
                 No CVE in scope. Run <span className="font-mono">packguard sync</span>{" "}
@@ -192,7 +192,7 @@ export function CvePalette({
             !vulns.error &&
             filtered.length === 0 &&
             (vulns.data?.entries ?? []).length > 0 && (
-              <li className="px-3 py-6 text-center text-xs text-zinc-500">
+              <li className="px-3 py-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
                 No match for <span className="font-mono">{query}</span>.
               </li>
             )}
@@ -212,14 +212,14 @@ export function CvePalette({
                   onClick={() => commit(entry)}
                   className={cn(
                     "flex w-full items-center gap-3 px-3 py-2 text-left text-sm",
-                    active ? "bg-zinc-100" : "bg-white hover:bg-zinc-50",
+                    active ? "bg-zinc-100 dark:bg-zinc-800" : "bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800",
                   )}
                   data-testid={`cve-palette-row-${id}`}
                 >
-                  <span className="font-mono text-xs text-zinc-900">{id}</span>
-                  <span className="truncate text-zinc-700">
+                  <span className="font-mono text-xs text-zinc-900 dark:text-zinc-100">{id}</span>
+                  <span className="truncate text-zinc-700 dark:text-zinc-300">
                     {entry.package_name}
-                    <span className="text-zinc-400">@{entry.package_version}</span>
+                    <span className="text-zinc-400 dark:text-zinc-500">@{entry.package_version}</span>
                   </span>
                   <span
                     className={cn(

@@ -19,11 +19,11 @@ export function OverviewPage() {
   });
 
   if (isLoading) {
-    return <div className="text-sm text-zinc-500">Loading overview…</div>;
+    return <div className="text-sm text-zinc-500 dark:text-zinc-400">Loading overview…</div>;
   }
   if (error) {
     return (
-      <div className="text-sm text-red-600">
+      <div className="text-sm text-red-600 dark:text-red-400">
         Failed to load overview: {String(error)}
       </div>
     );
@@ -45,7 +45,7 @@ function EmptyState() {
       <CardHeader>
         <CardTitle>No scan yet</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-2 text-sm text-zinc-600">
+      <CardContent className="space-y-2 text-sm text-zinc-600 dark:text-zinc-400">
         <p>
           The store is empty. Click <strong>Scan</strong> in the header to walk
           the current repo, then <strong>Sync</strong> to pull supply-chain
@@ -92,10 +92,10 @@ function Loaded({ data }: { data: Overview }) {
     <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
+          <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
             Overview
           </h1>
-          <p className="text-sm text-zinc-500">
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">
             {data.last_scan_at ? (
               <>
                 Last scan: {fmtTime(data.last_scan_at)} · Last sync:{" "}
@@ -164,35 +164,35 @@ function Loaded({ data }: { data: Overview }) {
         </CardHeader>
         <CardContent>
           {data.top_risks.length === 0 ? (
-            <div className="text-sm text-zinc-500">
+            <div className="text-sm text-zinc-500 dark:text-zinc-400">
               Nothing flagged. The active policy is happy with every scanned
               package.
             </div>
           ) : (
-            <ul className="divide-y divide-zinc-200">
+            <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
               {data.top_risks.map((r) => (
                 <li key={`${r.ecosystem}/${r.name}`} className="py-2">
                   <Link
                     to={`/packages/${encodeURIComponent(
                       r.ecosystem,
                     )}/${encodeURIComponent(r.name)}`}
-                    className="flex items-center justify-between rounded-md px-2 py-1 hover:bg-zinc-50"
+                    className="flex items-center justify-between rounded-md px-2 py-1 hover:bg-zinc-50 dark:hover:bg-zinc-800"
                   >
                     <span className="flex items-center gap-2">
                       <Badge tone="muted">{r.ecosystem}</Badge>
-                      <span className="font-mono text-sm text-zinc-900">
+                      <span className="font-mono text-sm text-zinc-900 dark:text-zinc-100">
                         {r.name}
                       </span>
                       {r.installed && (
-                        <span className="text-xs text-zinc-400">
+                        <span className="text-xs text-zinc-400 dark:text-zinc-500">
                           @ {r.installed}
                         </span>
                       )}
                     </span>
-                    <span className="flex items-center gap-3 text-xs text-zinc-500">
+                    <span className="flex items-center gap-3 text-xs text-zinc-500 dark:text-zinc-400">
                       <span>{r.reason}</span>
                       <Badge tone="bad">score {r.score}</Badge>
-                      <ChevronRightIcon className="h-4 w-4 text-zinc-300" />
+                      <ChevronRightIcon className="h-4 w-4 text-zinc-300 dark:text-zinc-600" />
                     </span>
                   </Link>
                 </li>
@@ -219,7 +219,7 @@ function DonutCard({
       </CardHeader>
       <CardContent className="flex flex-col items-center gap-3">
         {data.length === 0 ? (
-          <div className="py-8 text-sm text-zinc-400">no data yet</div>
+          <div className="py-8 text-sm text-zinc-400 dark:text-zinc-500">no data yet</div>
         ) : (
           <Donut data={data} />
         )}
@@ -227,7 +227,7 @@ function DonutCard({
           {data.map((d) => (
             <li
               key={d.name}
-              className="flex items-center justify-between text-zinc-600"
+              className="flex items-center justify-between text-zinc-600 dark:text-zinc-400"
             >
               <span className="flex items-center gap-2">
                 <span
@@ -236,7 +236,7 @@ function DonutCard({
                 />
                 {d.name}
               </span>
-              <span className="font-mono text-zinc-900">{d.value}</span>
+              <span className="font-mono text-zinc-900 dark:text-zinc-100">{d.value}</span>
             </li>
           ))}
         </ul>

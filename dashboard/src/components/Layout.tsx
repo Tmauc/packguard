@@ -79,7 +79,7 @@ function ActionsNavBadge() {
   );
   return (
     <span
-      className="ml-auto inline-flex items-center gap-1 rounded-full bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-700"
+      className="ml-auto inline-flex items-center gap-1 rounded-full bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium text-zinc-700 dark:text-zinc-300"
       aria-label={`${actions.length} pending actions, highest severity ${topSeverity}`}
     >
       <span
@@ -117,8 +117,8 @@ export function Layout() {
 
   return (
     <div className="grid h-full grid-cols-[14rem_1fr]">
-      <aside className="border-r border-zinc-200 bg-white px-4 py-6">
-        <div className="flex items-center gap-2 px-2 pb-6 text-zinc-900">
+      <aside className="border-r border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-4 py-6">
+        <div className="flex items-center gap-2 px-2 pb-6 text-zinc-900 dark:text-zinc-100">
           <ShieldCheckIcon className="h-5 w-5" />
           <span className="text-sm font-semibold tracking-tight">PackGuard</span>
         </div>
@@ -132,8 +132,8 @@ export function Layout() {
                 cn(
                   "flex items-center gap-2 rounded-md px-3 py-2 text-sm",
                   isActive
-                    ? "bg-zinc-900 text-white"
-                    : "text-zinc-600 hover:bg-zinc-100",
+                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                    : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800",
                 )
               }
             >
@@ -145,11 +145,11 @@ export function Layout() {
         </nav>
       </aside>
       <main className="flex flex-col">
-        <header className="flex items-center justify-between gap-4 border-b border-zinc-200 bg-white px-6 py-4">
+        <header className="flex items-center justify-between gap-4 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-6 py-4">
           <div className="flex items-center gap-4">
             <WorkspaceSelector />
-            <span className="text-sm text-zinc-400">·</span>
-            <div className="text-sm text-zinc-500">
+            <span className="text-sm text-zinc-400 dark:text-zinc-500">·</span>
+            <div className="text-sm text-zinc-500 dark:text-zinc-400">
               {activeJobs.length === 0
                 ? "No active jobs"
                 : `${activeJobs.length} job${activeJobs.length > 1 ? "s" : ""} running…`}
@@ -177,7 +177,7 @@ export function Layout() {
             <ThemeToggle />
           </div>
         </header>
-        <div className="flex-1 overflow-y-auto bg-zinc-50 p-6">
+        <div className="flex-1 overflow-y-auto bg-zinc-50 dark:bg-zinc-950 p-6">
           <Outlet />
         </div>
       </main>

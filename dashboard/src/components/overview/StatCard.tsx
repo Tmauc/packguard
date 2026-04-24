@@ -4,10 +4,10 @@ import { cn } from "@/lib/cn";
 type Tone = "good" | "warn" | "bad" | "neutral";
 
 const toneClasses: Record<Tone, string> = {
-  good: "text-emerald-700",
-  warn: "text-amber-700",
-  bad: "text-red-700",
-  neutral: "text-zinc-900",
+  good: "text-emerald-700 dark:text-emerald-300",
+  warn: "text-amber-700 dark:text-amber-300",
+  bad: "text-red-700 dark:text-red-300",
+  neutral: "text-zinc-900 dark:text-zinc-100",
 };
 
 export function StatCard({
@@ -36,7 +36,7 @@ export function StatCard({
         >
           {value}
         </div>
-        {sub && <div className="text-xs text-zinc-500">{sub}</div>}
+        {sub && <div className="text-xs text-zinc-500 dark:text-zinc-400">{sub}</div>}
       </CardContent>
     </Card>
   );

@@ -18,18 +18,18 @@ export function NodePanel({
     node.name,
   )}`;
   return (
-    <aside className="flex h-full w-80 shrink-0 flex-col border-l border-zinc-200 bg-white">
-      <header className="flex items-start justify-between border-b border-zinc-200 p-3">
+    <aside className="flex h-full w-80 shrink-0 flex-col border-l border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+      <header className="flex items-start justify-between border-b border-zinc-200 dark:border-zinc-800 p-3">
         <div className="min-w-0">
-          <div className="truncate font-mono text-sm text-zinc-900">{node.name}</div>
-          <div className="text-xs text-zinc-500">
+          <div className="truncate font-mono text-sm text-zinc-900 dark:text-zinc-100">{node.name}</div>
+          <div className="text-xs text-zinc-500 dark:text-zinc-400">
             {node.ecosystem} · {node.version}
           </div>
         </div>
         <button
           type="button"
           onClick={onClose}
-          className="text-zinc-400 hover:text-zinc-900"
+          className="text-zinc-400 dark:text-zinc-500 hover:text-zinc-900"
           aria-label="Close"
         >
           <XIcon className="h-4 w-4" />
@@ -46,21 +46,21 @@ export function NodePanel({
         </div>
         <dl className="space-y-2 text-xs">
           <div>
-            <dt className="text-zinc-500">Ecosystem</dt>
-            <dd className="font-mono text-zinc-900">{node.ecosystem}</dd>
+            <dt className="text-zinc-500 dark:text-zinc-400">Ecosystem</dt>
+            <dd className="font-mono text-zinc-900 dark:text-zinc-100">{node.ecosystem}</dd>
           </div>
           <div>
-            <dt className="text-zinc-500">Version</dt>
-            <dd className="font-mono text-zinc-900">{node.version}</dd>
+            <dt className="text-zinc-500 dark:text-zinc-400">Version</dt>
+            <dd className="font-mono text-zinc-900 dark:text-zinc-100">{node.version}</dd>
           </div>
           <div>
-            <dt className="text-zinc-500">Graph id</dt>
-            <dd className="break-all font-mono text-zinc-900">{node.id}</dd>
+            <dt className="text-zinc-500 dark:text-zinc-400">Graph id</dt>
+            <dd className="break-all font-mono text-zinc-900 dark:text-zinc-100">{node.id}</dd>
           </div>
         </dl>
         <Link
           to={detailUrl}
-          className="inline-flex items-center gap-1 rounded-md border border-zinc-300 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-50"
+          className="inline-flex items-center gap-1 rounded-md border border-zinc-300 dark:border-zinc-700 px-2 py-1 text-xs text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800"
         >
           Open detail <ExternalLinkIcon className="h-3 w-3" />
         </Link>

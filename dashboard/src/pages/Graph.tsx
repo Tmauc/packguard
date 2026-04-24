@@ -254,10 +254,10 @@ export function GraphPage() {
     <div className="flex h-[calc(100vh-8rem)] flex-col space-y-3">
       <header className="flex items-start justify-between gap-2">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
+          <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
             Graph
           </h1>
-          <p className="text-sm text-zinc-500">
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">
             Transitive dependency graph harvested from the last scan. Run a new
             scan to refresh.
           </p>
@@ -278,7 +278,7 @@ export function GraphPage() {
       <Card>
         <CardContent className="flex flex-wrap items-center gap-3 p-3">
           <div className="flex items-center gap-1.5">
-            <span className="text-xs text-zinc-500">Kind:</span>
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">Kind:</span>
             {KINDS.map((k) => {
               const active = kinds.includes(k);
               return (
@@ -291,7 +291,7 @@ export function GraphPage() {
                     "h-7 rounded-md border px-2 text-xs capitalize",
                     active
                       ? "border-zinc-900 bg-zinc-900 text-white"
-                      : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50",
+                      : "border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800",
                   )}
                 >
                   {k}
@@ -300,7 +300,7 @@ export function GraphPage() {
             })}
           </div>
           <div
-            className="flex items-center gap-2 text-xs text-zinc-500"
+            className="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400"
             title="BFS depth from workspace roots. 1 shows direct deps only; higher values walk transitively. Capped at 32."
           >
             Depth
@@ -310,18 +310,18 @@ export function GraphPage() {
               max={32}
               value={maxDepth}
               onChange={(e) => setDepth(Number(e.target.value))}
-              className="h-7 w-14 rounded-md border border-zinc-300 px-1 text-center text-sm text-zinc-900"
+              className="h-7 w-14 rounded-md border border-zinc-300 dark:border-zinc-700 px-1 text-center text-sm text-zinc-900 dark:text-zinc-100"
             />
           </div>
           <div
-            className="flex items-center gap-2 text-xs text-zinc-500"
+            className="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400"
             title="Cytoscape layout algorithm. cose-bilkent is force-directed and handles clusters well; dagre lays out as a hierarchical DAG."
           >
             Layout
             <select
               value={layout}
               onChange={(e) => setLayout(e.target.value as LayoutName)}
-              className="h-7 rounded-md border border-zinc-300 px-2 text-sm text-zinc-900"
+              className="h-7 rounded-md border border-zinc-300 dark:border-zinc-700 px-2 text-sm text-zinc-900 dark:text-zinc-100"
             >
               {LAYOUTS.map((l) => (
                 <option key={l} value={l} title={LAYOUT_TITLES[l] ?? undefined}>
@@ -339,11 +339,11 @@ export function GraphPage() {
               title="Search the store for a CVE and pulse the contaminated sub-graph (⌘K / Ctrl+K)."
               className="gap-1.5"
             >
-              <SearchIcon className="h-3.5 w-3.5 text-zinc-400" />
-              <span className="text-xs text-zinc-700">
+              <SearchIcon className="h-3.5 w-3.5 text-zinc-400 dark:text-zinc-500" />
+              <span className="text-xs text-zinc-700 dark:text-zinc-300">
                 {focusCve ? `Focus: ${focusCve}` : "Focus CVE…"}
               </span>
-              <kbd className="rounded border border-zinc-200 bg-zinc-50 px-1 py-0 text-[10px] text-zinc-500">
+              <kbd className="rounded border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 px-1 py-0 text-[10px] text-zinc-500 dark:text-zinc-400">
                 ⌘K
               </kbd>
             </Button>
@@ -357,7 +357,7 @@ export function GraphPage() {
       </Card>
 
       {graphQuery.data?.oversize_warning && (
-        <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+        <div className="flex items-center gap-2 rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
           <AlertTriangleIcon className="h-4 w-4" />
           {graphQuery.data.oversize_warning}
         </div>
@@ -392,15 +392,15 @@ export function GraphPage() {
         <CardContent className="flex w-full gap-0 p-0">
           <div className="relative h-full flex-1">
             {graphQuery.isLoading && (
-              <div className="p-6 text-sm text-zinc-500">Loading graph…</div>
+              <div className="p-6 text-sm text-zinc-500 dark:text-zinc-400">Loading graph…</div>
             )}
             {graphQuery.error && (
-              <div className="p-6 text-sm text-red-600">
+              <div className="p-6 text-sm text-red-600 dark:text-red-400">
                 Failed to load graph: {String(graphQuery.error)}
               </div>
             )}
             {graphQuery.data && graphQuery.data.nodes.length === 0 && (
-              <div className="p-6 text-sm text-zinc-500">
+              <div className="p-6 text-sm text-zinc-500 dark:text-zinc-400">
                 No dependency edges in the store yet. Run{" "}
                 <span className="font-mono">packguard scan</span> to populate
                 the graph.
@@ -417,10 +417,10 @@ export function GraphPage() {
               />
             )}
             {contaminationGraph && (
-              <div className="absolute bottom-2 left-2 rounded-md bg-white/80 px-2 py-0.5 text-[10px] text-zinc-500 shadow">
+              <div className="absolute bottom-2 left-2 rounded-md bg-white dark:bg-zinc-900/80 px-2 py-0.5 text-[10px] text-zinc-500 dark:text-zinc-400 shadow">
                 {visibleCounts.nodes} nodes · {visibleCounts.edges} edges
                 {highlight.kind === "contamination" && graphQuery.data && (
-                  <span className="ml-1 text-zinc-400">
+                  <span className="ml-1 text-zinc-400 dark:text-zinc-500">
                     / {graphQuery.data.nodes.length} total
                   </span>
                 )}
@@ -593,7 +593,7 @@ function Legend({
 
   return (
     <div
-      className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500"
+      className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500 dark:text-zinc-400"
       data-testid="graph-legend"
     >
       {nodeItems.map((item) => (
@@ -614,7 +614,7 @@ function Legend({
         <span
           className={cn(
             "flex flex-wrap items-center gap-1.5",
-            nodeItems.length > 0 && "ml-1 border-l border-zinc-200 pl-3",
+            nodeItems.length > 0 && "ml-1 border-l border-zinc-200 dark:border-zinc-800 pl-3",
           )}
         >
           <span>edges:</span>
@@ -667,8 +667,8 @@ function LegendSwatch({
       title={title}
       className={cn(
         "inline-flex items-center gap-1 rounded-sm px-1 py-0.5 transition-opacity",
-        "hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-400",
-        off && "text-zinc-400 line-through opacity-60",
+        "hover:bg-zinc-100 dark:hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-400",
+        off && "text-zinc-400 dark:text-zinc-500 line-through opacity-60",
       )}
     >
       <span
@@ -715,8 +715,8 @@ function LegendEdgeButton({
       title={title}
       className={cn(
         "inline-flex items-center gap-1 rounded-sm px-1 py-0.5 transition-opacity",
-        "hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-400",
-        off && "text-zinc-400 line-through opacity-60",
+        "hover:bg-zinc-100 dark:hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-400",
+        off && "text-zinc-400 dark:text-zinc-500 line-through opacity-60",
       )}
     >
       <span>{label}</span>

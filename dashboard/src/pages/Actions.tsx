@@ -89,21 +89,21 @@ export function ActionsPage() {
     <div className="space-y-4">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
+          <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
             Actions
           </h1>
-          <p className="text-sm text-zinc-500">
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">
             Prioritized to-do list distilled from the latest scan + policy +
             supply-chain intel. Do these in order.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <label className="flex items-center gap-1 text-xs text-zinc-500">
+          <label className="flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
             Min severity
             <select
               value={minSeverity}
               onChange={(e) => setFilter("min_severity", e.target.value)}
-              className="h-7 rounded-md border border-zinc-300 bg-white px-2 text-xs focus:outline-2 focus:outline-zinc-900"
+              className="h-7 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 text-xs focus:outline-2 focus:outline-zinc-900"
               aria-label="Minimum severity filter"
             >
               {MIN_SEVERITY_OPTIONS.map((o) => (
@@ -122,7 +122,7 @@ export function ActionsPage() {
       {query.error && (
         <Card>
           <CardContent className="flex items-center justify-between gap-3 p-4 text-sm">
-            <div className="flex items-center gap-2 text-red-700">
+            <div className="flex items-center gap-2 text-red-700 dark:text-red-300">
               <TriangleAlertIcon className="h-4 w-4" />
               Failed to load actions: {String(query.error)}
             </div>
@@ -189,7 +189,7 @@ function ActionsBody({
 
       {perWorkspace.length === 0 ? (
         <Card>
-          <CardContent className="p-6 text-sm text-zinc-500">
+          <CardContent className="p-6 text-sm text-zinc-500 dark:text-zinc-400">
             No per-workspace actions. Advisory / scan staleness above is still
             worth addressing.
           </CardContent>
@@ -220,9 +220,9 @@ function EmptyState({
 }) {
   return (
     <Card>
-      <CardContent className="space-y-2 p-6 text-sm text-zinc-600">
-        <div className="flex items-center gap-2 text-zinc-900">
-          <CheckIcon className="h-4 w-4 text-emerald-600" />
+      <CardContent className="space-y-2 p-6 text-sm text-zinc-600 dark:text-zinc-400">
+        <div className="flex items-center gap-2 text-zinc-900 dark:text-zinc-100">
+          <CheckIcon className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
           <span className="font-medium">
             {filteredOut ? "No actions match this filter" : "You're clear"}
           </span>
@@ -241,7 +241,7 @@ function EmptyState({
 
 function GlobalBanner({ actions }: { actions: Action[] }) {
   return (
-    <Card className="border-amber-300 bg-amber-50">
+    <Card className="border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40">
       <CardContent className="space-y-3 p-4">
         {actions.map((a) => (
           <div
@@ -250,8 +250,8 @@ function GlobalBanner({ actions }: { actions: Action[] }) {
           >
             <div className="flex-1">
               <div className="flex items-center gap-2">
-                <TriangleAlertIcon className="h-4 w-4 text-amber-700" />
-                <span className="text-sm font-medium text-amber-900">
+                <TriangleAlertIcon className="h-4 w-4 text-amber-700 dark:text-amber-300" />
+                <span className="text-sm font-medium text-amber-900 dark:text-amber-200">
                   {a.title}
                 </span>
               </div>
@@ -284,7 +284,7 @@ function SeverityGroup({
         >
           {SEVERITY_LABELS[severity]}
         </h2>
-        <span className="text-xs text-zinc-500">{actions.length}</span>
+        <span className="text-xs text-zinc-500 dark:text-zinc-400">{actions.length}</span>
       </header>
       <div className="space-y-2">
         {actions.map((a) => (
@@ -307,25 +307,25 @@ function ActionCard({ action }: { action: Action }) {
               <KindBadge kind={action.kind} />
               <TargetLabel action={action} />
               {archived && (
-                <span className="text-[11px] uppercase tracking-wide text-zinc-400">
+                <span className="text-[11px] uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
                   Archived
                 </span>
               )}
             </div>
             <h3
               className={cn(
-                "text-sm font-medium text-zinc-900",
+                "text-sm font-medium text-zinc-900 dark:text-zinc-100",
                 archived && "line-through decoration-zinc-400",
               )}
             >
               {action.title}
             </h3>
-            <p className="text-xs text-zinc-600">{action.explanation}</p>
+            <p className="text-xs text-zinc-600 dark:text-zinc-400">{action.explanation}</p>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1 text-right">
             {action.workspace && action.workspace !== "_global" && (
               <span
-                className="inline-flex items-center gap-1 text-[11px] text-zinc-500"
+                className="inline-flex items-center gap-1 text-[11px] text-zinc-500 dark:text-zinc-400"
                 title={action.workspace}
               >
                 <FolderTreeIcon className="h-3 w-3" />
@@ -412,15 +412,15 @@ function DismissPanel({
       toast.error("Dismiss failed", { description: String(err) }),
   });
   return (
-    <div className="mt-2 rounded-md border border-zinc-200 bg-zinc-50 p-3">
-      <label className="block text-xs font-medium text-zinc-700">
+    <div className="mt-2 rounded-md border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 p-3">
+      <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
         Reason (optional)
         <textarea
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           rows={2}
           placeholder="e.g. accepted risk, transitive we can't upgrade"
-          className="mt-1 block w-full resize-y rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs focus:outline-2 focus:outline-zinc-900"
+          className="mt-1 block w-full resize-y rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-xs focus:outline-2 focus:outline-zinc-900"
         />
       </label>
       <div className="mt-2 flex items-center gap-2">
@@ -476,8 +476,8 @@ function DeferPanel({
       toast.error("Defer failed", { description: String(err) }),
   });
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 p-3">
-      <span className="text-xs text-zinc-700">Defer for</span>
+    <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 p-3">
+      <span className="text-xs text-zinc-700 dark:text-zinc-300">Defer for</span>
       {DEFER_CHOICES.map((c) => (
         <Button
           key={c.days}
@@ -522,20 +522,20 @@ function RestoreButton({ action }: { action: Action }) {
 
 function TargetLabel({ action }: { action: Action }) {
   if (action.target.kind === "Workspace") {
-    return <span className="text-xs text-zinc-500">workspace</span>;
+    return <span className="text-xs text-zinc-500 dark:text-zinc-400">workspace</span>;
   }
   const { ecosystem, name, version } = action.target;
   return (
-    <span className="text-xs font-mono text-zinc-700">
+    <span className="text-xs font-mono text-zinc-700 dark:text-zinc-300">
       {name}
-      <span className="text-zinc-400">@{version}</span>
+      <span className="text-zinc-400 dark:text-zinc-500">@{version}</span>
       {action.recommended_version && (
         <>
-          <span className="mx-1 text-zinc-400">→</span>
-          <span className="text-emerald-700">{action.recommended_version}</span>
+          <span className="mx-1 text-zinc-400 dark:text-zinc-500">→</span>
+          <span className="text-emerald-700 dark:text-emerald-300">{action.recommended_version}</span>
         </>
       )}
-      <span className="ml-2 text-[10px] uppercase tracking-wide text-zinc-400">
+      <span className="ml-2 text-[10px] uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
         {ecosystem}
       </span>
     </span>
@@ -546,7 +546,7 @@ function CommandBlock({ action }: { action: Action }) {
   if (action.suggested_command) {
     return (
       <div className="flex items-stretch gap-2">
-        <code className="flex-1 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-mono text-zinc-800">
+        <code className="flex-1 rounded-md border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-800">
           {action.suggested_command}
         </code>
         <CopyButton command={action.suggested_command} />
@@ -561,7 +561,7 @@ function CommandBlock({ action }: { action: Action }) {
     return (
       <Link
         to={`/packages/${encodeURIComponent(ecosystem)}/${encodeURIComponent(name)}`}
-        className="inline-flex items-center gap-1 text-xs text-zinc-600 underline decoration-dotted hover:text-zinc-900"
+        className="inline-flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-400 underline decoration-dotted hover:text-zinc-900"
       >
         View advisory <ExternalLinkIcon className="h-3 w-3" />
       </Link>
@@ -669,7 +669,7 @@ function SkeletonList() {
           <CardContent className="space-y-2 p-4">
             <div className="h-3 w-24 animate-pulse rounded bg-zinc-200" />
             <div className="h-4 w-2/3 animate-pulse rounded bg-zinc-200" />
-            <div className="h-8 w-full animate-pulse rounded bg-zinc-100" />
+            <div className="h-8 w-full animate-pulse rounded bg-zinc-100 dark:bg-zinc-800" />
           </CardContent>
         </Card>
       ))}

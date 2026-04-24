@@ -36,7 +36,7 @@ export function WorkspaceSelector() {
   return (
     <label
       className={cn(
-        "flex items-center gap-2 text-xs text-zinc-500",
+        "flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400",
         empty && "opacity-60",
       )}
       title={
@@ -47,8 +47,8 @@ export function WorkspaceSelector() {
             : "All scanned workspaces (aggregate view)"
       }
     >
-      <FolderTreeIcon className="h-4 w-4 text-zinc-400" />
-      <span className="font-medium text-zinc-700">Workspace</span>
+      <FolderTreeIcon className="h-4 w-4 text-zinc-400 dark:text-zinc-500" />
+      <span className="font-medium text-zinc-700 dark:text-zinc-300">Workspace</span>
       <select
         value={scope ?? AGGREGATE_VALUE}
         onChange={(e) => {
@@ -57,7 +57,7 @@ export function WorkspaceSelector() {
         }}
         disabled={empty}
         data-testid="workspace-selector"
-        className="h-8 max-w-64 truncate rounded-md border border-zinc-300 bg-white px-2 text-sm text-zinc-900 focus:outline-2 focus:outline-zinc-900"
+        className="h-8 max-w-64 truncate rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-2 focus:outline-zinc-900"
       >
         <option value={AGGREGATE_VALUE}>
           {empty ? "No scans yet" : "All workspaces (aggregate)"}

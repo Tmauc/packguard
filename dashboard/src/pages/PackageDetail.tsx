@@ -58,11 +58,11 @@ export function PackageDetailPage() {
   });
 
   if (detail.isLoading) {
-    return <div className="text-sm text-zinc-500">Loading…</div>;
+    return <div className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</div>;
   }
   if (detail.error) {
     return (
-      <div className="text-sm text-red-600">
+      <div className="text-sm text-red-600 dark:text-red-400">
         Failed to load {ecosystem}/{name}: {String(detail.error)}
       </div>
     );
@@ -76,21 +76,21 @@ export function PackageDetailPage() {
     <div className="space-y-4">
       <Link
         to="/packages"
-        className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-900"
+        className="inline-flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-900"
       >
         <ArrowLeftIcon className="h-3 w-3" />
         Back to packages
       </Link>
 
       <header className="flex flex-wrap items-center gap-3">
-        <h1 className="font-mono text-xl text-zinc-900">{data.name}</h1>
+        <h1 className="font-mono text-xl text-zinc-900 dark:text-zinc-100">{data.name}</h1>
         <Badge tone="muted">{data.ecosystem}</Badge>
         <ComplianceBadge tag={data.compliance} />
       </header>
 
       <MetaBar data={data} />
 
-      <div className="flex gap-1 border-b border-zinc-200 text-sm">
+      <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800 text-sm">
         <TabButton
           label="Versions"
           count={data.versions.length}
@@ -166,10 +166,10 @@ function MetaBar({ data }: { data: PackageDetail }) {
       {items.map((it) => (
         <div
           key={it.label}
-          className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs"
+          className="rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-2 text-xs"
         >
-          <div className="text-zinc-500">{it.label}</div>
-          <div className="font-mono text-zinc-900">{it.value}</div>
+          <div className="text-zinc-500 dark:text-zinc-400">{it.label}</div>
+          <div className="font-mono text-zinc-900 dark:text-zinc-100">{it.value}</div>
         </div>
       ))}
     </div>
@@ -199,8 +199,8 @@ function TabButton({
       className={cn(
         "-mb-px border-b-2 px-3 py-2",
         active
-          ? "border-zinc-900 text-zinc-900"
-          : "border-transparent text-zinc-500 hover:text-zinc-900",
+          ? "border-zinc-900 text-zinc-900 dark:text-zinc-100"
+          : "border-transparent text-zinc-500 dark:text-zinc-400 hover:text-zinc-900",
       )}
     >
       <span className="inline-flex items-center gap-1.5">
@@ -210,10 +210,10 @@ function TabButton({
             className={cn(
               "rounded px-1.5 py-0.5 text-[10px]",
               tone === "bad"
-                ? "bg-red-100 text-red-700"
+                ? "bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-300"
                 : tone === "malware"
-                  ? "bg-fuchsia-100 text-fuchsia-700"
-                  : "bg-zinc-100 text-zinc-600",
+                  ? "bg-fuchsia-100 text-fuchsia-700 dark:text-fuchsia-300"
+                  : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400",
             )}
           >
             {count}
@@ -233,9 +233,9 @@ function VersionsTab({ detail }: { detail: PackageDetail }) {
         installed={detail.installed ?? undefined}
         recommended={detail.policy_trace.recommended ?? undefined}
       />
-      <div className="rounded-md border border-zinc-200 bg-white">
+      <div className="rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
         <table className="w-full text-sm">
-          <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500">
+          <thead className="border-b border-zinc-200 dark:border-zinc-800 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
             <tr>
               <th className="px-3 py-2 text-left font-medium">Version</th>
               <th className="px-3 py-2 text-left font-medium">Published</th>
@@ -248,7 +248,7 @@ function VersionsTab({ detail }: { detail: PackageDetail }) {
               const isInstalled = v.version === detail.installed;
               const isRecommended = v.version === detail.policy_trace.recommended;
               return (
-                <tr key={v.version} className="border-b border-zinc-100">
+                <tr key={v.version} className="border-b border-zinc-100 dark:border-zinc-800">
                   <td className="px-3 py-1.5 font-mono">
                     <span
                       className={cn(
@@ -259,14 +259,14 @@ function VersionsTab({ detail }: { detail: PackageDetail }) {
                       {v.version}
                     </span>
                   </td>
-                  <td className="px-3 py-1.5 text-xs text-zinc-600">
+                  <td className="px-3 py-1.5 text-xs text-zinc-600 dark:text-zinc-400">
                     {formatDate(v.published_at)}
                   </td>
                   <td className="px-3 py-1.5">
                     {v.severity ? (
                       <SeverityBadge severity={v.severity} />
                     ) : (
-                      <span className="text-xs text-zinc-400">—</span>
+                      <span className="text-xs text-zinc-400 dark:text-zinc-500">—</span>
                     )}
                   </td>
                   <td className="px-3 py-1.5 text-xs">
@@ -279,7 +279,7 @@ function VersionsTab({ detail }: { detail: PackageDetail }) {
           </tbody>
         </table>
         {detail.versions.length > 50 && (
-          <div className="border-t border-zinc-200 p-2 text-xs text-zinc-500">
+          <div className="border-t border-zinc-200 dark:border-zinc-800 p-2 text-xs text-zinc-500 dark:text-zinc-400">
             Showing 50 most recent of {detail.versions.length} published versions. See
             the timeline above for the full history.
           </div>
@@ -292,7 +292,7 @@ function VersionsTab({ detail }: { detail: PackageDetail }) {
 function VulnerabilitiesTab({ vulns }: { vulns: VulnerabilityEntry[] }) {
   if (vulns.length === 0) {
     return (
-      <div className="py-8 text-center text-sm text-zinc-500">
+      <div className="py-8 text-center text-sm text-zinc-500 dark:text-zinc-400">
         No advisories on record for this package.
       </div>
     );
@@ -302,7 +302,7 @@ function VulnerabilitiesTab({ vulns }: { vulns: VulnerabilityEntry[] }) {
     <div className="space-y-4">
       {affecting.length > 0 && (
         <section>
-          <h3 className="mb-2 text-xs uppercase tracking-wide text-red-700">
+          <h3 className="mb-2 text-xs uppercase tracking-wide text-red-700 dark:text-red-300">
             Installed version is affected ({affecting.length})
           </h3>
           <div className="space-y-2">
@@ -314,7 +314,7 @@ function VulnerabilitiesTab({ vulns }: { vulns: VulnerabilityEntry[] }) {
       )}
       {rest.length > 0 && (
         <section>
-          <h3 className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
+          <h3 className="mb-2 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
             Other versions ({rest.length})
           </h3>
           <div className="space-y-2">
@@ -343,31 +343,31 @@ function VulnCard({
     <div
       className={cn(
         "rounded-md border p-3 text-sm",
-        highlight ? "border-red-300 bg-red-50" : "border-zinc-200 bg-white",
+        highlight ? "border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40" : "border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900",
       )}
     >
       <div className="flex flex-wrap items-center gap-2">
         <SeverityBadge severity={vuln.severity} />
-        <span className="font-mono text-xs text-zinc-700">
+        <span className="font-mono text-xs text-zinc-700 dark:text-zinc-300">
           {vuln.cve_id ?? vuln.advisory_id}
         </span>
-        <span className="text-xs text-zinc-500">{vuln.source}</span>
+        <span className="text-xs text-zinc-500 dark:text-zinc-400">{vuln.source}</span>
         {vuln.url && (
           <a
             href={vuln.url}
             target="_blank"
             rel="noreferrer"
-            className="ml-auto inline-flex items-center gap-1 text-xs text-zinc-600 hover:text-zinc-900"
+            className="ml-auto inline-flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-400 hover:text-zinc-900"
           >
             advisory <ExternalLinkIcon className="h-3 w-3" />
           </a>
         )}
       </div>
-      {vuln.summary && <p className="mt-2 text-sm text-zinc-700">{vuln.summary}</p>}
+      {vuln.summary && <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">{vuln.summary}</p>}
       {vuln.fixed_versions.length > 0 && (
-        <p className="mt-1 text-xs text-zinc-500">
+        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
           Fixed in:{" "}
-          <span className="font-mono text-zinc-700">
+          <span className="font-mono text-zinc-700 dark:text-zinc-300">
             {vuln.fixed_versions.join(", ")}
           </span>
         </p>
@@ -379,7 +379,7 @@ function VulnCard({
 function MalwareTab({ reports }: { reports: MalwareEntry[] }) {
   if (reports.length === 0) {
     return (
-      <div className="py-8 text-center text-sm text-zinc-500">
+      <div className="py-8 text-center text-sm text-zinc-500 dark:text-zinc-400">
         No malware or typosquat signals on record.
       </div>
     );
@@ -389,30 +389,30 @@ function MalwareTab({ reports }: { reports: MalwareEntry[] }) {
       {reports.map((m) => (
         <div
           key={`${m.source}:${m.ref_id}`}
-          className="rounded-md border border-fuchsia-200 bg-fuchsia-50 p-3 text-sm"
+          className="rounded-md border border-fuchsia-200 dark:border-fuchsia-900 bg-fuchsia-50 dark:bg-fuchsia-950/40 p-3 text-sm"
         >
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone={m.kind === "typosquat" ? "typosquat" : "malware"}>
               {m.kind.replace("_", " ")}
             </Badge>
-            <span className="font-mono text-xs text-zinc-700">{m.ref_id}</span>
+            <span className="font-mono text-xs text-zinc-700 dark:text-zinc-300">{m.ref_id}</span>
             {m.version && (
-              <span className="text-xs text-zinc-500">version {m.version}</span>
+              <span className="text-xs text-zinc-500 dark:text-zinc-400">version {m.version}</span>
             )}
             {m.url && (
               <a
                 href={m.url}
                 target="_blank"
                 rel="noreferrer"
-                className="ml-auto inline-flex items-center gap-1 text-xs text-zinc-600 hover:text-zinc-900"
+                className="ml-auto inline-flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-400 hover:text-zinc-900"
               >
                 report <ExternalLinkIcon className="h-3 w-3" />
               </a>
             )}
           </div>
-          {m.summary && <p className="mt-2 text-zinc-700">{m.summary}</p>}
+          {m.summary && <p className="mt-2 text-zinc-700 dark:text-zinc-300">{m.summary}</p>}
           {m.reported_at && (
-            <p className="mt-1 text-xs text-zinc-500">
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
               Reported {formatDate(m.reported_at)}
             </p>
           )}
@@ -440,24 +440,24 @@ function PolicyTab({ detail }: { detail: PackageDetail }) {
   ];
   return (
     <div className="space-y-3">
-      <div className="rounded-md border border-zinc-200 bg-white p-3">
-        <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">
+      <div className="rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3">
+        <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
           Verdict
         </div>
         <div className="flex items-center gap-2">
           <ComplianceBadge tag={detail.compliance} />
-          <span className="text-sm text-zinc-700">{p.reason}</span>
+          <span className="text-sm text-zinc-700 dark:text-zinc-300">{p.reason}</span>
         </div>
       </div>
-      <div className="rounded-md border border-zinc-200 bg-white p-3">
-        <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
+      <div className="rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3">
+        <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
           Offset — three-axis cascade
         </div>
         <dl className="grid grid-cols-3 gap-2 text-sm">
           {offsetAxes.map((r) => (
             <div key={r.label}>
-              <dt className="text-xs text-zinc-500">{r.label}</dt>
-              <dd className="font-mono text-zinc-900">{r.value}</dd>
+              <dt className="text-xs text-zinc-500 dark:text-zinc-400">{r.label}</dt>
+              <dd className="font-mono text-zinc-900 dark:text-zinc-100">{r.value}</dd>
             </div>
           ))}
         </dl>
@@ -465,18 +465,18 @@ function PolicyTab({ detail }: { detail: PackageDetail }) {
       {p.cascade.length > 0 && (
         <div
           id="cascade"
-          className="rounded-md border border-zinc-200 bg-white p-3"
+          className="rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3"
         >
-          <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
+          <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
             Cascade trace
           </div>
-          <ol className="space-y-1 text-sm text-zinc-700">
+          <ol className="space-y-1 text-sm text-zinc-700 dark:text-zinc-300">
             {p.cascade.map((line, i) => (
               <li
                 key={i}
                 className="flex gap-2 font-mono text-xs leading-relaxed"
               >
-                <span className="text-zinc-400">{i + 1}.</span>
+                <span className="text-zinc-400 dark:text-zinc-500">{i + 1}.</span>
                 <span>{line}</span>
               </li>
             ))}
@@ -486,15 +486,15 @@ function PolicyTab({ detail }: { detail: PackageDetail }) {
       {detail.policy_sources.length > 0 && (
         <PolicySourcesPanel detail={detail} />
       )}
-      <div className="rounded-md border border-zinc-200 bg-white p-3">
-        <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
+      <div className="rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3">
+        <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
           Other rules for <span className="font-mono">{detail.name}</span>
         </div>
         <dl className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
           {rules.map((r) => (
             <div key={r.label}>
-              <dt className="text-xs text-zinc-500">{r.label}</dt>
-              <dd className="font-mono text-zinc-900">{r.value}</dd>
+              <dt className="text-xs text-zinc-500 dark:text-zinc-400">{r.label}</dt>
+              <dd className="font-mono text-zinc-900 dark:text-zinc-100">{r.value}</dd>
             </div>
           ))}
         </dl>
@@ -505,7 +505,7 @@ function PolicyTab({ detail }: { detail: PackageDetail }) {
 
 function ChangelogTab() {
   return (
-    <div className="py-8 text-center text-sm text-zinc-500">
+    <div className="py-8 text-center text-sm text-zinc-500 dark:text-zinc-400">
       Inline changelog lazy-fetch lands in Phase 6. For now, inspect releases
       directly on the upstream registry (npm / PyPI / GitHub).
     </div>
@@ -526,11 +526,11 @@ function CompatibilityTab({
     queryFn: () => api.packageCompat(ecosystem, name),
   });
   if (compat.isLoading) {
-    return <div className="py-8 text-center text-sm text-zinc-500">Loading…</div>;
+    return <div className="py-8 text-center text-sm text-zinc-500 dark:text-zinc-400">Loading…</div>;
   }
   if (compat.error) {
     return (
-      <div className="py-8 text-center text-sm text-red-600">
+      <div className="py-8 text-center text-sm text-red-600 dark:text-red-400">
         Failed to load compatibility: {String(compat.error)}
       </div>
     );
@@ -569,7 +569,7 @@ function CompatibilityTab({
   return (
     <div className="space-y-4">
       {installedMissingButOthersPresent && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+        <div className="rounded-md border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
           No compatibility metadata for the installed version
           (<span className="font-mono">{installed}</span>). Other versions do
           carry peer deps + engines — scroll through the Versions tab or
@@ -577,7 +577,7 @@ function CompatibilityTab({
         </div>
       )}
       {packageCarriesNoMetadata && (
-        <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+        <div className="rounded-md border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-600 dark:text-zinc-400">
           This package doesn&apos;t declare any peer dependencies or engine
           constraints in the scanned lockfile. That&apos;s normal — many npm
           entries ship neither — so there&apos;s nothing to show in the tables
@@ -591,9 +591,9 @@ function CompatibilityTab({
         {peerRows.length === 0 ? (
           <EmptyRow>No peer dependencies declared for this version.</EmptyRow>
         ) : (
-          <div className="overflow-hidden rounded-md border border-zinc-200 bg-white">
+          <div className="overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
             <table className="w-full text-sm">
-              <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500">
+              <thead className="border-b border-zinc-200 dark:border-zinc-800 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                 <tr>
                   <th className="px-3 py-2 text-left font-medium">Peer</th>
                   <th className="px-3 py-2 text-left font-medium">Required</th>
@@ -602,9 +602,9 @@ function CompatibilityTab({
               </thead>
               <tbody>
                 {peerRows.map((p) => (
-                  <tr key={p.name} className="border-b border-zinc-100">
+                  <tr key={p.name} className="border-b border-zinc-100 dark:border-zinc-800">
                     <td className="px-3 py-1.5 font-mono text-xs">{p.name}</td>
-                    <td className="px-3 py-1.5 font-mono text-xs text-zinc-700">
+                    <td className="px-3 py-1.5 font-mono text-xs text-zinc-700 dark:text-zinc-300">
                       {p.range}
                     </td>
                     <td className="px-3 py-1.5">
@@ -637,9 +637,9 @@ function CompatibilityTab({
         {engines.length === 0 ? (
           <EmptyRow>No engine constraints declared.</EmptyRow>
         ) : (
-          <div className="overflow-hidden rounded-md border border-zinc-200 bg-white">
+          <div className="overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
             <table className="w-full text-sm">
-              <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500">
+              <thead className="border-b border-zinc-200 dark:border-zinc-800 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                 <tr>
                   <th className="px-3 py-2 text-left font-medium">Runtime</th>
                   <th className="px-3 py-2 text-left font-medium">Required</th>
@@ -647,9 +647,9 @@ function CompatibilityTab({
               </thead>
               <tbody>
                 {engines.map((e) => (
-                  <tr key={e.runtime} className="border-b border-zinc-100">
+                  <tr key={e.runtime} className="border-b border-zinc-100 dark:border-zinc-800">
                     <td className="px-3 py-1.5 font-mono text-xs">{e.runtime}</td>
-                    <td className="px-3 py-1.5 font-mono text-xs text-zinc-700">
+                    <td className="px-3 py-1.5 font-mono text-xs text-zinc-700 dark:text-zinc-300">
                       {e.range}
                     </td>
                   </tr>
@@ -663,13 +663,13 @@ function CompatibilityTab({
       <UsedBySection dependents={compat.data.dependents} />
 
 
-      <div className="flex items-center justify-between rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+      <div className="flex items-center justify-between rounded-md border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-600 dark:text-zinc-400">
         <span>
           Inspect upstream + transitive chains visually in the dependency graph.
         </span>
         <Link
           to={graphHref}
-          className="inline-flex items-center gap-1 rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-700 hover:bg-white"
+          className="inline-flex items-center gap-1 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-xs text-zinc-700 dark:text-zinc-300 hover:bg-white"
         >
           Open in graph <ExternalLinkIcon className="h-3 w-3" />
         </Link>
@@ -716,25 +716,25 @@ function UsedBySection({ dependents }: { dependents: CompatDependent[] }) {
             <details
               key={workspace}
               open={groupIdx === 0}
-              className="overflow-hidden rounded-md border border-zinc-200 bg-white"
+              className="overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900"
               data-testid={`used-by-group-${workspace}`}
             >
               <summary
-                className="flex cursor-pointer items-center justify-between gap-3 border-b border-zinc-100 bg-zinc-50 px-3 py-2 text-xs"
+                className="flex cursor-pointer items-center justify-between gap-3 border-b border-zinc-100 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-xs"
                 title="Workspace consuming this package. Click to collapse/expand the parents that pull it in."
               >
                 <span className="flex items-center gap-2">
                   <Badge tone="muted">{scopeLabel(workspace)}</Badge>
-                  <span className="font-mono text-[11px] text-zinc-500">
+                  <span className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
                     {workspace}
                   </span>
                 </span>
-                <span className="text-zinc-500">
+                <span className="text-zinc-500 dark:text-zinc-400">
                   {items.length} parent{items.length === 1 ? "" : "s"}
                 </span>
               </summary>
               <table className="w-full text-sm">
-                <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500">
+                <thead className="border-b border-zinc-200 dark:border-zinc-800 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                   <tr>
                     <th className="px-3 py-2 text-left font-medium">Parent</th>
                     <th className="px-3 py-2 text-left font-medium">Version</th>
@@ -746,20 +746,20 @@ function UsedBySection({ dependents }: { dependents: CompatDependent[] }) {
                   {items.slice(0, 50).map((d, i) => (
                     <tr
                       key={`${d.name}@${d.version}-${i}`}
-                      className="border-b border-zinc-100"
+                      className="border-b border-zinc-100 dark:border-zinc-800"
                     >
                       <td className="px-3 py-1.5">
                         <Link
                           to={`/packages/${encodeURIComponent(d.ecosystem)}/${encodeURIComponent(d.name)}`}
-                          className="font-mono text-xs text-zinc-900 hover:underline"
+                          className="font-mono text-xs text-zinc-900 dark:text-zinc-100 hover:underline"
                         >
                           {d.name}
                         </Link>
                       </td>
-                      <td className="px-3 py-1.5 font-mono text-xs text-zinc-700">
+                      <td className="px-3 py-1.5 font-mono text-xs text-zinc-700 dark:text-zinc-300">
                         {d.version}
                       </td>
-                      <td className="px-3 py-1.5 font-mono text-xs text-zinc-700">
+                      <td className="px-3 py-1.5 font-mono text-xs text-zinc-700 dark:text-zinc-300">
                         {d.range}
                       </td>
                       <td className="px-3 py-1.5">
@@ -775,7 +775,7 @@ function UsedBySection({ dependents }: { dependents: CompatDependent[] }) {
                 </tbody>
               </table>
               {items.length > 50 && (
-                <div className="border-t border-zinc-200 p-2 text-xs text-zinc-500">
+                <div className="border-t border-zinc-200 dark:border-zinc-800 p-2 text-xs text-zinc-500 dark:text-zinc-400">
                   Showing 50 of {items.length} dependents in this workspace.
                 </div>
               )}
@@ -789,15 +789,15 @@ function UsedBySection({ dependents }: { dependents: CompatDependent[] }) {
 
 function SectionHeader({ title, count }: { title: string; count: number }) {
   return (
-    <h3 className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
-      {title} <span className="text-zinc-400">({count})</span>
+    <h3 className="mb-2 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+      {title} <span className="text-zinc-400 dark:text-zinc-500">({count})</span>
     </h3>
   );
 }
 
 function EmptyRow({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-md border border-dashed border-zinc-200 bg-white px-3 py-3 text-xs text-zinc-500">
+    <div className="rounded-md border border-dashed border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-3 text-xs text-zinc-500 dark:text-zinc-400">
       {children}
     </div>
   );
@@ -879,20 +879,20 @@ function PolicySourcesPanel({ detail }: { detail: PackageDetail }) {
     },
   ];
   return (
-    <div className="rounded-md border border-zinc-200 bg-white p-3">
-      <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
+    <div className="rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-3">
+      <div className="mb-2 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
         Policy sources
       </div>
-      <div className="mb-3 text-xs text-zinc-500">
+      <div className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
         Merge order — later wins. Effective policy deep-merges the layers
         below on every key.
       </div>
       <ol className="mb-3 space-y-1 text-xs">
         {detail.policy_sources.map((src, i) => (
           <li key={i} className="flex items-start gap-2">
-            <span className="font-mono text-zinc-400">[{i}]</span>
+            <span className="font-mono text-zinc-400 dark:text-zinc-500">[{i}]</span>
             <span className="font-mono text-zinc-800">{src.label}</span>
-            <span className="ml-auto text-zinc-400">{src.kind}</span>
+            <span className="ml-auto text-zinc-400 dark:text-zinc-500">{src.kind}</span>
           </li>
         ))}
       </ol>
@@ -909,12 +909,12 @@ function PolicySourcesPanel({ detail }: { detail: PackageDetail }) {
           return (
             <div
               key={row.key}
-              className="contents text-zinc-700"
+              className="contents text-zinc-700 dark:text-zinc-300"
               title={origin}
             >
-              <dt className="font-mono text-zinc-500">{row.label}</dt>
-              <dd className="font-mono text-zinc-900">{row.value}</dd>
-              <dd className="text-zinc-400">{origin}</dd>
+              <dt className="font-mono text-zinc-500 dark:text-zinc-400">{row.label}</dt>
+              <dd className="font-mono text-zinc-900 dark:text-zinc-100">{row.value}</dd>
+              <dd className="text-zinc-400 dark:text-zinc-500">{origin}</dd>
             </div>
           );
         })}

@@ -246,7 +246,7 @@ export function VersionTimeline({
 
   if (markers.length === 0) {
     return (
-      <div className="rounded-md border border-dashed border-zinc-300 bg-zinc-50 p-3 text-xs text-zinc-500">
+      <div className="rounded-md border border-dashed border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 p-3 text-xs text-zinc-500 dark:text-zinc-400">
         No published dates on file — nothing to plot on a time axis.
       </div>
     );
@@ -257,7 +257,7 @@ export function VersionTimeline({
       <Legend />
       <div
         ref={containerRef}
-        className="relative rounded-md border border-zinc-200 bg-white"
+        className="relative rounded-md border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900"
       >
         <svg
           width={width}
@@ -383,7 +383,7 @@ export function VersionTimeline({
             type="button"
             onClick={() => setFocus(null)}
             title="Clear the zoom selection and show every published version again."
-            className="absolute right-2 top-2 rounded-md border border-zinc-300 bg-white px-2 py-0.5 text-[10px] text-zinc-600 hover:bg-zinc-50"
+            className="absolute right-2 top-2 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800"
           >
             Reset zoom
           </button>
@@ -497,7 +497,7 @@ function Legend() {
     },
   ];
   return (
-    <div className="flex flex-wrap items-center gap-3 text-[11px] text-zinc-500">
+    <div className="flex flex-wrap items-center gap-3 text-[11px] text-zinc-500 dark:text-zinc-400">
       {items.map((it) => (
         <span
           key={it.kind}

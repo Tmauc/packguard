@@ -118,10 +118,10 @@ export function PackagesPage() {
     <div className="space-y-4">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
+          <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
             Packages
           </h1>
-          <p className="text-sm text-zinc-500">
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">
             Every dependency the latest scan persisted, evaluated against the
             active policy.
           </p>
@@ -169,13 +169,13 @@ export function PackagesPage() {
             onClick={() => toggle("has_typosquat")}
           />
           <div className="ml-auto flex items-center gap-2">
-            <SearchIcon className="h-4 w-4 text-zinc-400" />
+            <SearchIcon className="h-4 w-4 text-zinc-400 dark:text-zinc-500" />
             <input
               type="search"
               placeholder="Search package…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="h-8 w-56 rounded-md border border-zinc-300 bg-white px-2 text-sm focus:outline-2 focus:outline-zinc-900"
+              className="h-8 w-56 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 text-sm focus:outline-2 focus:outline-zinc-900"
             />
           </div>
         </CardContent>
@@ -184,19 +184,19 @@ export function PackagesPage() {
       <Card>
         <CardContent className="p-0">
           {list.isLoading ? (
-            <div className="p-6 text-sm text-zinc-500">Loading…</div>
+            <div className="p-6 text-sm text-zinc-500 dark:text-zinc-400">Loading…</div>
           ) : list.error ? (
-            <div className="p-6 text-sm text-red-600">
+            <div className="p-6 text-sm text-red-600 dark:text-red-400">
               Failed to load packages: {String(list.error)}
             </div>
           ) : !list.data || list.data.rows.length === 0 ? (
-            <div className="p-6 text-sm text-zinc-500">
+            <div className="p-6 text-sm text-zinc-500 dark:text-zinc-400">
               No packages match the current filters.
             </div>
           ) : (
             <>
               <table className="w-full text-sm">
-                <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500">
+                <thead className="border-b border-zinc-200 dark:border-zinc-800 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                   <tr>
                     <SortHeader
                       label="Package"
@@ -266,19 +266,19 @@ function Row({ row }: { row: PackageRow }) {
   const complianceHref =
     row.compliance === "insufficient" ? `${detailHref}?tab=policy#cascade` : detailHref;
   return (
-    <tr className="border-b border-zinc-100 hover:bg-zinc-50">
+    <tr className="border-b border-zinc-100 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-800">
       <td className="px-3 py-2">
-        <Link to={detailHref} className="font-mono text-zinc-900 hover:underline">
+        <Link to={detailHref} className="font-mono text-zinc-900 dark:text-zinc-100 hover:underline">
           {row.name}
         </Link>
       </td>
       <td className="px-3 py-2">
         <Badge tone="muted">{row.ecosystem}</Badge>
       </td>
-      <td className="px-3 py-2 font-mono text-xs text-zinc-700">
+      <td className="px-3 py-2 font-mono text-xs text-zinc-700 dark:text-zinc-300">
         {row.installed ?? "—"}
       </td>
-      <td className="px-3 py-2 font-mono text-xs text-zinc-700">
+      <td className="px-3 py-2 font-mono text-xs text-zinc-700 dark:text-zinc-300">
         {row.latest ?? "—"}
       </td>
       <td className="px-3 py-2">
@@ -320,7 +320,7 @@ function SortHeader({
     <th
       className={cn(
         "cursor-pointer select-none px-3 py-2 text-left font-medium",
-        active && "text-zinc-900",
+        active && "text-zinc-900 dark:text-zinc-100",
       )}
       onClick={() => onSort(column)}
       title={title}
@@ -350,14 +350,14 @@ function SelectInput({
   onChange: (v: string | undefined) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 text-xs text-zinc-500">
+    <label className="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
       {label}
       <select
         value={value ?? "all"}
         onChange={(e) =>
           onChange(e.target.value === "all" ? undefined : e.target.value)
         }
-        className="h-8 rounded-md border border-zinc-300 bg-white px-2 text-sm text-zinc-900 focus:outline-2 focus:outline-zinc-900"
+        className="h-8 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-2 focus:outline-zinc-900"
       >
         {options.map((o) => (
           <option key={o.value} value={o.value}>
@@ -386,7 +386,7 @@ function ToggleChip({
         "h-8 rounded-md border px-3 text-xs",
         on
           ? "border-zinc-900 bg-zinc-900 text-white"
-          : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50",
+          : "border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800",
       )}
     >
       {label}
@@ -407,7 +407,7 @@ function Pagination({
 }) {
   const lastPage = Math.max(1, Math.ceil(total / perPage));
   return (
-    <div className="flex items-center justify-between border-t border-zinc-200 px-3 py-2 text-xs text-zinc-500">
+    <div className="flex items-center justify-between border-t border-zinc-200 dark:border-zinc-800 px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">
       <span>
         {total === 0
           ? "0 packages"
@@ -484,7 +484,7 @@ export function RiskBadges({ risk }: { risk: PackageRisk }) {
   if (risk.typosquat_suspects > 0)
     parts.push({ label: `${risk.typosquat_suspects}⚠`, tone: "typosquat" });
   if (parts.length === 0) {
-    return <span className="text-xs text-zinc-400">—</span>;
+    return <span className="text-xs text-zinc-400 dark:text-zinc-500">—</span>;
   }
   return (
     <span className="flex flex-wrap gap-1">

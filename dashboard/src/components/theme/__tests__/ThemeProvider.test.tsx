@@ -1,10 +1,7 @@
 import { act, render, renderHook, screen } from "@testing-library/react";
 import { vi } from "vitest";
-import {
-  STORAGE_KEY,
-  ThemeProvider,
-  useTheme,
-} from "@/components/theme/ThemeProvider";
+import { ThemeProvider } from "@/components/theme/ThemeProvider";
+import { STORAGE_KEY, useTheme } from "@/components/theme/useTheme";
 
 // matchMedia isn't implemented by happy-dom; drive the (prefers-color-scheme)
 // media query manually so we can control whether "system" resolves light or

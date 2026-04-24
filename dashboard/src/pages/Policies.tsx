@@ -98,7 +98,7 @@ export function PoliciesPage() {
   return (
     <div className="space-y-4 overflow-x-hidden">
       <header className="flex flex-wrap items-center gap-3">
-        <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
+        <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
           Policy
         </h1>
         <ScopeBadge />
@@ -165,9 +165,9 @@ export function PoliciesPage() {
           </CardHeader>
           <CardContent>
             {policy.isLoading ? (
-              <div className="text-sm text-zinc-500">Loading…</div>
+              <div className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</div>
             ) : policy.error ? (
-              <div className="text-sm text-red-600">
+              <div className="text-sm text-red-600 dark:text-red-400">
                 Failed to load: {String(policy.error)}
               </div>
             ) : (
@@ -185,7 +185,7 @@ export function PoliciesPage() {
               />
             )}
             {yamlError && (
-              <pre className="mt-3 whitespace-pre-wrap rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+              <pre className="mt-3 whitespace-pre-wrap rounded-md border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/40 p-3 text-xs text-red-700 dark:text-red-300">
                 {yamlError}
               </pre>
             )}
@@ -231,9 +231,9 @@ function DryRunCard({
       </CardHeader>
       <CardContent>
         {loading ? (
-          <div className="text-sm text-zinc-500">Evaluating candidate…</div>
+          <div className="text-sm text-zinc-500 dark:text-zinc-400">Evaluating candidate…</div>
         ) : !result ? (
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
             Edit the YAML and click <span className="font-medium">Preview impact</span>{" "}
             to see how the candidate policy would re-bucket your packages
             against the last scan. Nothing is persisted until you hit Save.
@@ -241,7 +241,7 @@ function DryRunCard({
         ) : (
           <>
             <table className="w-full text-xs">
-              <thead className="text-zinc-500">
+              <thead className="text-zinc-500 dark:text-zinc-400">
                 <tr>
                   <th className="text-left font-medium">Bucket</th>
                   <th
@@ -266,17 +266,17 @@ function DryRunCard({
               </thead>
               <tbody>
                 {deltas.map((d) => (
-                  <tr key={d.label} className="border-t border-zinc-100">
+                  <tr key={d.label} className="border-t border-zinc-100 dark:border-zinc-800">
                     <td className="py-1 capitalize">{d.label}</td>
                     <td className="py-1 text-right font-mono">{d.current}</td>
                     <td className="py-1 text-right font-mono">{d.candidate}</td>
                     <td
                       className={`py-1 text-right font-mono ${
                         d.delta === 0
-                          ? "text-zinc-500"
+                          ? "text-zinc-500 dark:text-zinc-400"
                           : d.delta > 0
-                            ? "text-red-600"
-                            : "text-emerald-600"
+                            ? "text-red-600 dark:text-red-400"
+                            : "text-emerald-600 dark:text-emerald-400"
                       }`}
                       title={
                         d.delta === 0
@@ -295,7 +295,7 @@ function DryRunCard({
             {result.changed_packages.length > 0 && (
               <div className="mt-3">
                 <div
-                  className="mb-1 text-xs uppercase tracking-wide text-zinc-500"
+                  className="mb-1 text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400"
                   title="Individual packages whose compliance verdict would change under the candidate policy, evaluated against the last scan."
                 >
                   First {result.changed_packages.length} flips
@@ -304,13 +304,13 @@ function DryRunCard({
                   {result.changed_packages.map((c) => (
                     <li
                       key={`${c.ecosystem}/${c.name}`}
-                      className="rounded border border-zinc-200 bg-white px-2 py-1"
+                      className="rounded border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-2 py-1"
                       title={`${c.name} (${c.ecosystem}) would flip from "${c.from}" to "${c.to}" if you saved the candidate policy.`}
                     >
                       <span className="font-mono">{c.name}</span>{" "}
-                      <span className="text-zinc-500">({c.ecosystem})</span>
-                      <span className="ml-1 text-zinc-500">
-                        {c.from} → <span className="text-zinc-900">{c.to}</span>
+                      <span className="text-zinc-500 dark:text-zinc-400">({c.ecosystem})</span>
+                      <span className="ml-1 text-zinc-500 dark:text-zinc-400">
+                        {c.from} → <span className="text-zinc-900 dark:text-zinc-100">{c.to}</span>
                       </span>
                     </li>
                   ))}
@@ -328,7 +328,7 @@ function SelectWorkspaceState() {
   return (
     <div className="space-y-4 overflow-x-hidden">
       <header className="flex flex-wrap items-center gap-3">
-        <h1 className="text-xl font-semibold tracking-tight text-zinc-900">
+        <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
           Policy
         </h1>
         <ScopeBadge />
@@ -337,9 +337,9 @@ function SelectWorkspaceState() {
         <CardHeader>
           <CardTitle>Select a workspace</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3 text-sm text-zinc-600">
+        <CardContent className="space-y-3 text-sm text-zinc-600 dark:text-zinc-400">
           <div className="flex items-start gap-3">
-            <FolderTreeIcon className="mt-0.5 h-5 w-5 flex-shrink-0 text-zinc-400" />
+            <FolderTreeIcon className="mt-0.5 h-5 w-5 flex-shrink-0 text-zinc-400 dark:text-zinc-500" />
             <div className="space-y-2">
               <p>
                 Each workspace owns its own{" "}
@@ -347,7 +347,7 @@ function SelectWorkspaceState() {
                 the <span className="font-medium">Workspace</span> dropdown in
                 the header to load its policy.
               </p>
-              <p className="text-xs text-zinc-500">
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">
                 If you haven&apos;t scanned anything yet, run{" "}
                 <span className="font-mono">packguard scan &lt;path&gt;</span>{" "}
                 first — the workspace will appear automatically.
@@ -366,7 +366,7 @@ function HelpCard() {
       <CardHeader>
         <CardTitle>Reference</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-2 text-xs text-zinc-600">
+      <CardContent className="space-y-2 text-xs text-zinc-600 dark:text-zinc-400">
         <p>
           The policy language reference lives in{" "}
           <a
