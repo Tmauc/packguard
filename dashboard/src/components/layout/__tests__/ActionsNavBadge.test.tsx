@@ -3,8 +3,19 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { vi } from "vitest";
 import { Layout } from "@/components/Layout";
+import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import type { Action } from "@/api/types/Action";
 import type { ActionSeverity } from "@/api/types/ActionSeverity";
+
+// happy-dom doesn't implement matchMedia; stub it so ThemeProvider's
+// system-resolve doesn't blow up in tests that mount <Layout />.
+beforeAll(() => {
+  window.matchMedia = vi.fn().mockReturnValue({
+    matches: false,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  }) as unknown as typeof window.matchMedia;
+});
 
 // Stub every api method Layout touches so we can keep the render
 // hermetic. Only `actions` is interesting for this test.
@@ -54,11 +65,13 @@ function wrap() {
     defaultOptions: { queries: { retry: false } },
   });
   return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter>
-        <Layout />
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <ThemeProvider>
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <Layout />
+        </MemoryRouter>
+      </QueryClientProvider>
+    </ThemeProvider>,
   );
 }
 

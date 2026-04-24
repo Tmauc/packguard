@@ -12,6 +12,7 @@ import {
   ShieldCheckIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { WorkspaceSelector } from "@/components/layout/WorkspaceSelector";
 import { useScope } from "@/components/layout/workspace-scope";
 import { api } from "@/lib/api";
@@ -173,6 +174,7 @@ export function Layout() {
               <RefreshCcwIcon className="h-4 w-4" />
               Sync
             </Button>
+            <ThemeToggle />
           </div>
         </header>
         <div className="flex-1 overflow-y-auto bg-zinc-50 p-6">
