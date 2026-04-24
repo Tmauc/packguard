@@ -112,8 +112,13 @@ export const api = {
     }).then(handle<PolicyDryRunResult>);
   },
 
-  startScan: () =>
-    fetch("/api/scan", { method: "POST" }).then(handle<JobAccepted>),
+  /// Phase 13.6: the dashboard can now trigger a scan of an arbitrary
+  /// absolute path (fed to the Rust handler via ?path=). A missing
+  /// argument keeps pre-13.6 behaviour — scan walks state.repo_path.
+  startScan: (path?: string) => {
+    const qs = path ? `?${new URLSearchParams({ path }).toString()}` : "";
+    return fetch(`/api/scan${qs}`, { method: "POST" }).then(handle<JobAccepted>);
+  },
 
   startSync: () =>
     fetch("/api/sync", { method: "POST" }).then(handle<JobAccepted>),
