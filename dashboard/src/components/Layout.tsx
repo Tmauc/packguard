@@ -1,10 +1,11 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ActivityIcon,
   GitBranchIcon,
   ListChecksIcon,
+  ListTodoIcon,
   PackageIcon,
   RefreshCcwIcon,
   ScanIcon,
@@ -12,16 +13,78 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WorkspaceSelector } from "@/components/layout/WorkspaceSelector";
+import { useScope } from "@/components/layout/workspace-scope";
 import { api } from "@/lib/api";
 import { useJobStatus } from "@/lib/useJobStatus";
 import { cn } from "@/lib/cn";
+import type { ActionSeverity } from "@/api/types/ActionSeverity";
 
 const navItems = [
   { to: "/", label: "Overview", icon: ActivityIcon, end: true },
   { to: "/packages", label: "Packages", icon: PackageIcon, end: false },
   { to: "/graph", label: "Graph", icon: GitBranchIcon, end: false },
+  { to: "/actions", label: "Actions", icon: ListTodoIcon, end: false },
   { to: "/policies", label: "Policies", icon: ListChecksIcon, end: false },
 ];
+
+const SEVERITY_RANK: Record<ActionSeverity, number> = {
+  Info: 0,
+  Low: 1,
+  Medium: 2,
+  High: 3,
+  Critical: 4,
+};
+
+function severityDotClass(severity: ActionSeverity): string {
+  switch (severity) {
+    case "Critical":
+      return "bg-red-500";
+    case "High":
+      return "bg-orange-500";
+    case "Medium":
+      return "bg-amber-500";
+    case "Low":
+      return "bg-emerald-500";
+    case "Info":
+      return "bg-sky-500";
+  }
+}
+
+/**
+ * Header-level Actions count + top-severity dot. Polls the shared
+ * `/api/actions` endpoint on a slow cadence so the badge stays fresh
+ * without piling on requests. Hidden when the server returns zero
+ * actions — a silent badge is visual noise.
+ */
+function ActionsNavBadge() {
+  const scope = useScope();
+  const { data } = useQuery({
+    queryKey: ["actions", scope ?? null, null],
+    queryFn: () => api.actions({}, scope),
+    refetchInterval: 30_000,
+    // Tolerate fetch failures quietly — the badge is a hint, not a gate.
+    retry: false,
+  });
+  const actions = data?.actions ?? [];
+  if (actions.length === 0) return null;
+  const topSeverity = actions.reduce<ActionSeverity>(
+    (acc, a) =>
+      SEVERITY_RANK[a.severity] > SEVERITY_RANK[acc] ? a.severity : acc,
+    "Info",
+  );
+  return (
+    <span
+      className="ml-auto inline-flex items-center gap-1 rounded-full bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-700"
+      aria-label={`${actions.length} pending actions, highest severity ${topSeverity}`}
+    >
+      <span
+        aria-hidden
+        className={cn("h-1.5 w-1.5 rounded-full", severityDotClass(topSeverity))}
+      />
+      {actions.length}
+    </span>
+  );
+}
 
 export function Layout() {
   const { trackJob, jobs } = useJobStatus();
@@ -70,7 +133,8 @@ export function Layout() {
               }
             >
               <item.icon className="h-4 w-4" />
-              {item.label}
+              <span className="flex-1">{item.label}</span>
+              {item.to === "/actions" && <ActionsNavBadge />}
             </NavLink>
           ))}
         </nav>
