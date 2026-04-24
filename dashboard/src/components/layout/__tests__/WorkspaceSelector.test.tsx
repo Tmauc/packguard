@@ -1,4 +1,4 @@
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -63,46 +63,83 @@ const TWO_WORKSPACES: WorkspacesResponse = {
   ],
 };
 
+const NALO_LIKE: WorkspacesResponse = {
+  workspaces: [
+    {
+      path: "/Users/mauc/Repo/Nalo/monorepo/front/vesta",
+      ecosystem: "npm",
+      last_scan_at: "2026-04-24T10:00:00Z",
+      fingerprint: "v",
+      dependency_count: 300,
+    },
+    {
+      path: "/Users/mauc/Repo/Nalo/monorepo/front/mellona",
+      ecosystem: "npm",
+      last_scan_at: "2026-04-24T10:00:00Z",
+      fingerprint: "m",
+      dependency_count: 280,
+    },
+    {
+      path: "/Users/mauc/Repo/Nalo/monorepo/services/backend",
+      ecosystem: "pypi",
+      last_scan_at: "2026-04-24T10:00:00Z",
+      fingerprint: "b",
+      dependency_count: 150,
+    },
+    {
+      path: "/Users/mauc/Repo/Nalo/monorepo/services/accounting",
+      ecosystem: "pypi",
+      last_scan_at: "2026-04-24T10:00:00Z",
+      fingerprint: "a",
+      dependency_count: 120,
+    },
+  ],
+};
+
+async function openPicker() {
+  const trigger = await screen.findByTestId("workspace-selector");
+  const user = userEvent.setup();
+  await user.click(trigger);
+  await screen.findByTestId("workspace-picker");
+  return user;
+}
+
 beforeEach(() => {
   (api.workspaces as ReturnType<typeof vi.fn>).mockReset();
   window.localStorage.clear();
 });
 
 describe("WorkspaceSelector", () => {
-  it("renders every workspace plus an aggregate option", async () => {
+  it("renders the aggregate entry and every workspace leaf inside the popover", async () => {
     (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue(TWO_WORKSPACES);
     wrap();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: /alpha · 42 deps/i })).toBeInTheDocument(),
+    await openPicker();
+    expect(screen.getByTestId("workspace-aggregate")).toHaveTextContent(
+      /All workspaces/i,
     );
-    expect(screen.getByRole("option", { name: /beta · 17 deps/i })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /All workspaces/i })).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-leaf-/tmp/alpha")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-leaf-/tmp/beta")).toBeInTheDocument();
   });
 
-  it("writes ?project= into the URL when a workspace is picked", async () => {
+  it("writes ?project= into the URL and persists to localStorage when a leaf is clicked", async () => {
     (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue(TWO_WORKSPACES);
     wrap();
-    const select = (await screen.findByTestId("workspace-selector")) as HTMLSelectElement;
-    // Wait for the async react-query fetch to populate options.
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: /alpha · 42 deps/i })).toBeInTheDocument(),
-    );
-    const user = userEvent.setup();
-    await user.selectOptions(select, "/tmp/alpha");
+    const user = await openPicker();
+    await user.click(screen.getByTestId("workspace-leaf-/tmp/alpha"));
     await waitFor(() =>
       expect(screen.getByTestId("url").textContent).toContain("project=%2Ftmp%2Falpha"),
     );
     expect(window.localStorage.getItem(WORKSPACE_SCOPE_STORAGE_KEY)).toBe("/tmp/alpha");
+    // Popover auto-closes after picking.
+    expect(screen.queryByTestId("workspace-picker")).not.toBeInTheDocument();
   });
 
-  it("clears the scope (and localStorage) when the aggregate option is picked", async () => {
+  it("clears the scope (and localStorage) when the aggregate row is clicked", async () => {
     (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue(TWO_WORKSPACES);
     window.localStorage.setItem(WORKSPACE_SCOPE_STORAGE_KEY, "/tmp/alpha");
     wrap(["/?project=/tmp/alpha"]);
-    const select = (await screen.findByTestId("workspace-selector")) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe("/tmp/alpha"));
-    const user = userEvent.setup();
-    await user.selectOptions(select, "__aggregate__");
+    const user = await openPicker();
+    await user.click(screen.getByTestId("workspace-aggregate"));
     await waitFor(() =>
       expect(screen.getByTestId("url").textContent).not.toContain("project="),
     );
@@ -113,7 +150,6 @@ describe("WorkspaceSelector", () => {
     (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue(TWO_WORKSPACES);
     window.localStorage.setItem(WORKSPACE_SCOPE_STORAGE_KEY, "/tmp/beta");
     wrap(["/"]);
-    // The restore effect fires after /api/workspaces lands.
     await waitFor(() =>
       expect(screen.getByTestId("url").textContent).toContain("project=%2Ftmp%2Fbeta"),
     );
@@ -129,15 +165,79 @@ describe("WorkspaceSelector", () => {
     expect(screen.getByTestId("url").textContent).not.toContain("project=");
   });
 
-  it("disables the selector when no workspaces have been scanned", async () => {
+  it("disables the trigger when no workspaces have been scanned", async () => {
     (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue({ workspaces: [] });
     wrap();
-    const select = (await screen.findByTestId("workspace-selector")) as HTMLSelectElement;
-    await waitFor(() => expect(select).toBeDisabled());
-    expect(screen.getByRole("option", { name: /No scans yet/i })).toBeInTheDocument();
+    const trigger = (await screen.findByTestId("workspace-selector")) as HTMLButtonElement;
+    await waitFor(() => expect(trigger).toBeDisabled());
+    expect(trigger).toHaveTextContent(/No scans yet/i);
+  });
+
+  it("groups a Nalo-style monorepo into folders under a common prefix", async () => {
+    (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue(NALO_LIKE);
+    wrap();
+    await openPicker();
+    // The `/Users/mauc/Repo/Nalo/monorepo/` prefix is stripped — what
+    // survives is a `front` folder (vesta + mellona) and a `services`
+    // folder (backend + accounting).
+    expect(screen.getByTestId("workspace-folder-front")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-folder-services")).toBeInTheDocument();
+    // Folders start collapsed: the leaves aren't in the DOM until the
+    // chevron is clicked.
+    expect(
+      screen.queryByTestId("workspace-leaf-/Users/mauc/Repo/Nalo/monorepo/front/vesta"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("auto-expands folders that contain a fuzzy-search match and highlights the match", async () => {
+    (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue(NALO_LIKE);
+    wrap();
+    const user = await openPicker();
+    const search = screen.getByTestId("workspace-search") as HTMLInputElement;
+    await user.type(search, "vesta");
+    // The `front` folder auto-expands → the matching leaf appears with
+    // a <mark> highlight on the matched substring.
+    const leaf = await screen.findByTestId(
+      "workspace-leaf-/Users/mauc/Repo/Nalo/monorepo/front/vesta",
+    );
+    expect(leaf.querySelector("mark")).toHaveTextContent(/vesta/i);
+    // The sibling that doesn't match is filtered out.
+    expect(
+      screen.queryByTestId("workspace-leaf-/Users/mauc/Repo/Nalo/monorepo/front/mellona"),
+    ).not.toBeInTheDocument();
+    // The unrelated `services` folder is hidden too since none of its
+    // leaves match.
+    expect(
+      screen.queryByTestId("workspace-folder-services"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the empty-state when no leaf matches the query but the aggregate entry stays visible", async () => {
+    (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue(NALO_LIKE);
+    wrap();
+    const user = await openPicker();
+    await user.type(screen.getByTestId("workspace-search"), "zzzzzz");
+    expect(
+      await screen.findByTestId("workspace-empty-state"),
+    ).toHaveTextContent(/No workspace matches/i);
+    // Aggregate row is never filtered — it stays at the top regardless
+    // of the query.
+    expect(screen.getByTestId("workspace-aggregate")).toBeInTheDocument();
+  });
+
+  it("toggles folder collapse when its chevron button is clicked", async () => {
+    (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue(NALO_LIKE);
+    wrap();
+    const user = await openPicker();
+    const frontFolder = screen.getByTestId("workspace-folder-front");
+    expect(frontFolder.getAttribute("data-expanded")).toBe("false");
+    await user.click(frontFolder);
+    expect(screen.getByTestId("workspace-folder-front").getAttribute("data-expanded")).toBe(
+      "true",
+    );
+    // Children now visible.
+    expect(
+      screen.getByTestId("workspace-leaf-/Users/mauc/Repo/Nalo/monorepo/front/vesta"),
+    ).toBeInTheDocument();
   });
 });
-
-// Touch `act` so the strict-mode helper is exercised; avoids unused-import
-// lint on setups that don't need explicit async act wrapping.
-void act;
