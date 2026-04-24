@@ -41,7 +41,7 @@ Without a scope picked, Overview shows the aggregate roll-up across every worksp
 
 ## Empty state
 
-A fresh store (no scan yet) shows a call-to-action pointing to [`packguard scan`](/cli/scan). The dashboard doesn't try to auto-trigger a scan — scans are expensive and should happen at a time the user chose.
+A fresh store (no scan yet) shows a hero call-to-action — either point the CLI at a path ([`packguard scan`](/cli/scan)) or stay in the dashboard and click **`+ Scan a new path`** to open the Add-workspace modal. The modal posts to `POST /api/scan?path=<absolute>` with server-side validation (canonicalize + is_dir), polls the job, and auto-switches the active scope on success. Scans are still expensive — the dashboard never auto-triggers one, the user always picks the moment.
 
 ## Related
 

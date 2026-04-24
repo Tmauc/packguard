@@ -21,6 +21,10 @@ const VALUE_PROPS = [
     body: 'Every CVE, malware hit, or policy violation becomes a prioritized action with a copyable fix command (pnpm · uv · poetry — auto-detected). Dismiss in the UI, the CI gate respects it.',
   },
   {
+    title: 'Dashboard-first onboarding',
+    body: 'Dark mode with a 3-state toggle, a tree view workspace selector built from your lockfile hierarchy, and an Add-workspace modal for the first scan. Monorepo navigation and onboarding without ever leaving the browser.',
+  },
+  {
     title: '100% local, air-gap ready',
     body: 'One static Rust binary. No SaaS, no telemetry, no daemon. Bring your own intel dump and run on a disconnected build host.',
   },
@@ -259,7 +263,7 @@ function ValueProps() {
         <span className="section-numeral">ii.</span>
         <span className="micro-caps">what you get</span>
       </div>
-      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
         {VALUE_PROPS.map((v, idx) => (
           <div key={v.title} className="rounded-xl border border-divider bg-white/70 p-5">
             <div className="font-editorial text-2xl text-shield-green">
@@ -376,7 +380,7 @@ function LandingFooter() {
         <div className="flex items-center gap-2.5">
           <BrandMark />
           <span className="text-divider-strong">/</span>
-          <span className="font-editorial">v0.1.0</span>
+          <span className="font-editorial">v0.5.0</span>
         </div>
         <div className="flex items-center gap-5">
           <Link href="/getting-started/install" className="hover:text-slate-ink">
@@ -385,7 +389,7 @@ function LandingFooter() {
           <a href="https://github.com/Tmauc/packguard" className="hover:text-slate-ink">
             GitHub
           </a>
-          <a href="https://crates.io/crates/packguard-cli" className="hover:text-slate-ink">
+          <a href="https://crates.io/crates/packguard" className="hover:text-slate-ink">
             crates.io
           </a>
           <a href="/llms.txt" className="hover:text-slate-ink">

@@ -65,6 +65,21 @@ See [CONTEXT.md](./CONTEXT.md) for the full vision, architecture, and roadmap.
   blake3 ids persisted in a new `action_dismissals` SQLite table
   (migration V6) so dismissals survive rescans and roundtrip between
   CLI + dashboard.
+- ✅ **Phase 13 (v0.5.0) — Polish & Adoption**: quality-of-life
+  cycle that closes the last CLI-only workflow. **Dark mode** with a
+  3-state toggle (light / dark / system, persisted preference,
+  `prefers-color-scheme`-aware default) sprinkled as dark variants
+  across every dashboard page plus CodeMirror / Cytoscape /
+  visx theming. **Tree view workspace selector** with
+  longest-common-prefix collapse, in-place fuzzy search, persisted
+  folder collapse state — replaces the flat dropdown that broke down
+  past ~20 workspaces. **Add workspace from the UI** — the empty state
+  and `WorkspaceSelector` footer now expose a `+ Scan new path` modal
+  that posts to `POST /api/scan?path=<abs>` (new server query param
+  behind validated canonicalize + is_dir checks), auto-switching the
+  scope on job success. Plus tooltips (`title=` native) on every
+  previously-unexplained control, a proper PackGuard SVG favicon,
+  and a CodeMirror line-wrap fix on the Policies editor.
 
 ---
 
@@ -88,13 +103,20 @@ is opt-in so debug builds stay fast and don't require pnpm on the PATH.
 
 ### Pages
 
+Every page supports **light / dark / system** modes via the header
+toggle (3-state, persisted to `localStorage`, defaults to
+`prefers-color-scheme`). The **tree-view workspace selector** in
+the header groups workspaces by longest common path prefix with
+in-place fuzzy search and a `+ Scan new path` footer that opens an
+Add-workspace modal — first scan without leaving the dashboard.
+
 | Page | URL | Highlights |
 |------|-----|------------|
 | Overview | `/` | Health score · packages tracked · CVE/supply-chain donuts · top-5 risks |
 | Packages | `/packages` | Filterable + sortable table, URL-state filters, paginated |
 | Package detail | `/packages/:eco/:name` | 6-tab view: Versions + visx timeline, Vulnerabilities, Malware, Policy eval, Compatibility (Used by · per-workspace drill-down), Changelog |
 | Graph | `/graph` | Cytoscape (cose-bilkent default + dagre), URL-driven filters, Cmd+K CVE palette, focus-CVE contamination mode |
-| Policies | `/policies` | CodeMirror YAML editor per-workspace, dry-run preview vs current policy, atomic save |
+| Policies | `/policies` | CodeMirror YAML editor (with line-wrap) per-workspace, dry-run preview vs current policy, atomic save, panels stack below 1200px |
 | Actions | `/actions` | Prioritized next steps grouped by severity (Malware → Info), copy-to-clipboard package-manager-aware fix commands, dismiss / defer / restore persisted in SQLite |
 
 Every list-returning page reads the active workspace from `?project=<path>`
@@ -115,9 +137,12 @@ you at a glance whether the numbers are aggregated or scoped.
 **Phase 7 — Workspace scoping (two browser tabs, two workspaces, same store):**
 
 ![Overview scoped side-by-side — 91 deps vs 27 deps, same store, two tabs](docs/screenshots/phase7-isolation-sidebyside.png)
-![Header workspace selector open — aggregate · incentive · vesta](docs/screenshots/phase7-selector-open.png)
 ![Compatibility tab — Used by · per-workspace drill-down](docs/screenshots/phase7-compat-drilldown.png)
 ![Policies — empty state without scope vs CodeMirror editor when a workspace is picked](docs/screenshots/phase7-policies-empty-vs-scoped.png)
+
+> The v0.4.0 `phase7-selector-open.png` shows the flat dropdown — v0.5.0 replaced
+> it with a tree view (longest-common-prefix folders, fuzzy search, `+ Scan new
+> path` footer). Refreshed screenshot tracked as v0.5.1 polish.
 
 ### Graph CLI
 

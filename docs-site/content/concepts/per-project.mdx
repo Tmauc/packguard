@@ -14,9 +14,11 @@ A "workspace" in PackGuard is a path that owns a manifest + a lockfile. In pract
 
 ## The scope selector
 
-![Header workspace selector open — aggregate · incentive · vesta](/screenshots/phase7-selector-open.png)
+The header scope selector in the dashboard is the user-visible lever. Since v0.5.0 it renders as a **tree view** built from the registered workspace paths — longest common prefix is stripped, single-child folders collapse into their parent, and the remaining hierarchy groups workspaces by monorepo section (e.g. `front/vesta`, `front/mellona`, `services/backend`). A live fuzzy search input at the top filters the tree and auto-expands any folder that contains a match; folder collapse state persists to `localStorage` (`packguard.workspace-tree-collapsed`) so your expanded sections survive reloads.
 
-The header dropdown in the dashboard is the user-visible lever. Switching scope:
+The footer of the popover exposes a **`+ Scan new path`** button that opens the Add-workspace modal — same endpoint, same job-polling flow as the empty-state CTA on [Overview](/dashboard/overview). An `Aggregate` entry sits at the top of the tree, always visible, always returning the union view across every workspace.
+
+Switching scope:
 
 - writes `?project=<path>` into the URL,
 - re-runs the current page's React Query fetches against the new scope,
