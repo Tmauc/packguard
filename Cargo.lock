@@ -1534,6 +1534,7 @@ dependencies = [
  "chrono",
  "futures",
  "mime_guess",
+ "packguard-actions",
  "packguard-core",
  "packguard-intel",
  "packguard-policy",

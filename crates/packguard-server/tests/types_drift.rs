@@ -10,6 +10,7 @@
 //!
 //! Plain `cargo test` catches drift — no extra CI step required.
 
+use packguard_actions as actions;
 use packguard_server::dto;
 use std::path::{Path, PathBuf};
 use ts_rs::TS;
@@ -85,6 +86,16 @@ fn export_all(target: &Path) {
         dto::WorkspaceInfo,
         dto::WorkspacesResponse,
         dto::ProjectQuery,
+        dto::ActionsQuery,
+        dto::ActionsResponse,
+        dto::ActionDismissRequest,
+        dto::ActionDeferRequest,
+        dto::ActionDismissResponse,
+        dto::ActionDeferResponse,
+        actions::Action,
+        actions::ActionKind,
+        actions::ActionSeverity,
+        actions::ActionTarget,
     );
 }
 

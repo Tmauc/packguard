@@ -1172,6 +1172,116 @@ async fn packages_project_filter_isolates_workspaces() {
     assert!(!b_names.contains(&"lodash"));
 }
 
+// ---- Phase 12a: /api/actions ----------------------------------------------
+
+#[tokio::test]
+async fn actions_list_returns_cve_violation_for_lodash() {
+    let h = spawn(seed_lodash_with_high_cve).await;
+    let body = get_json(&h, "/api/actions").await;
+    let actions = body["actions"].as_array().unwrap();
+    assert!(
+        actions
+            .iter()
+            .any(|a| a["kind"] == "FixCveHigh" && a["target"]["name"] == "lodash"),
+        "expected FixCveHigh for lodash: {actions:?}"
+    );
+    assert_eq!(body["total"], actions.len() as u64);
+}
+
+#[tokio::test]
+async fn actions_list_respects_min_severity_filter() {
+    let h = spawn(seed_lodash_with_high_cve).await;
+    let body = get_json(&h, "/api/actions?min_severity=critical").await;
+    let actions = body["actions"].as_array().unwrap();
+    // Only malware + FixCveCritical qualify as critical. The fixture has
+    // no critical advisory, so the filtered list should be empty. `total`
+    // still reflects the pre-filter count.
+    assert!(
+        actions.iter().all(|a| a["severity"] == "critical"),
+        "non-critical row leaked: {actions:?}"
+    );
+    assert!(body["total"].as_u64().unwrap() >= actions.len() as u64);
+}
+
+#[tokio::test]
+async fn actions_dismiss_hides_action_until_restored() {
+    let h = spawn(seed_lodash_with_high_cve).await;
+    let body = get_json(&h, "/api/actions").await;
+    let first = body["actions"][0].clone();
+    let id = first["id"].as_str().unwrap().to_string();
+
+    // POST dismiss with a reason.
+    let url = format!("{}/api/actions/{id}/dismiss", h.base);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({"reason": "test"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let dismissed: serde_json::Value = resp.json().await.unwrap();
+    assert!(dismissed["dismissed_at"].is_string());
+
+    // Re-GET → action should be gone.
+    let after = get_json(&h, "/api/actions").await;
+    assert!(
+        after["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["id"] != id),
+        "dismissed action must not resurface"
+    );
+
+    // DELETE (restore) → action returns.
+    let restore_url = format!("{}/api/actions/{id}", h.base);
+    let resp = reqwest::Client::new()
+        .delete(&restore_url)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+    let restored = get_json(&h, "/api/actions").await;
+    assert!(restored["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a["id"] == id));
+}
+
+#[tokio::test]
+async fn actions_defer_returns_deferred_until_and_hides_action() {
+    let h = spawn(seed_lodash_with_high_cve).await;
+    let body = get_json(&h, "/api/actions").await;
+    let id = body["actions"][0]["id"].as_str().unwrap().to_string();
+
+    let url = format!("{}/api/actions/{id}/defer", h.base);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({"days": 7}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let defer_body: serde_json::Value = resp.json().await.unwrap();
+    assert!(defer_body["deferred_until"].is_string());
+
+    let after = get_json(&h, "/api/actions").await;
+    assert!(after["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["id"] != id));
+}
+
+#[tokio::test]
+async fn actions_dismiss_on_unknown_id_returns_404() {
+    let h = spawn(seed_lodash_with_high_cve).await;
+    let url = format!("{}/api/actions/nonexistent/dismiss", h.base);
+    let resp = reqwest::Client::new().post(&url).send().await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn unknown_project_query_returns_404_with_known_list() {
     let (h, alpha, _beta) = spawn_two_workspaces().await;

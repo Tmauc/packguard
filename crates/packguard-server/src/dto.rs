@@ -641,3 +641,55 @@ pub struct WorkspaceInfo {
 pub struct WorkspacesResponse {
     pub workspaces: Vec<WorkspaceInfo>,
 }
+
+// ---- Phase 12a: Page Actions ----------------------------------------------
+
+/// Query string for `GET /api/actions`. `min_severity` accepts the same
+/// lexicon as the rest of the dashboard (`critical` / `high` / `medium`
+/// / `low` / `info`); unknown values are ignored (no 400 — keeps the
+/// URL forgiving when the CLI and dashboard drift).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export_to = "ActionsQuery.ts")]
+pub struct ActionsQuery {
+    pub project: Option<String>,
+    pub min_severity: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "ActionsResponse.ts")]
+pub struct ActionsResponse {
+    pub actions: Vec<packguard_actions::Action>,
+    /// Count *before* the `min_severity` filter — lets the dashboard
+    /// render "showing 3 of 12" without a second request.
+    pub total: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export_to = "ActionDismissRequest.ts")]
+pub struct ActionDismissRequest {
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export_to = "ActionDeferRequest.ts")]
+pub struct ActionDeferRequest {
+    /// Days to defer for. Clamped server-side to `[1, 365]` so a
+    /// pathological client can't push the dismissal 200 years into
+    /// the future.
+    pub days: Option<i64>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "ActionDismissResponse.ts")]
+pub struct ActionDismissResponse {
+    /// RFC 3339 timestamp at which the dismissal was recorded.
+    pub dismissed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "ActionDeferResponse.ts")]
+pub struct ActionDeferResponse {
+    /// RFC 3339 deadline; the action resurfaces once `now >= deferred_until`.
+    pub deferred_until: String,
+}

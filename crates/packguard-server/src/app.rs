@@ -2,10 +2,11 @@
 //! service crate keeps every endpoint testable without spinning up axum.
 
 use crate::dto::{
-    CompatResponse, ContaminatedQuery, ContaminationResult, GraphQuery, GraphResponse,
-    GraphVulnerabilityList, JobAccepted, JobKind, JobView, Overview, PackageDetail, PackagesPage,
-    PackagesQuery, PolicyDocument, PolicyDryRun, PolicyDryRunResult, PolicyWrite, ProjectQuery,
-    WorkspacesResponse,
+    ActionDeferRequest, ActionDeferResponse, ActionDismissRequest, ActionDismissResponse,
+    ActionsQuery, ActionsResponse, CompatResponse, ContaminatedQuery, ContaminationResult,
+    GraphQuery, GraphResponse, GraphVulnerabilityList, JobAccepted, JobKind, JobView, Overview,
+    PackageDetail, PackagesPage, PackagesQuery, PolicyDocument, PolicyDryRun, PolicyDryRunResult,
+    PolicyWrite, ProjectQuery, WorkspacesResponse,
 };
 use crate::error::ApiError;
 use crate::jobs;
@@ -14,7 +15,7 @@ use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use packguard_store::Store;
 use std::path::PathBuf;
@@ -50,6 +51,10 @@ pub fn router(cfg: ServerConfig) -> Router {
         .route("/api/sync", post(sync_create))
         .route("/api/jobs/{id}", get(job_get))
         .route("/api/workspaces", get(workspaces_list))
+        .route("/api/actions", get(actions_list))
+        .route("/api/actions/{id}/dismiss", post(actions_dismiss))
+        .route("/api/actions/{id}/defer", post(actions_defer))
+        .route("/api/actions/{id}", delete(actions_restore))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -281,4 +286,81 @@ async fn job_get(
 async fn workspaces_list(State(s): State<AppState>) -> Result<Json<WorkspacesResponse>, ApiError> {
     let store = s.store.lock().await;
     Ok(Json(services::workspaces::list(&store)?))
+}
+
+// ---- Phase 12a: Page Actions ----------------------------------------------
+
+async fn actions_list(
+    State(s): State<AppState>,
+    Query(q): Query<ActionsQuery>,
+) -> Result<Json<ActionsResponse>, ApiError> {
+    let store = s.store.lock().await;
+    let project = resolve_project_filter(&store, q.project.as_deref())?;
+    let now = chrono::Utc::now();
+    let mut actions = packguard_actions::collect_all(&store, project.as_deref(), now)
+        .map_err(ApiError::Internal)?;
+    let total = actions.len() as u32;
+    if let Some(raw) = q.min_severity.as_deref() {
+        if let Some(threshold) = packguard_actions::ActionSeverity::parse(raw) {
+            packguard_actions::filter_min_severity(&mut actions, threshold);
+        }
+    }
+    Ok(Json(ActionsResponse { actions, total }))
+}
+
+/// Locate an action by its stable id from the global (unfiltered) set.
+/// Scoping by project would make the dismiss call coupled to the
+/// dashboard's current filter, which would fail when the UI transitions
+/// scope between the user seeing and clicking the action.
+fn locate_action(
+    store: &packguard_store::Store,
+    id: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<packguard_actions::Action, ApiError> {
+    let all = packguard_actions::collect_all(store, None, now).map_err(ApiError::Internal)?;
+    all.into_iter()
+        .find(|a| a.id == id)
+        .ok_or_else(|| ApiError::NotFound(format!("action {id} not found")))
+}
+
+async fn actions_dismiss(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    body: Option<Json<ActionDismissRequest>>,
+) -> Result<Json<ActionDismissResponse>, ApiError> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let mut store = s.store.lock().await;
+    let now = chrono::Utc::now();
+    let action = locate_action(&store, &id, now)?;
+    packguard_actions::dismiss(&mut store, &action, req.reason.as_deref(), now)
+        .map_err(ApiError::Internal)?;
+    Ok(Json(ActionDismissResponse {
+        dismissed_at: now.to_rfc3339(),
+    }))
+}
+
+async fn actions_defer(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    body: Option<Json<ActionDeferRequest>>,
+) -> Result<Json<ActionDeferResponse>, ApiError> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let days = req.days.unwrap_or(7).clamp(1, 365);
+    let mut store = s.store.lock().await;
+    let now = chrono::Utc::now();
+    let action = locate_action(&store, &id, now)?;
+    let until = packguard_actions::defer(&mut store, &action, days, req.reason.as_deref(), now)
+        .map_err(ApiError::Internal)?;
+    Ok(Json(ActionDeferResponse {
+        deferred_until: until.to_rfc3339(),
+    }))
+}
+
+async fn actions_restore(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let mut store = s.store.lock().await;
+    packguard_actions::restore(&mut store, &id).map_err(ApiError::Internal)?;
+    Ok(StatusCode::NO_CONTENT)
 }
