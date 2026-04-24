@@ -2320,6 +2320,170 @@ Thomas ship séquence : `./scripts/bump-version.sh 0.4.0` → `git push origin m
 
 ---
 
+## 14.20. v0.5.0 — Plan (thème "Polish & Adoption", validé 2026-04-24)
+
+**Thème produit** : *"Polish & Adoption"*. v0.4.0 a livré le flagship Page Actions. v0.5.0 solde les quick wins polish (tooltips, favicon, overflow, dark mode, workspace tree) **et** ferme le gap d'adoption le plus visible : pouvoir ajouter un workspace au store **depuis l'UI**, sans repasser par `packguard scan <path>` en CLI. Scope = Option C validée (13.1 → 13.6), bump minor car 13.6 est une feature user-facing substantielle.
+
+**Scope v0.5.0** : Phase 13 complète (6 sous-phases, ~13 commits estimé). Pas de breaking change côté semver.
+
+### Phase 13 — Polish & Adoption
+
+**13.1 ✅ done (2026-04-24)** — Tooltips restants
+
+Livré : 3 commits (`3782571` Graph controls + legend swatches + `8ea32d7` PackageDetail tabs + Policies actions + `0ad65a2` Vitest assertions), 93 Vitest (+4), 390 Rust inchangé. Tous quality gates verts.
+
+**Surfaces couvertes** :
+- Graph : 4 boutons Kind, input Depth, select Layout (+ options dagre/cose-bilkent), bouton Focus CVE, 6 swatches NODE_LEGEND, 4 EDGE_LEGEND, 6 swatches VersionTimeline + annotation "installed · recommended", bouton Reset zoom
+- PackageDetail : 6 triggers onglets, SeverityBadge (critical/high/medium/low/default), `<summary>` Used-By par workspace, badges peer deps optional/required, badges Kind, extension `ComplianceBadge` (title sur tous les variants, pas juste insufficient)
+- Policies : 3 boutons (Save/Dry run/Revert), 3 badges statut, headers dry-run + Δ contextualisée, items Failing list
+
+**Correction pattern** (à retenir pour briefs 13.x suivants) : Phase 10c utilise **`title=` HTML natif**, PAS un composant `<Tooltip />` dédié. Mon brief 13.1 mentionnait à tort un shadcn `<Tooltip />` inexistant — l'agent a gardé le pattern natif par cohérence + zéro nouvelle dep. Briefs 13.x futurs pointeront directement `title=` natif.
+
+---
+
+**13.1 (spec originale, pour historique)** — Tooltips restants (finding #1 complet)
+- Graph / Package detail / Policies gagnent les tooltips explicatives que Packages a eus en Phase 10c.
+- Attention : réutiliser le composant Tooltip existant de `components/ui/` (zero new dep), pas de bibliothèque externe.
+- ~2 commits, ~4 Vitest.
+
+**13.2 ✅ done (2026-04-24)** — Workspace selector vue arbre
+
+Livré : 3 commits (`414ae59` workspaceTree builder + `8c10e2c` tree view + fuzzy search + `8631334` collapse state localStorage), 121 Vitest (+19 : 11 workspaceTree unit + 4 useCollapsedFolders + 4 UI selector). 390 Rust inchangé. Zéro nouvelle dep.
+
+**Décisions design** :
+- `workspaceTree.ts` pure logic : longest-common-prefix normalize (capped `-1` pour jamais stripper le dernier segment), trie builder, collapse bottom-up des folders à exactement 1 enfant, sort alphabétique stable.
+- Popover roulé-maison (zéro new dep) : click-outside + Escape via document listeners scopés sur open.
+- Fuzzy search primitive : `.includes(lowered)` + walk récursif pour stamp les ancestors à expand. `<mark>` highlight sur substring. Pas de fuse.js ni cmdk.
+- `useCollapsedFolders(seed)` hook : hydrate/write/toggle/seedFrom. `seedFrom` ne remplace jamais les folders déjà togglés par le user (ajoute only new IDs, retourne prev Set inchangé si rien neuf → évite thrash de l'effect caller).
+
+**Bug intéressant corrigé** (à retenir) : `query.data?.workspaces ?? []` synthétise un **nouveau `[]` à chaque render** → cascade `knownPaths → tree → setCollapsed effect → infinite re-render loop` (les tests hangaient). Fix : `useMemo(() => query.data?.workspaces ?? [], [query.data])`. Pattern pour tous les falls-back à `[]` / `{}` sur React Query data.
+
+---
+
+**13.2 (spec originale, pour historique)** — Workspace selector vue arbre (finding remonté v0.2.0)
+- Flat list illisible à 20+ workspaces Nalo. Remplacer par tree view : common-prefix detection (ex `front/`, `services/`), fuzzy search, collapse state en localStorage (exception au pattern "zéro localStorage" car c'est un user-preference UI, pas de la data produit).
+- Toucher `components/layout/WorkspaceSelector.tsx`. Le backend `/api/workspaces` expose déjà les paths complets.
+- Budget : ~3 commits, ~6 Vitest.
+
+**13.3 ✅ done (2026-04-24)** — Dashboard favicon SVG
+
+Livré : 1 commit (`8b7dfec`), 93 Vitest + 390 Rust inchangés. Tous quality gates verts. Smoke : `curl -sI /favicon.svg` → `200 OK · image/svg+xml · 434 bytes`, onglet navigateur rend le shield vert à check blanc.
+
+**Notes** :
+- Le template `dashboard/index.html` n'avait **aucun** `<link rel="icon">` avant, pas juste un `/vite.svg` par défaut — le browser fallback sur le globe générique. Zéro ancien asset à supprimer.
+- Agent a ajouté `fill="none"` explicite sur le path du check en recopiant depuis `components/SiteNav.tsx` — le BrandMark docs-site l'omet, ce qui pourrait rendre un check bouché en "tablette/ombre" sur certains parseurs SVG. **Tech-debt latent docs-site** à corriger plus tard (cohérence BrandMark cross-sites).
+
+---
+
+**13.3 (spec originale, pour historique)** — Dashboard favicon SVG
+- Actuellement globe générique dans l'onglet navigateur de `packguard ui`. Aligner sur la DA du docs-site (P + shield, cohérent avec `BrandMark`).
+- `dashboard/public/favicon.svg` + `<link rel="icon">` dans le template HTML.
+- Budget : ~1 commit, 0 test (asset static).
+
+**13.4 ✅ done (2026-04-24)** — Policies page overflow horizontal
+
+Livré : 1 commit (`d81708c`), 95 Vitest (+2), 390 Rust inchangé. Tous quality gates verts. Smoke bundle rust-embed contient `min-[1200px]:grid-cols-[1fr_22rem]` + `lineWrapping` × 2.
+
+**Approches** :
+1. Line wrap : `EditorView.lineWrapping` ajouté aux extensions CodeMirror via `@uiw/react-codemirror` (qui réexpose `EditorView` — pas besoin de déclarer `@codemirror/view` en dep directe).
+2. Responsive : arbitrary Tailwind breakpoint `min-[1200px]:grid-cols-[1fr_22rem]` au lieu du `lg:` default (1024px) pour matcher exactement le seuil du brief.
+3. Safety net : `overflow-x-hidden` sur root Policies + SelectWorkspace.
+
+**Astuce test** (à retenir) : plutôt que de mock CodeMirror + mesurer `scrollWidth`/`clientWidth` (fragile avec stub qui ne layout rien), asserter **l'identité de l'extension** capturée via `vi.hoisted() + vi.mock()`. Test plus robuste, moins couplé au rendu.
+
+---
+
+**13.4 (spec originale, pour historique)** — Policies page overflow horizontal
+- CodeMirror sans `lineWrapping` → scroll-x dérangeant sur policies longues. Panneau dry-run side-by-side trop large sous 1200px.
+- Fix : `EditorView.lineWrapping` + responsive stack `< 1200px` + `overflow-x: hidden` root container.
+- Budget : ~1 commit, ~2 Vitest.
+
+**13.5 ✅ done (2026-04-24)** — Dark mode dashboard
+
+Livré : 4 commits (`d98f471` ThemeProvider + persist + `b73902e` header toggle + `730de77` dark variants 6 pages + `1355add` CodeMirror/Cytoscape/visx theming), 102 Vitest (+7), 390 Rust inchangé. Zéro nouvelle dep (CodeMirror dark theme roulé-maison ~25 lignes).
+
+**Notes techniques importantes** :
+- **Tailwind v4 est CSS-driven** (pas de `tailwind.config.ts` dans ce projet). Le dark variant se configure via `@custom-variant dark (&:where(.dark, .dark *))` dans `index.css`, équivalent au `darkMode: 'class'` Tailwind v3. **À retenir** pour les futurs briefs touchant à Tailwind : spec en CSS, pas en config file.
+- **Mount order** : `ThemeProvider` au-dessus de `QueryClientProvider` dans `main.tsx` pour que la classe `dark` soit appliquée sur `<html>` avant le premier paint → pas de flash light→dark.
+- **380 dark variants** appliqués via script Perl idempotent avec negative lookbehind `(?<!:)` pour éviter les doublons (1ère passe buggée par un `\b` boundary, fix avec lookbehind explicite).
+- **CodeMirror dark theme** roulé-maison via `EditorView.theme({...}, { dark: true })` — 25 lignes, zéro dep (EditorView re-exporté par `@uiw/react-codemirror`, pattern validé Phase 13.4).
+- **Cytoscape theme swap** : `useTheme()` dans GraphCanvas, `useMemo` dep array sur le stylesheet pour re-render les styles quand le theme change. Overrides sur root/edgeRuntime, label text, node halo.
+- **visx baseline/ticks** : VersionTimeline theme-aware, recommended-tick laissé en vert (lisible des deux côtés).
+- **Screenshots docs préservés** : default en env neutre = system, et le runner Playwright force light via `document.documentElement.classList.remove('dark')` avant capture si besoin.
+
+**Callout disque plein** signalé par l'agent : 23 Gi libérés en virant `target/debug`. Pré-existant, pas lié à la phase.
+
+---
+
+**13.5 (spec originale, pour historique)** — Dark mode dashboard
+- Thomas a mentionné ça dès v0.2.0 comme nice-to-have. v0.5.0 l'inclut parce que l'infra Tailwind le supporte trivialement (variant `dark:`) et que le toggle est ~100 lignes.
+- Toggle dans le header (icône soleil/lune), persisté localStorage (exception UI prefs, idem 13.2), tokens Tailwind `dark:` sur les components. Default = system.
+- Éviter de casser les screenshots existants — doc reste en light mode (la capture reflète le default system d'un dev Mac en jour).
+- Budget : ~4 commits, ~8 Vitest.
+
+**13.6 ✅ done (2026-04-24)** — Add workspace from UI
+
+Livré : 3 commits (`6ae034b` server `?path=` acceptance + `43a4df8` AddWorkspaceModal + `de98e3d` wire-in footer + empty-state CTA), 128 Vitest (+7), 393 Rust (+3 : scan custom path success, nonexistent 400, file-not-dir 400). Tous quality gates verts.
+
+**Correction vs plan initial** : le plan §14.20 disait *"backend endpoint existe déjà"*, c'était faux — `scan_create` ne prenait aucun path param, le brief 13.6 a été amended pre-relai pour inclure le change backend.
+
+**Décisions design** :
+- **Zéro ts-rs drift** : `JobKind` DTO reste stable (`Scan` / `Sync` flat strings exportés). L'internal enum `JobSpec { Scan(Option<PathBuf>), Sync }` porte le path sans toucher au wire.
+- Validation serveur en **3 steps** avant queue : `is_absolute()` → `canonicalize()` → `is_dir()`. Erreurs humaines (404 avec message explicit).
+- Canonical path passé à `JobSpec::Scan(Some(canon))` → `/api/workspaces` affiche un path stable après scan.
+- **Auto-switch scope** : `useState<{jobId, path}>` + `useEffect` watching `useJobStatus().jobs`. Quand le matching job atteint `succeeded`, `setScope(path)` → URL flip silencieux.
+- **Empty-state CTA** : dashed-border *"No workspaces yet — scan a new path"*. Ferme le cycle "tout dans l'UI" — premier scan faisable sans CLI.
+- Footer `+ Scan new path` dans le tree popover : click ferme le popover, ouvre le modal. Backdrop click + Escape close.
+- Zéro nouvelle dep : modal basé sur pattern popover 13.2.
+
+**Smoke Nalo validé** : 3 scénarios (empty store → valid path, store non-vide → 2e workspace, invalid path → 400 surfacée inline dans modal).
+
+---
+
+**13.6 (spec originale, pour historique)** — Add workspace from UI (adoption closer)
+- Gap remonté dogfood v0.4.0 : `packguard ui` sur un store vide oblige à passer en CLI pour le first scan. Backend `POST /api/jobs/scan?path=<new>` existe déjà (testé via `scan_returns_job_id_and_eventually_fails_when_no_manifest` dans server/api.rs).
+- UI : bouton `+ Scan new path` dans le dropdown `WorkspaceSelector`, ouvre un modal avec un input text (path absolu). Submit → `POST /api/jobs/scan` + toast + polling job status. À la complétion, auto-switch le scope sur le nouveau workspace.
+- Garde la pattern "pas de filesystem browser native" (trop de complexité, OS-specific) — input text + validation serveur (404 avec suggestion si path invalide). User se colle `pwd` depuis son terminal, suffisant pour 99% du usage.
+- Budget : ~3 commits, ~6 Vitest.
+
+### Ordre de livraison
+
+Strict : **13.1 → 13.3 → 13.4 → 13.5 → 13.2 → 13.6**.
+
+Rationale : polish léger d'abord (tooltips, favicon, overflow), puis medium (dark mode), puis gros morceaux cohérents entre eux (13.2 tree + 13.6 add-from-UI touchent tous les deux `WorkspaceSelector`, les enchaîner évite les conflits de merge et permet à 13.6 de bénéficier du tree view s'il est déjà en place).
+
+Chaque sous-phase = 1 agent dédié. Bump `0.4.0 → 0.5.0` en fin de cycle (après 13.6).
+
+### Critères de sortie v0.5.0 — ✅ all met (2026-04-24)
+
+- [x] Finding #1 "tooltips partout" 100% couvert (Phase 13.1)
+- [x] Workspace tree selector fonctionnel sur Nalo 20+ workspaces (Phase 13.2)
+- [x] Favicon custom remplace le globe générique (Phase 13.3)
+- [x] Policies page ne déborde plus horizontalement sous 1200px (Phase 13.4)
+- [x] Dark mode toggleable, persisté, default system (Phase 13.5)
+- [x] `packguard ui` sur store vide peut scanner un nouveau path sans CLI (Phase 13.6)
+- [x] Zéro régression : 393 Rust pass (vs 390 v0.4.0, +3 scan custom path), 128 Vitest pass (vs 89 v0.4.0, +39 polish + new features)
+
+**Bundle Phase 13 (15 commits, toujours locaux)** :
+- 13.1 : `3782571`, `8ea32d7`, `0ad65a2` (tooltips + tests)
+- 13.3 : `8b7dfec` (favicon SVG)
+- 13.4 : `d81708c` (policies overflow + CodeMirror lineWrapping)
+- 13.5 : `d98f471`, `b73902e`, `730de77`, `1355add` (dark mode ThemeProvider + toggle + dark variants + CM/Cyto/visx theming)
+- 13.2 : `414ae59`, `8c10e2c`, `8631334` (workspace tree + fuzzy search + collapse state)
+- 13.6 : `6ae034b`, `43a4df8`, `de98e3d` (server custom path + AddWorkspaceModal + empty-state CTA)
+
+Thomas ship séquence : `./scripts/bump-version.sh 0.5.0` → `git push origin main --follow-tags` → attendre `release.yml` → `gh workflow run crates-publish.yml -f dry_run=false`.
+
+### Reporté v0.6.0+
+
+- Apply actions (sortie du read-only v0.4.0)
+- Graph rework complet (WebGL, LOD, progressive render, pagination server-side)
+- Tier 2 écosystèmes (Cargo, Go)
+- i18n FR/EN + Settings page
+- Refinery 0.9 → latest (tech-debt)
+
+---
+
 ## 14.14. Feature requests v0.2.0 (remontées post-release)
 
 Thomas a utilisé l'outil sur son monorepo Nalo dès la post-release et a remonté deux **manques produit substantiels** :
