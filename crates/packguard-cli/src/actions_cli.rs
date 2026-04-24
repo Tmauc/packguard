@@ -393,26 +393,31 @@ fn render_sarif(store: &Store, actions: &[Action]) -> Result<()> {
     Ok(())
 }
 
-fn workspace_uri_map(store: &Store, actions: &[Action]) -> BTreeMap<String, String> {
-    // Map workspace string → relative lockfile path, using pm_detect on
-    // the workspace path. `_global` (RefreshSync) intentionally has no
-    // lockfile — we point at the workspace root instead.
-    let mut out = BTreeMap::new();
-    let workspaces: BTreeSet<String> = actions.iter().map(|a| a.workspace.clone()).collect();
-    let eco_by_ws: BTreeMap<String, String> = store
-        .scans_index()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|r| (r.path.display().to_string(), r.ecosystem))
+/// Map `(workspace, ecosystem)` → relative lockfile path, chosen via
+/// `pm_detect`. Package actions carry their own ecosystem on the target
+/// so a Python package living in a mixed JS/Py workspace picks
+/// `poetry.lock` / `uv.lock` instead of the workspace's default
+/// `package-lock.json`. `_global` (RefreshSync) points at the workspace
+/// root — there is no lockfile.
+fn workspace_uri_map(_store: &Store, actions: &[Action]) -> BTreeMap<(String, String), String> {
+    let mut out: BTreeMap<(String, String), String> = BTreeMap::new();
+    let needed: BTreeSet<(String, String)> = actions
+        .iter()
+        .map(|a| {
+            let eco = match &a.target {
+                ActionTarget::Package { ecosystem, .. } => ecosystem.clone(),
+                ActionTarget::Workspace => "npm".to_string(),
+            };
+            (a.workspace.clone(), eco)
+        })
         .collect();
-    for ws in workspaces {
+    for (ws, eco) in needed {
         if ws == "_global" {
-            out.insert(ws, ".".to_string());
+            out.insert((ws, eco), ".".to_string());
             continue;
         }
         let path = PathBuf::from(&ws);
-        let eco = eco_by_ws.get(&ws).map(String::as_str).unwrap_or("npm");
-        let pm = packguard_actions::detect_package_manager(&path, eco);
+        let pm = packguard_actions::detect_package_manager(&path, &eco);
         let lockfile = match pm {
             packguard_actions::PackageManager::Pnpm => "pnpm-lock.yaml",
             packguard_actions::PackageManager::Yarn => "yarn.lock",
@@ -422,14 +427,21 @@ fn workspace_uri_map(store: &Store, actions: &[Action]) -> BTreeMap<String, Stri
             packguard_actions::PackageManager::Pdm => "pdm.lock",
             packguard_actions::PackageManager::Pip => "requirements.txt",
         };
-        out.insert(ws.clone(), format!("{ws}/{lockfile}"));
+        out.insert((ws.clone(), eco), format!("{ws}/{lockfile}"));
     }
     out
 }
 
-fn build_sarif_result(action: &Action, workspace_uris: &BTreeMap<String, String>) -> Value {
+fn build_sarif_result(
+    action: &Action,
+    workspace_uris: &BTreeMap<(String, String), String>,
+) -> Value {
+    let eco = match &action.target {
+        ActionTarget::Package { ecosystem, .. } => ecosystem.clone(),
+        ActionTarget::Workspace => "npm".to_string(),
+    };
     let uri = workspace_uris
-        .get(&action.workspace)
+        .get(&(action.workspace.clone(), eco))
         .cloned()
         .unwrap_or_else(|| action.workspace.clone());
     let mut fingerprints = serde_json::Map::new();
