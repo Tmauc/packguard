@@ -1,12 +1,16 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
 import {
   CheckIcon,
+  ClockIcon,
   CopyIcon,
   ExternalLinkIcon,
   FolderTreeIcon,
+  RotateCcwIcon,
   TriangleAlertIcon,
+  XIcon,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -287,16 +291,28 @@ function SeverityGroup({
 }
 
 function ActionCard({ action }: { action: Action }) {
+  const [mode, setMode] = useState<"idle" | "dismiss" | "defer">("idle");
+  const archived = action.dismissed_at !== null;
   return (
-    <Card>
+    <Card className={cn(archived && "opacity-60")}>
       <CardContent className="space-y-2 p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
               <KindBadge kind={action.kind} />
               <TargetLabel action={action} />
+              {archived && (
+                <span className="text-[11px] uppercase tracking-wide text-zinc-400">
+                  Archived
+                </span>
+              )}
             </div>
-            <h3 className="text-sm font-medium text-zinc-900">
+            <h3
+              className={cn(
+                "text-sm font-medium text-zinc-900",
+                archived && "line-through decoration-zinc-400",
+              )}
+            >
               {action.title}
             </h3>
             <p className="text-xs text-zinc-600">{action.explanation}</p>
@@ -315,8 +331,187 @@ function ActionCard({ action }: { action: Action }) {
         </div>
 
         <CommandBlock action={action} />
+
+        {/* Action buttons — inline mutation surface. Restore takes over
+            when the server (future 12a extension) returns an already-
+            dismissed action. */}
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          {archived ? (
+            <RestoreButton action={action} />
+          ) : (
+            <>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() =>
+                  setMode((m) => (m === "dismiss" ? "idle" : "dismiss"))
+                }
+                aria-label="Dismiss this action"
+              >
+                <XIcon className="h-3.5 w-3.5" />
+                Dismiss…
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() =>
+                  setMode((m) => (m === "defer" ? "idle" : "defer"))
+                }
+                aria-label="Defer this action"
+              >
+                <ClockIcon className="h-3.5 w-3.5" />
+                Defer…
+              </Button>
+            </>
+          )}
+        </div>
+
+        {mode === "dismiss" && (
+          <DismissPanel action={action} onClose={() => setMode("idle")} />
+        )}
+        {mode === "defer" && (
+          <DeferPanel action={action} onClose={() => setMode("idle")} />
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+function DismissPanel({
+  action,
+  onClose,
+}: {
+  action: Action;
+  onClose: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const qc = useQueryClient();
+  const dismiss = useMutation({
+    mutationFn: () => api.dismissAction(action.id, reason || undefined),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["actions"] });
+      toast.message("Dismissed", {
+        description: action.title,
+        action: {
+          label: "Undo",
+          onClick: () => {
+            void api.restoreAction(action.id).then(() => {
+              qc.invalidateQueries({ queryKey: ["actions"] });
+            });
+          },
+        },
+      });
+      onClose();
+    },
+    onError: (err) =>
+      toast.error("Dismiss failed", { description: String(err) }),
+  });
+  return (
+    <div className="mt-2 rounded-md border border-zinc-200 bg-zinc-50 p-3">
+      <label className="block text-xs font-medium text-zinc-700">
+        Reason (optional)
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          rows={2}
+          placeholder="e.g. accepted risk, transitive we can't upgrade"
+          className="mt-1 block w-full resize-y rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs focus:outline-2 focus:outline-zinc-900"
+        />
+      </label>
+      <div className="mt-2 flex items-center gap-2">
+        <Button
+          size="sm"
+          variant="destructive"
+          onClick={() => dismiss.mutate()}
+          disabled={dismiss.isPending}
+        >
+          Confirm dismiss
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onClose}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+const DEFER_CHOICES: { days: number; label: string }[] = [
+  { days: 3, label: "3 days" },
+  { days: 7, label: "7 days" },
+  { days: 14, label: "14 days" },
+  { days: 30, label: "30 days" },
+];
+
+function DeferPanel({
+  action,
+  onClose,
+}: {
+  action: Action;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const defer = useMutation({
+    mutationFn: (days: number) => api.deferAction(action.id, days),
+    onSuccess: (_data, days) => {
+      qc.invalidateQueries({ queryKey: ["actions"] });
+      toast.message(`Deferred ${days} day${days > 1 ? "s" : ""}`, {
+        description: action.title,
+        action: {
+          label: "Undo",
+          onClick: () => {
+            void api.restoreAction(action.id).then(() => {
+              qc.invalidateQueries({ queryKey: ["actions"] });
+            });
+          },
+        },
+      });
+      onClose();
+    },
+    onError: (err) =>
+      toast.error("Defer failed", { description: String(err) }),
+  });
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 p-3">
+      <span className="text-xs text-zinc-700">Defer for</span>
+      {DEFER_CHOICES.map((c) => (
+        <Button
+          key={c.days}
+          size="sm"
+          variant="outline"
+          onClick={() => defer.mutate(c.days)}
+          disabled={defer.isPending}
+        >
+          {c.label}
+        </Button>
+      ))}
+      <Button size="sm" variant="ghost" onClick={onClose}>
+        Cancel
+      </Button>
+    </div>
+  );
+}
+
+function RestoreButton({ action }: { action: Action }) {
+  const qc = useQueryClient();
+  const restore = useMutation({
+    mutationFn: () => api.restoreAction(action.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["actions"] });
+      toast.message("Restored", { description: action.title });
+    },
+    onError: (err) =>
+      toast.error("Restore failed", { description: String(err) }),
+  });
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      onClick={() => restore.mutate()}
+      disabled={restore.isPending}
+    >
+      <RotateCcwIcon className="h-3.5 w-3.5" />
+      Restore
+    </Button>
   );
 }
 

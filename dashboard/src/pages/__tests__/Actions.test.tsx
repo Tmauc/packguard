@@ -248,6 +248,77 @@ describe("ActionsPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("opens the dismiss panel, forwards the reason, and invalidates the list on confirm", async () => {
+    const first = resp([
+      pkgAction({ id: "crit-1", kind: "FixCveCritical", severity: "Critical" }),
+    ]);
+    const second = resp([]); // after dismiss + invalidate the card is gone
+    (api.actions as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(first)
+      .mockResolvedValue(second);
+    (api.dismissAction as ReturnType<typeof vi.fn>).mockResolvedValue({
+      dismissed_at: "2026-04-24T12:00:00Z",
+    });
+    wrap();
+    const user = userEvent.setup();
+    const dismissButton = await screen.findByRole("button", {
+      name: /Dismiss this action/i,
+    });
+    await user.click(dismissButton);
+    const textarea = await screen.findByLabelText(/Reason \(optional\)/i);
+    await user.type(textarea, "accepted risk");
+    await user.click(screen.getByRole("button", { name: /Confirm dismiss/i }));
+    await waitFor(() => {
+      expect(api.dismissAction).toHaveBeenCalledWith("crit-1", "accepted risk");
+    });
+    // Second fetch (post-invalidation) returns an empty list → empty state.
+    await waitFor(() => {
+      expect(screen.getByText(/You're clear/i)).toBeInTheDocument();
+    });
+  });
+
+  it("opens the defer panel and sends the chosen window as days", async () => {
+    (api.actions as ReturnType<typeof vi.fn>).mockResolvedValue(
+      resp([
+        pkgAction({ id: "crit-1", kind: "FixCveCritical", severity: "Critical" }),
+      ]),
+    );
+    (api.deferAction as ReturnType<typeof vi.fn>).mockResolvedValue({
+      deferred_until: "2026-05-01T12:00:00Z",
+    });
+    wrap();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: /Defer this action/i }),
+    );
+    await user.click(await screen.findByRole("button", { name: /^7 days$/i }));
+    await waitFor(() => {
+      expect(api.deferAction).toHaveBeenCalledWith("crit-1", 7);
+    });
+  });
+
+  it("renders a Restore button on an archived action and calls DELETE", async () => {
+    (api.actions as ReturnType<typeof vi.fn>).mockResolvedValue(
+      resp([
+        pkgAction({
+          id: "crit-1",
+          kind: "FixCveCritical",
+          severity: "Critical",
+          dismissed_at: "2026-04-24T12:00:00Z",
+        }),
+      ]),
+    );
+    (api.restoreAction as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    wrap();
+    const user = userEvent.setup();
+    const restore = await screen.findByRole("button", { name: /Restore/i });
+    expect(screen.getByText(/Archived/i)).toBeInTheDocument();
+    await user.click(restore);
+    await waitFor(() => {
+      expect(api.restoreAction).toHaveBeenCalledWith("crit-1");
+    });
+  });
+
   it("renders the recommended_version arrow for Package targets", async () => {
     (api.actions as ReturnType<typeof vi.fn>).mockResolvedValue(
       resp([
