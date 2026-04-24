@@ -648,11 +648,20 @@ pub struct WorkspacesResponse {
 /// lexicon as the rest of the dashboard (`critical` / `high` / `medium`
 /// / `low` / `info`); unknown values are ignored (no 400 — keeps the
 /// URL forgiving when the CLI and dashboard drift).
+///
+/// `include_dismissed` / `include_deferred` default to `false` — the
+/// dashboard's default list hides archived rows. Setting either to
+/// `true` surfaces them with `dismissed_at` / `deferred_until`
+/// populated so the UI can render an "archived" tab.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[ts(export_to = "ActionsQuery.ts")]
 pub struct ActionsQuery {
     pub project: Option<String>,
     pub min_severity: Option<String>,
+    #[serde(default)]
+    pub include_dismissed: Option<bool>,
+    #[serde(default)]
+    pub include_deferred: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

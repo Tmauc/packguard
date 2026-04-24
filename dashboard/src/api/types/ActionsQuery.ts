@@ -5,5 +5,10 @@
  * lexicon as the rest of the dashboard (`critical` / `high` / `medium`
  * / `low` / `info`); unknown values are ignored (no 400 — keeps the
  * URL forgiving when the CLI and dashboard drift).
+ *
+ * `include_dismissed` / `include_deferred` default to `false` — the
+ * dashboard's default list hides archived rows. Setting either to
+ * `true` surfaces them with `dismissed_at` / `deferred_until`
+ * populated so the UI can render an "archived" tab.
  */
-export type ActionsQuery = { project: string | null, min_severity: string | null, };
+export type ActionsQuery = { project: string | null, min_severity: string | null, include_dismissed: boolean | null, include_deferred: boolean | null, };

@@ -297,8 +297,16 @@ async fn actions_list(
     let store = s.store.lock().await;
     let project = resolve_project_filter(&store, q.project.as_deref())?;
     let now = chrono::Utc::now();
-    let mut actions = packguard_actions::collect_all(&store, project.as_deref(), now)
-        .map_err(ApiError::Internal)?;
+    let include_dismissed = q.include_dismissed.unwrap_or(false);
+    let include_deferred = q.include_deferred.unwrap_or(false);
+    let mut actions = packguard_actions::collect_all(
+        &store,
+        project.as_deref(),
+        now,
+        include_dismissed,
+        include_deferred,
+    )
+    .map_err(ApiError::Internal)?;
     let total = actions.len() as u32;
     if let Some(raw) = q.min_severity.as_deref() {
         if let Some(threshold) = packguard_actions::ActionSeverity::parse(raw) {
@@ -317,7 +325,8 @@ fn locate_action(
     id: &str,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<packguard_actions::Action, ApiError> {
-    let all = packguard_actions::collect_all(store, None, now).map_err(ApiError::Internal)?;
+    let all = packguard_actions::collect_all(store, None, now, false, false)
+        .map_err(ApiError::Internal)?;
     all.into_iter()
         .find(|a| a.id == id)
         .ok_or_else(|| ApiError::NotFound(format!("action {id} not found")))

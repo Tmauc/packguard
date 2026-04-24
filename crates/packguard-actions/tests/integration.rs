@@ -260,7 +260,7 @@ fn collect_all_produces_expected_actions_on_nalo_like_fixture() {
     seed_nalo_like(&mut store, &repo);
 
     let now = now_anchor();
-    let actions = collect_all(&store, Some(&repo), now).unwrap();
+    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
 
     // 1 malware + 1 critical CVE + 1 high CVE + 1 insufficient + 1 refresh.
     // RescanStale only fires if last_scan_at < now - 3d; the save just
@@ -294,7 +294,7 @@ fn collect_all_emits_suggested_command_matching_detected_pm() {
     let mut store = Store::open_in_memory().unwrap();
     seed_nalo_like(&mut store, &repo);
     let now = now_anchor();
-    let actions = collect_all(&store, Some(&repo), now).unwrap();
+    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
 
     let cve_high = find_for(&actions, ActionKind::FixCveHigh, "lodash").unwrap();
     // Policy recommends 4.17.21 (the fixed version) via pnpm, surfaced
@@ -317,7 +317,7 @@ fn collect_all_leaves_recommended_version_none_for_workspace_actions() {
 
     // Advance past the rescan threshold so RescanStale fires.
     let later = now_anchor() + Duration::days(5);
-    let actions = collect_all(&store, Some(&repo), later).unwrap();
+    let actions = collect_all(&store, Some(&repo), later, false, false).unwrap();
 
     for a in &actions {
         match a.kind {
@@ -344,7 +344,7 @@ fn collect_all_refresh_sync_triggers_when_sync_log_stale_beyond_7_days() {
     let mut store = Store::open_in_memory().unwrap();
     seed_nalo_like(&mut store, &repo);
     let now = now_anchor();
-    let actions = collect_all(&store, Some(&repo), now).unwrap();
+    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
     let refresh = actions
         .iter()
         .find(|a| a.kind == ActionKind::RefreshSync)
@@ -376,7 +376,7 @@ fn collect_all_refresh_sync_silent_when_fresh() {
             },
         )
         .unwrap();
-    let actions = collect_all(&store, Some(&repo), now).unwrap();
+    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
     assert_eq!(count(&actions, ActionKind::RefreshSync), 0);
 }
 
@@ -391,7 +391,7 @@ fn collect_all_emits_rescan_stale_when_last_scan_beyond_3_days() {
     // Time-travel 5 days forward: the scan saved by `seed_nalo_like` is
     // now 5d old; `collect_all` should emit a RescanStale action.
     let later = now_anchor() + Duration::days(5);
-    let actions = collect_all(&store, Some(&repo), later).unwrap();
+    let actions = collect_all(&store, Some(&repo), later, false, false).unwrap();
     let rescan = actions
         .iter()
         .find(|a| a.kind == ActionKind::RescanStale)
@@ -410,11 +410,11 @@ fn dismiss_then_collect_all_excludes_action() {
     seed_nalo_like(&mut store, &repo);
 
     let now = now_anchor();
-    let actions = collect_all(&store, Some(&repo), now).unwrap();
+    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
     let cve_high = find_for(&actions, ActionKind::FixCveHigh, "lodash").unwrap();
 
     dismiss(&mut store, &cve_high, Some("accepted risk"), now).unwrap();
-    let after = collect_all(&store, Some(&repo), now).unwrap();
+    let after = collect_all(&store, Some(&repo), now, false, false).unwrap();
     assert!(
         !after.iter().any(|a| a.id == cve_high.id),
         "dismissed action must not resurface"
@@ -422,7 +422,7 @@ fn dismiss_then_collect_all_excludes_action() {
 
     // Undismiss → action returns.
     restore(&mut store, &cve_high.id).unwrap();
-    let restored = collect_all(&store, Some(&repo), now).unwrap();
+    let restored = collect_all(&store, Some(&repo), now, false, false).unwrap();
     assert!(restored.iter().any(|a| a.id == cve_high.id));
 }
 
@@ -436,16 +436,16 @@ fn defer_expires_after_days_and_action_reappears() {
     seed_nalo_like(&mut store, &repo);
 
     let now = now_anchor();
-    let actions = collect_all(&store, Some(&repo), now).unwrap();
+    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
     let target = find_for(&actions, ActionKind::FixCveCritical, "lodash").unwrap();
 
     defer(&mut store, &target, 7, Some("sprint busy"), now).unwrap();
     // Within the defer window → hidden.
-    let hidden = collect_all(&store, Some(&repo), now + Duration::days(3)).unwrap();
+    let hidden = collect_all(&store, Some(&repo), now + Duration::days(3), false, false).unwrap();
     assert!(!hidden.iter().any(|a| a.id == target.id));
 
     // Past the defer window → resurfaces with the same id (stable).
-    let resurfaced = collect_all(&store, Some(&repo), now + Duration::days(8)).unwrap();
+    let resurfaced = collect_all(&store, Some(&repo), now + Duration::days(8), false, false).unwrap();
     let back = resurfaced
         .iter()
         .find(|a| a.id == target.id)
@@ -461,9 +461,111 @@ fn filter_min_severity_drops_lower_rows() {
     std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
     let mut store = Store::open_in_memory().unwrap();
     seed_nalo_like(&mut store, &repo);
-    let mut actions = collect_all(&store, Some(&repo), now_anchor()).unwrap();
+    let mut actions = collect_all(&store, Some(&repo), now_anchor(), false, false).unwrap();
     let before = actions.len();
     filter_min_severity(&mut actions, ActionSeverity::High);
     assert!(actions.len() < before);
     assert!(actions.iter().all(|a| a.severity >= ActionSeverity::High));
+}
+
+#[test]
+fn collect_all_include_dismissed_returns_archived_actions_with_timestamp() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("nalo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &repo);
+
+    let now = now_anchor();
+    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let target = find_for(&actions, ActionKind::FixCveHigh, "lodash").unwrap();
+    dismiss(&mut store, &target, Some("accepted"), now).unwrap();
+
+    // Default call hides it…
+    let hidden = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    assert!(!hidden.iter().any(|a| a.id == target.id));
+
+    // …but include_dismissed=true surfaces it with dismissed_at populated.
+    let archived = collect_all(&store, Some(&repo), now, true, false).unwrap();
+    let row = archived
+        .iter()
+        .find(|a| a.id == target.id)
+        .expect("include_dismissed should resurface the dismissed row");
+    assert!(
+        row.dismissed_at.is_some(),
+        "dismissed_at must be stamped: {row:?}"
+    );
+    assert!(row.deferred_until.is_none());
+}
+
+#[test]
+fn collect_all_include_deferred_surfaces_deferred_until() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("nalo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &repo);
+
+    let now = now_anchor();
+    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let target = find_for(&actions, ActionKind::FixCveCritical, "lodash").unwrap();
+    defer(&mut store, &target, 7, None, now).unwrap();
+
+    // Within the defer window, default filter hides the row.
+    let hidden = collect_all(&store, Some(&repo), now + Duration::days(3), false, false).unwrap();
+    assert!(!hidden.iter().any(|a| a.id == target.id));
+
+    // include_deferred=true brings it back with both timestamps.
+    let with_deferred =
+        collect_all(&store, Some(&repo), now + Duration::days(3), false, true).unwrap();
+    let row = with_deferred
+        .iter()
+        .find(|a| a.id == target.id)
+        .expect("include_deferred should surface the deferred row");
+    assert!(row.dismissed_at.is_some());
+    assert!(row.deferred_until.is_some(), "deferred_until missing: {row:?}");
+
+    // include_dismissed alone does NOT bring a deferred row back — the
+    // two flags address different buckets.
+    let dismissed_only =
+        collect_all(&store, Some(&repo), now + Duration::days(3), true, false).unwrap();
+    assert!(!dismissed_only.iter().any(|a| a.id == target.id));
+}
+
+#[test]
+fn collect_all_include_flags_default_false_matches_pre_12c_behaviour() {
+    // Regression guard: with both flags false, collect_all must produce
+    // the exact same id set as the pre-12c code did — the /api/actions
+    // endpoint and existing dashboard assume dismissed rows are gone.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("nalo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &repo);
+
+    let now = now_anchor();
+    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let baseline_ids: std::collections::BTreeSet<String> =
+        actions.iter().map(|a| a.id.clone()).collect();
+
+    // Dismiss one + defer another; re-run with flags=false — those ids
+    // should be gone from the result.
+    let cve_high = find_for(&actions, ActionKind::FixCveHigh, "lodash").unwrap();
+    let cve_crit = find_for(&actions, ActionKind::FixCveCritical, "lodash").unwrap();
+    dismiss(&mut store, &cve_high, None, now).unwrap();
+    defer(&mut store, &cve_crit, 3, None, now).unwrap();
+
+    let after = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let after_ids: std::collections::BTreeSet<String> =
+        after.iter().map(|a| a.id.clone()).collect();
+    assert!(!after_ids.contains(&cve_high.id));
+    assert!(!after_ids.contains(&cve_crit.id));
+    // Every surviving id was already in the baseline — we haven't
+    // invented new rows.
+    for id in &after_ids {
+        assert!(baseline_ids.contains(id));
+    }
 }

@@ -17,8 +17,8 @@ use packguard_intel::match_vulnerabilities;
 use packguard_policy::{
     compute_recommended_version_full, evaluate_dependency_full, Compliance, Dialect, Policy,
 };
-use packguard_store::{normalize_repo_path, Store, StoredDependency, StoredMalware};
-use std::collections::BTreeSet;
+use packguard_store::{normalize_repo_path, Store, StoredActionDismissal, StoredDependency, StoredMalware};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Advisory staleness threshold for the `RefreshSync` action. Matches the
@@ -37,17 +37,26 @@ const GLOBAL_WORKSPACE: &str = "_global";
 /// is `Some`, package-scoped and scan-scoped actions are restricted to
 /// that repo; global actions (`RefreshSync`) are always included so the
 /// UI surfaces advisory staleness regardless of the active scope.
+///
+/// `include_dismissed` surfaces permanently-dismissed rows (with
+/// `dismissed_at` populated) so the dashboard / CLI can render an
+/// "archived" view. `include_deferred` does the same for rows whose
+/// defer window has not yet elapsed, with both `dismissed_at` and
+/// `deferred_until` populated. Defaults for both are `false` — matches
+/// the pre-12c behaviour the dashboard/CLI rely on.
 pub fn collect_all(
     store: &Store,
     workspace_filter: Option<&Path>,
     now: DateTime<Utc>,
+    include_dismissed: bool,
+    include_deferred: bool,
 ) -> Result<Vec<Action>> {
     let now_unix = now.timestamp();
     let scope_key = workspace_filter.map(normalize_repo_path);
-    let dismissed: BTreeSet<String> = store
+    let dismissals: BTreeMap<String, StoredActionDismissal> = store
         .load_active_dismissals(scope_key.as_deref(), now_unix)?
         .into_iter()
-        .map(|d| d.id)
+        .map(|d| (d.id.clone(), d))
         .collect();
 
     let workspaces: Vec<PathBuf> = match workspace_filter {
@@ -77,9 +86,33 @@ pub fn collect_all(
 
     actions.extend(generate_refresh_sync(store, now)?);
 
-    // Drop dismissed actions — they'll reappear automatically once their
-    // `deferred_until` elapses thanks to `load_active_dismissals`.
-    actions.retain(|a| !dismissed.contains(&a.id));
+    // Apply dismissal filter + annotation. A row in `dismissals` is
+    // either a permanent dismissal (`deferred_until is None`) or a
+    // still-active defer (`deferred_until > now`). We drop whichever
+    // bucket the caller did not opt into, and stamp the timestamps on
+    // the rest so the renderer can paint a `[dismissed]` /
+    // `[deferred Nd]` marker.
+    actions.retain_mut(|a| {
+        let Some(d) = dismissals.get(&a.id) else {
+            return true;
+        };
+        match d.deferred_until {
+            Some(ts) => {
+                if !include_deferred {
+                    return false;
+                }
+                a.deferred_until = unix_to_rfc3339(ts);
+                a.dismissed_at = unix_to_rfc3339(d.dismissed_at);
+            }
+            None => {
+                if !include_dismissed {
+                    return false;
+                }
+                a.dismissed_at = unix_to_rfc3339(d.dismissed_at);
+            }
+        }
+        true
+    });
 
     actions.sort_by(|a, b| {
         b.severity
@@ -90,6 +123,10 @@ pub fn collect_all(
     });
 
     Ok(actions)
+}
+
+fn unix_to_rfc3339(ts: i64) -> Option<String> {
+    DateTime::<Utc>::from_timestamp(ts, 0).map(|dt| dt.to_rfc3339())
 }
 
 /// Best-effort ecosystem for `workspace` — picks the first scan row
