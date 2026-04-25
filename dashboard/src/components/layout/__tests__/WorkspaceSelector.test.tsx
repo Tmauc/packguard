@@ -136,13 +136,15 @@ describe("WorkspaceSelector", () => {
     expect(screen.getByTestId("workspace-leaf-/tmp/beta")).toBeInTheDocument();
   });
 
-  it("writes ?project= into the URL and persists to localStorage when a leaf is clicked", async () => {
+  it("writes ?workspace= into the URL and persists to localStorage when a leaf is clicked", async () => {
     (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue(TWO_WORKSPACES);
     wrap();
     const user = await openPicker();
     await user.click(screen.getByTestId("workspace-leaf-/tmp/alpha"));
     await waitFor(() =>
-      expect(screen.getByTestId("url").textContent).toContain("project=%2Ftmp%2Falpha"),
+      expect(screen.getByTestId("url").textContent).toContain(
+        "workspace=%2Ftmp%2Falpha",
+      ),
     );
     expect(window.localStorage.getItem(WORKSPACE_SCOPE_STORAGE_KEY)).toBe("/tmp/alpha");
     // Popover auto-closes after picking.
@@ -152,11 +154,11 @@ describe("WorkspaceSelector", () => {
   it("clears the scope (and localStorage) when the aggregate row is clicked", async () => {
     (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue(TWO_WORKSPACES);
     window.localStorage.setItem(WORKSPACE_SCOPE_STORAGE_KEY, "/tmp/alpha");
-    wrap(["/?project=/tmp/alpha"]);
+    wrap(["/?workspace=/tmp/alpha"]);
     const user = await openPicker();
     await user.click(screen.getByTestId("workspace-aggregate"));
     await waitFor(() =>
-      expect(screen.getByTestId("url").textContent).not.toContain("project="),
+      expect(screen.getByTestId("url").textContent).not.toContain("workspace="),
     );
     expect(window.localStorage.getItem(WORKSPACE_SCOPE_STORAGE_KEY)).toBeNull();
   });
@@ -166,7 +168,9 @@ describe("WorkspaceSelector", () => {
     window.localStorage.setItem(WORKSPACE_SCOPE_STORAGE_KEY, "/tmp/beta");
     wrap(["/"]);
     await waitFor(() =>
-      expect(screen.getByTestId("url").textContent).toContain("project=%2Ftmp%2Fbeta"),
+      expect(screen.getByTestId("url").textContent).toContain(
+        "workspace=%2Ftmp%2Fbeta",
+      ),
     );
   });
 
@@ -177,7 +181,7 @@ describe("WorkspaceSelector", () => {
     await waitFor(() =>
       expect(window.localStorage.getItem(WORKSPACE_SCOPE_STORAGE_KEY)).toBeNull(),
     );
-    expect(screen.getByTestId("url").textContent).not.toContain("project=");
+    expect(screen.getByTestId("url").textContent).not.toContain("workspace=");
   });
 
   it("shows the empty-state CTA that opens the add-workspace modal when nothing has been scanned", async () => {
@@ -333,11 +337,11 @@ describe("WorkspaceSelector", () => {
     );
     // useJobStatus's poller (real here) hits /api/jobs/:id, sees the
     // succeeded mock, and invalidates queries → the URL flips to
-    // ?project=<newPath> once the pendingScan effect runs.
+    // ?workspace=<newPath> once the pendingScan effect runs.
     await waitFor(
       () =>
         expect(screen.getByTestId("url").textContent).toContain(
-          `project=${encodeURIComponent(newPath)}`,
+          `workspace=${encodeURIComponent(newPath)}`,
         ),
       { timeout: 3000 },
     );

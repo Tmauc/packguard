@@ -163,7 +163,7 @@ describe("GraphPage", () => {
   it("scopes graph + contamination fetches to the URL workspace", async () => {
     (api.graph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH);
     (api.contaminated as ReturnType<typeof vi.fn>).mockResolvedValue(CONTAMINATION);
-    wrap(["/graph?project=/tmp/alpha&focus_cve=CVE-X"]);
+    wrap(["/graph?workspace=/tmp/alpha&focus_cve=CVE-X"]);
     await waitFor(() => {
       expect(api.graph).toHaveBeenLastCalledWith(expect.any(Object), "/tmp/alpha");
     });

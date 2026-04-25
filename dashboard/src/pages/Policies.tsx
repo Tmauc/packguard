@@ -9,7 +9,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api, ApiError } from "@/lib/api";
 import { ScopeBadge } from "@/components/layout/ScopeBadge";
-import { scopeLabel, useScope } from "@/components/layout/workspace-scope";
+import {
+  scopeLabel,
+  useWorkspaceScope,
+} from "@/components/layout/workspace-scope";
 import { useTheme } from "@/components/theme/useTheme";
 import type { PolicyDryRunResult } from "@/api/types/PolicyDryRunResult";
 
@@ -42,7 +45,7 @@ const codeMirrorDark = EditorView.theme(
 
 export function PoliciesPage() {
   const qc = useQueryClient();
-  const scope = useScope();
+  const scope = useWorkspaceScope();
   const { resolved } = useTheme();
   const policy = useQuery({
     queryKey: ["policies", scope ?? null],

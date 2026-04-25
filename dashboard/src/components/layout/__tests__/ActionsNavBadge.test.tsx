@@ -25,6 +25,10 @@ vi.mock("@/lib/api", () => ({
     startScan: vi.fn().mockResolvedValue({ id: "x" }),
     startSync: vi.fn().mockResolvedValue({ id: "x" }),
     workspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
+    // 14.3a: Layout now boots a `["projects"]` query for the legacy
+    // redirect — keep the mock surface complete so the query doesn't
+    // log a `No queryFn was passed` warning during the render.
+    projects: vi.fn().mockResolvedValue([]),
     job: vi.fn().mockResolvedValue({
       id: "x",
       kind: "scan",

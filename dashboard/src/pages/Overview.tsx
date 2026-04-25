@@ -8,10 +8,10 @@ import type { Overview } from "@/api/types/Overview";
 import { StatCard } from "@/components/overview/StatCard";
 import { Donut } from "@/components/overview/Donut";
 import { ScopeBadge } from "@/components/layout/ScopeBadge";
-import { useScope } from "@/components/layout/workspace-scope";
+import { useWorkspaceScope } from "@/components/layout/workspace-scope";
 
 export function OverviewPage() {
-  const scope = useScope();
+  const scope = useWorkspaceScope();
   const { data, isLoading, error } = useQuery({
     queryKey: ["overview", scope ?? null],
     queryFn: () => api.overview(scope),

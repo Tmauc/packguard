@@ -1,5 +1,5 @@
 import { FolderTreeIcon, LayersIcon } from "lucide-react";
-import { scopeLabel, useScope } from "./workspace-scope";
+import { scopeLabel, useWorkspaceScope } from "./workspace-scope";
 
 /**
  * Discreet per-page indicator so a user who arrives via deep link or
@@ -8,7 +8,7 @@ import { scopeLabel, useScope } from "./workspace-scope";
  * (the selector is the input, this is the output sanity-check).
  */
 export function ScopeBadge({ className }: { className?: string }) {
-  const scope = useScope();
+  const scope = useWorkspaceScope();
   if (scope) {
     return (
       <span

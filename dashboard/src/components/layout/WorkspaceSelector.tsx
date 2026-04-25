@@ -25,9 +25,9 @@ import {
 } from "@/lib/workspaceTree";
 import {
   scopeLabel,
-  useRestoreScopeFromStorage,
-  useScope,
-  useSetScope,
+  useRestoreWorkspaceScopeFromStorage,
+  useSetWorkspaceScope,
+  useWorkspaceScope,
 } from "./workspace-scope";
 
 /**
@@ -41,12 +41,14 @@ import {
  *  - the tree itself, rendered from buildWorkspaceTree() which strips
  *    the common prefix and collapses single-child folders.
  *
- * Scoped URL + localStorage wiring is unchanged — selecting a leaf
- * still pushes `?project=<path>` and persists via useSetScope().
+ * Scoped URL + localStorage wiring: selecting a leaf pushes
+ * `?workspace=<path>` and persists via `useSetWorkspaceScope()`.
+ * Phase 14.3a moved the workspace scope from `?project=<path>` to
+ * `?workspace=<path>` so the project slug can occupy the project slot.
  */
 export function WorkspaceSelector() {
-  const scope = useScope();
-  const setScope = useSetScope();
+  const scope = useWorkspaceScope();
+  const setScope = useSetWorkspaceScope();
   const query = useQuery({
     queryKey: ["workspaces"],
     queryFn: () => api.workspaces(),
@@ -63,7 +65,10 @@ export function WorkspaceSelector() {
     [query.data],
   );
   const knownPaths = useMemo(() => workspaces.map((w) => w.path), [workspaces]);
-  useRestoreScopeFromStorage(query.data ? knownPaths : undefined, query.isLoading);
+  useRestoreWorkspaceScopeFromStorage(
+    query.data ? knownPaths : undefined,
+    query.isLoading,
+  );
 
   const empty = !query.isLoading && workspaces.length === 0;
   const tree = useMemo(() => buildWorkspaceTree(knownPaths), [knownPaths]);

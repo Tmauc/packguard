@@ -4,7 +4,7 @@ import { SearchIcon } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import type { GraphVulnerabilityEntry } from "@/api/types/GraphVulnerabilityEntry";
-import { useScope } from "@/components/layout/workspace-scope";
+import { useWorkspaceScope } from "@/components/layout/workspace-scope";
 
 // Phase 11.3: command palette for picking a CVE to focus the graph on.
 // Replaces the free-text `Focus CVE` input — users don't know CVE ids
@@ -55,7 +55,7 @@ export function CvePalette({
   onClose: () => void;
   onSelect: (vulnId: string) => void;
 }) {
-  const scope = useScope();
+  const scope = useWorkspaceScope();
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);

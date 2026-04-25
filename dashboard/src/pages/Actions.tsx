@@ -16,7 +16,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScopeBadge } from "@/components/layout/ScopeBadge";
-import { scopeLabel, useScope } from "@/components/layout/workspace-scope";
+import {
+  scopeLabel,
+  useWorkspaceScope,
+} from "@/components/layout/workspace-scope";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import type { Action } from "@/api/types/Action";
@@ -63,7 +66,7 @@ const MIN_SEVERITY_OPTIONS: { value: string; label: string }[] = [
 
 export function ActionsPage() {
   const [params, setParams] = useSearchParams();
-  const scope = useScope();
+  const scope = useWorkspaceScope();
   const minSeverity = params.get("min_severity") ?? "";
 
   const query = useQuery({

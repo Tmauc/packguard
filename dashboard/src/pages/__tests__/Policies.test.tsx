@@ -73,7 +73,7 @@ vi.mock("@uiw/react-codemirror", async () => {
 
 import { api } from "@/lib/api";
 
-const SCOPED_URL = "/policies?project=/tmp/ws-a";
+const SCOPED_URL = "/policies?workspace=/tmp/ws-a";
 
 function wrap(initialEntries: string[] = [SCOPED_URL]) {
   const client = new QueryClient({
@@ -200,7 +200,7 @@ describe("PoliciesPage", () => {
         from_file: true,
       } satisfies PolicyDocument),
     );
-    wrap(["/policies?project=/tmp/ws-b"]);
+    wrap(["/policies?workspace=/tmp/ws-b"]);
     await waitFor(() => {
       expect(api.policies).toHaveBeenLastCalledWith("/tmp/ws-b");
     });

@@ -7,7 +7,10 @@ import { ComplianceBadge } from "@/pages/Packages";
 import { VersionTimeline } from "@/components/packages/VersionTimeline";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { scopeLabel, useScope } from "@/components/layout/workspace-scope";
+import {
+  scopeLabel,
+  useWorkspaceScope,
+} from "@/components/layout/workspace-scope";
 import type { CompatDependent } from "@/api/types/CompatDependent";
 import type { MalwareEntry } from "@/api/types/MalwareEntry";
 import type { PackageDetail } from "@/api/types/PackageDetail";
@@ -50,7 +53,7 @@ export function PackageDetailPage() {
     });
   };
 
-  const scope = useScope();
+  const scope = useWorkspaceScope();
   const detail = useQuery({
     queryKey: ["package-detail", ecosystem, name, scope ?? null],
     queryFn: () => api.packageDetail(ecosystem, name, scope),

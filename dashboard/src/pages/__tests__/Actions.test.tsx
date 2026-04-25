@@ -239,9 +239,9 @@ describe("ActionsPage", () => {
     expect(screen.queryByRole("heading", { name: "Low" })).toBeNull();
   });
 
-  it("threads ?project=<path> into the API call and shows the scope label", async () => {
+  it("threads ?workspace=<path> into the API call and shows the scope label", async () => {
     (api.actions as ReturnType<typeof vi.fn>).mockResolvedValue(resp([]));
-    wrap(["/actions?project=/tmp/repo-a"]);
+    wrap(["/actions?workspace=/tmp/repo-a"]);
     await waitFor(() => {
       expect(api.actions).toHaveBeenLastCalledWith({}, "/tmp/repo-a");
     });

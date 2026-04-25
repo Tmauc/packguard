@@ -13,7 +13,7 @@ import { CvePalette } from "@/components/graph/CvePalette";
 import type { LayoutName } from "@/components/graph/register-layouts";
 import { LAYOUTS } from "@/components/graph/register-layouts";
 import { ScopeBadge } from "@/components/layout/ScopeBadge";
-import { useScope } from "@/components/layout/workspace-scope";
+import { useWorkspaceScope } from "@/components/layout/workspace-scope";
 import type { GraphResponse } from "@/api/types/GraphResponse";
 
 const KINDS = ["runtime", "dev", "peer", "optional"] as const;
@@ -45,7 +45,7 @@ const HIDEABLE_KEYS = new Set([
 
 export function GraphPage() {
   const [params, setParams] = useSearchParams();
-  const scope = useScope();
+  const scope = useWorkspaceScope();
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   // URL-driven filters so the view is refreshable + linkable (the Compat

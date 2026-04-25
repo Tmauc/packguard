@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ScopeBadge } from "@/components/layout/ScopeBadge";
-import { useScope } from "@/components/layout/workspace-scope";
+import { useWorkspaceScope } from "@/components/layout/workspace-scope";
 import type { ComplianceTag } from "@/api/types/ComplianceTag";
 import type { PackageRow } from "@/api/types/PackageRow";
 import type { PackageRisk } from "@/api/types/PackageRisk";
@@ -29,7 +29,7 @@ const ECOSYSTEMS = ["npm", "pypi"] as const;
 
 export function PackagesPage() {
   const [params, setParams] = useSearchParams();
-  const scope = useScope();
+  const scope = useWorkspaceScope();
   const queryFromUrl = useMemo<Partial<PackagesQuery>>(
     () => ({
       ecosystem: params.get("ecosystem") ?? undefined,

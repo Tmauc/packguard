@@ -107,7 +107,7 @@ describe("PackagesPage", () => {
 
   it("threads the workspace scope into the API call", async () => {
     (api.packages as ReturnType<typeof vi.fn>).mockResolvedValue(fixture([]));
-    wrap(["/packages?project=/tmp/repo-a"]);
+    wrap(["/packages?workspace=/tmp/repo-a"]);
     await waitFor(() => {
       expect(api.packages).toHaveBeenLastCalledWith(
         expect.any(Object),

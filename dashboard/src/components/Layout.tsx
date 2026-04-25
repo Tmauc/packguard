@@ -14,7 +14,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { WorkspaceSelector } from "@/components/layout/WorkspaceSelector";
-import { useScope } from "@/components/layout/workspace-scope";
+import {
+  useLegacyProjectRedirect,
+  useWorkspaceScope,
+} from "@/components/layout/workspace-scope";
 import { api } from "@/lib/api";
 import { useJobStatus } from "@/lib/useJobStatus";
 import { cn } from "@/lib/cn";
@@ -62,7 +65,7 @@ function severityDotClass(severity: ActionSeverity): string {
  * actions — a silent badge is visual noise.
  */
 function ActionsNavBadge() {
-  const scope = useScope();
+  const scope = useWorkspaceScope();
   const { data } = useQuery({
     queryKey: ["actions", scope ?? null, null],
     queryFn: () => api.actions({}, scope),
@@ -93,6 +96,17 @@ function ActionsNavBadge() {
 
 export function Layout() {
   const { trackJob, jobs } = useJobStatus();
+
+  // Phase 14.3a — keep v0.5 bookmarks alive: the legacy
+  // `?project=<absolute path>` form gets rewritten to
+  // `?project=<slug>&workspace=<path>` once the projects registry has
+  // loaded. The query is shared with future selector components via
+  // the cache key.
+  const projectsQuery = useQuery({
+    queryKey: ["projects"],
+    queryFn: api.projects,
+  });
+  useLegacyProjectRedirect(projectsQuery.data);
 
   const scan = useMutation({
     mutationFn: () => api.startScan(),
