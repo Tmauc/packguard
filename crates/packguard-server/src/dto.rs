@@ -307,7 +307,7 @@ pub struct PolicyDryRun {
     pub yaml: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[ts(export_to = "PolicyDryRunResult.ts")]
 pub struct PolicyDryRunResult {
     /// Per-bucket totals when the candidate policy is applied to the last

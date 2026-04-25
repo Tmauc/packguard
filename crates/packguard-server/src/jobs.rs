@@ -102,20 +102,48 @@ async fn run_scan_job(state: &AppState, repo: PathBuf) -> Result<serde_json::Val
         scan::run(&mut store, &repo).await?
     };
 
-    // Best-effort per-project write. Resolve a slug; skip silently on
-    // miss so a path outside any registered project doesn't fail the
-    // job — the legacy write is still authoritative.
-    let registered: Option<String> = {
-        let registry = state.projects.lock().await;
-        registry.get_by_path(&repo).ok().flatten().map(|p| p.slug)
+    // Per-project write. Resolve a slug, falling back to `_default_`
+    // for paths outside any `.git/` tree (matching the 14.1d
+    // migration's partition behaviour). If `_default_` isn't yet
+    // registered (fresh install, no migration has run on this home),
+    // create it so the per-project layer always has somewhere to
+    // land — that's what keeps `slug_paths()` non-empty for the
+    // aggregate fanout reads.
+    let slug = {
+        let mut registry = state.projects.lock().await;
+        let resolved = registry
+            .get_by_path(&repo)
+            .ok()
+            .flatten()
+            .or_else(|| registry.get_by_slug("_default_").ok().flatten());
+        match resolved {
+            Some(p) => p.slug,
+            None => {
+                registry
+                    .insert_with_slug("_default_", &repo, "_default_")?
+                    .slug
+            }
+        }
     };
-    if let Some(slug) = registered {
+    {
         let pstore = state.project_stores.get_or_open(&slug).await?;
         let mut pstore = pstore.lock().await;
         // Re-run the scan into the per-project store. Idempotent:
         // both stores get the same `save_project` payload from the
-        // same registry+filesystem state.
-        let _ = scan::run(&mut pstore, &repo).await?;
+        // same registry+filesystem state. Best-effort during the
+        // 14.2b transition — if per-project picks a different set of
+        // targets (its own `distinct_repo_paths` differs from the
+        // legacy's), the resulting "no manifest found" is fine to
+        // swallow because the legacy write is still authoritative.
+        // Commit 3 drops the legacy leg + treats per-project errors
+        // as fatal.
+        if let Err(err) = scan::run(&mut pstore, &repo).await {
+            tracing::warn!(
+                slug = %slug,
+                ?err,
+                "per-project scan dual-write skipped — legacy is authoritative until 14.2b.3",
+            );
+        }
     }
     Ok(serde_json::to_value(report)?)
 }

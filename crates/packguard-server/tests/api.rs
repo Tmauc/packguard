@@ -952,10 +952,13 @@ async fn api_graph_matches_service_output_when_repo_path_is_non_canonical() {
         let mut intel = IntelStore::open(temp.path()).unwrap();
         seed_react_chain_with_lodash_cve(&mut store, &mut intel, &raw_repo);
     }
+    // Phase 14.2b.2 — migrate so the per-project store sees the
+    // legacy seed; aggregate fanout reads it back out.
+    packguard_store::migration::migrate_legacy_if_present(temp.path()).unwrap();
 
     let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open(temp.path()).unwrap();
-    let projects = ProjectsRegistry::open_in_memory().unwrap();
+    let projects = ProjectsRegistry::open(temp.path()).unwrap();
     let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: canonical_repo.clone(),
@@ -1237,12 +1240,16 @@ async fn spawn_two_workspaces() -> (Harness, String, String) {
             .unwrap();
     }
 
-    // Reopen to mirror production `packguard ui` — ServerConfig.repo_path
-    // points at workspace_alpha so we can also assert that `?project=` is
-    // the source of truth, not the server's default.
+    // Phase 14.2b.2 — run the 14.1d migration so the per-project
+    // store gets the same data the closure just seeded into legacy.
+    // Both alpha and beta paths land under `_default_` (no `.git/`
+    // ancestor in the temp dir), with the workspace path filter
+    // doing the alpha-vs-beta isolation post-fanout.
+    packguard_store::migration::migrate_legacy_if_present(temp.path()).unwrap();
+
     let store = Store::open(&store_path).unwrap();
-    let intel = IntelStore::open_in_memory().unwrap();
-    let projects = ProjectsRegistry::open_in_memory().unwrap();
+    let intel = IntelStore::open(temp.path()).unwrap();
+    let projects = ProjectsRegistry::open(temp.path()).unwrap();
     let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: repo_a.clone(),
@@ -1440,36 +1447,36 @@ async fn legacy_store_intel_tables_are_no_longer_read() {
     let store_path = temp.path().join("store.db");
     let repo_path = temp.path().join("repo");
     std::fs::create_dir_all(&repo_path).unwrap();
+    let project = Project {
+        ecosystem: "npm",
+        root: repo_path.clone(),
+        manifest_path: repo_path.join("package.json"),
+        name: Some("demo".into()),
+        workspace: None,
+        dependencies: vec![Dependency {
+            name: "lodash".into(),
+            declared_range: "^4.17.0".into(),
+            installed: Some("4.17.20".into()),
+            kind: DepKind::Runtime,
+            source_lockfile: Some("package-lock.json".into()),
+        }],
+        edges: Vec::new(),
+        compatibility: Vec::new(),
+    };
+    let mut remotes = BTreeMap::new();
+    remotes.insert(
+        "lodash".into(),
+        RemotePackage {
+            name: "lodash".into(),
+            latest: Some("4.17.21".into()),
+            latest_published_at: Some("2024-06-01T00:00:00Z".into()),
+            versions: vec![],
+        },
+    );
     {
         let mut store = Store::open(&store_path).unwrap();
         // Seed the project + a HIGH advisory, but ONLY in the legacy
         // store. Leave IntelStore empty.
-        let project = Project {
-            ecosystem: "npm",
-            root: repo_path.clone(),
-            manifest_path: repo_path.join("package.json"),
-            name: Some("demo".into()),
-            workspace: None,
-            dependencies: vec![Dependency {
-                name: "lodash".into(),
-                declared_range: "^4.17.0".into(),
-                installed: Some("4.17.20".into()),
-                kind: DepKind::Runtime,
-                source_lockfile: Some("package-lock.json".into()),
-            }],
-            edges: Vec::new(),
-            compatibility: Vec::new(),
-        };
-        let mut remotes = BTreeMap::new();
-        remotes.insert(
-            "lodash".into(),
-            RemotePackage {
-                name: "lodash".into(),
-                latest: Some("4.17.21".into()),
-                latest_published_at: Some("2024-06-01T00:00:00Z".into()),
-                versions: vec![],
-            },
-        );
         store
             .save_project(&repo_path, &project, &remotes, "fp")
             .unwrap();
@@ -1500,6 +1507,26 @@ async fn legacy_store_intel_tables_are_no_longer_read() {
         store.persist_vulnerabilities(&[vuln]).unwrap();
     }
 
+    // Phase 14.2b.2 — aggregate fanout iterates `slug_paths()`. To
+    // surface the workspace under aggregate, save it into the
+    // per-project store directly (bypassing the migration so the
+    // legacy intel rows do NOT get copied — the test's contract
+    // is "intel handle stays empty even though legacy intel tables
+    // have a vuln"). Vuln stays only in the legacy `Store` intel
+    // tables; after the bascule no read path touches them.
+    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
+    {
+        let pstore = project_stores.get_or_open("_default_").await.unwrap();
+        let mut pstore = pstore.lock().await;
+        pstore
+            .save_project(&repo_path, &project, &remotes, "fp")
+            .unwrap();
+    }
+    {
+        let mut registry = ProjectsRegistry::open(temp.path()).unwrap();
+        let _ = registry.insert_with_slug("_default_", &repo_path, "_default_");
+    }
+
     let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open(temp.path()).unwrap();
     assert_eq!(
@@ -1507,8 +1534,7 @@ async fn legacy_store_intel_tables_are_no_longer_read() {
         0,
         "intel store must start empty for this contract"
     );
-    let projects = ProjectsRegistry::open_in_memory().unwrap();
-    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
+    let projects = ProjectsRegistry::open(temp.path()).unwrap();
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
         store,
@@ -1582,38 +1608,34 @@ async fn actions_generator_reads_cve_from_intel_store() {
     let store_path = temp.path().join("store.db");
     let repo_path = temp.path().join("repo");
     std::fs::create_dir_all(&repo_path).unwrap();
+    let project = Project {
+        ecosystem: "npm",
+        root: repo_path.clone(),
+        manifest_path: repo_path.join("package.json"),
+        name: Some("demo".into()),
+        workspace: None,
+        dependencies: vec![Dependency {
+            name: "lodash".into(),
+            declared_range: "^4.17.0".into(),
+            installed: Some("4.17.20".into()),
+            kind: DepKind::Runtime,
+            source_lockfile: Some("package-lock.json".into()),
+        }],
+        edges: Vec::new(),
+        compatibility: Vec::new(),
+    };
+    let mut remotes = BTreeMap::new();
+    remotes.insert(
+        "lodash".into(),
+        RemotePackage {
+            name: "lodash".into(),
+            latest: Some("4.17.21".into()),
+            latest_published_at: Some("2024-06-01T00:00:00Z".into()),
+            versions: vec![],
+        },
+    );
     {
-        let mut store = Store::open(&store_path).unwrap();
         let mut intel = IntelStore::open(temp.path()).unwrap();
-        let project = Project {
-            ecosystem: "npm",
-            root: repo_path.clone(),
-            manifest_path: repo_path.join("package.json"),
-            name: Some("demo".into()),
-            workspace: None,
-            dependencies: vec![Dependency {
-                name: "lodash".into(),
-                declared_range: "^4.17.0".into(),
-                installed: Some("4.17.20".into()),
-                kind: DepKind::Runtime,
-                source_lockfile: Some("package-lock.json".into()),
-            }],
-            edges: Vec::new(),
-            compatibility: Vec::new(),
-        };
-        let mut remotes = BTreeMap::new();
-        remotes.insert(
-            "lodash".into(),
-            RemotePackage {
-                name: "lodash".into(),
-                latest: Some("4.17.21".into()),
-                latest_published_at: Some("2024-06-01T00:00:00Z".into()),
-                versions: vec![],
-            },
-        );
-        store
-            .save_project(&repo_path, &project, &remotes, "fp")
-            .unwrap();
         let vuln = Vulnerability {
             source: "osv".into(),
             advisory_id: "GHSA-intel-only-crit".into(),
@@ -1639,18 +1661,29 @@ async fn actions_generator_reads_cve_from_intel_store() {
             modified_at: None,
         };
         intel.persist_vulnerabilities(&[vuln]).unwrap();
-        // Legacy Store stays empty for the intel tables — guard.
-        assert_eq!(
-            store.count_vulnerabilities().unwrap(),
-            0,
-            "legacy store must be empty for this contract"
-        );
+    }
+    // 14.2b.2 — aggregate fanout iterates `slug_paths()`. Save the
+    // workspace into the per-project `_default_` store so the action
+    // generator has a dependency to match the intel CVE against.
+    // Legacy `Store` stays empty (we never opened it for project
+    // data) — proves the action generator's read source is the
+    // per-project store, not legacy.
+    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
+    {
+        let pstore = project_stores.get_or_open("_default_").await.unwrap();
+        let mut pstore = pstore.lock().await;
+        pstore
+            .save_project(&repo_path, &project, &remotes, "fp")
+            .unwrap();
+    }
+    {
+        let mut registry = ProjectsRegistry::open(temp.path()).unwrap();
+        let _ = registry.insert_with_slug("_default_", &repo_path, "_default_");
     }
 
     let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open(temp.path()).unwrap();
-    let projects = ProjectsRegistry::open_in_memory().unwrap();
-    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
+    let projects = ProjectsRegistry::open(temp.path()).unwrap();
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
         store,
@@ -1726,10 +1759,20 @@ async fn overview_last_sync_at_reads_from_intel_store() {
             .unwrap();
     }
 
+    // 14.2b.2 — aggregate fanout needs at least one per-project
+    // store on disk to iterate. Create an empty `_default_` store +
+    // registry row so the iteration runs once and overview::build
+    // gets called (which reads `last_sync_at` from intel directly).
+    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
+    let _ = project_stores.get_or_open("_default_").await.unwrap();
+    {
+        let mut registry = ProjectsRegistry::open(temp.path()).unwrap();
+        let _ = registry.insert_with_slug("_default_", &repo_path, "_default_");
+    }
+
     let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open(temp.path()).unwrap();
-    let projects = ProjectsRegistry::open_in_memory().unwrap();
-    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
+    let projects = ProjectsRegistry::open(temp.path()).unwrap();
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
         store,
@@ -1760,15 +1803,20 @@ async fn overview_last_sync_at_reads_from_intel_store() {
 
 #[tokio::test]
 async fn unknown_project_query_returns_404_with_known_list() {
-    let (h, alpha, _beta) = spawn_two_workspaces().await;
+    let (h, _alpha, _beta) = spawn_two_workspaces().await;
     let url = format!("{}/api/overview?project=/nowhere", h.base);
     let resp = reqwest::get(&url).await.unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
     let body: serde_json::Value = resp.json().await.unwrap();
     let msg = body["error"]["message"].as_str().unwrap();
+    // 14.2b.2 — `/nowhere` doesn't exist on disk, so `resolve_scope`
+    // 404s with "path does not exist" without consulting the
+    // registry. The error keeps the "unknown workspace" prefix so the
+    // dashboard's existing copy ("workspace not found") still
+    // matches.
     assert!(
-        msg.contains("unknown workspace") && msg.contains(&alpha),
-        "error should list known workspaces: {msg}",
+        msg.contains("unknown workspace") && msg.contains("/nowhere"),
+        "error should mention the rejected workspace path: {msg}",
     );
 }
 
@@ -2088,12 +2136,14 @@ async fn slug_scope_reads_from_per_project_store_not_legacy() {
         "slug-scoped read must observe the per-project wipe — got {body}",
     );
 
-    // Aggregate stays on legacy for 14.2b (full fanout in 14.2b.2),
-    // so the same query without `?project=` still returns the row.
+    // 14.2b.2 — aggregate also fans out across per-project stores
+    // now (slug_paths fanout). Wiping the only registered store's
+    // packages turns the aggregate empty too. Legacy still has the
+    // rows but nothing reads from there anymore.
     let body_aggregate = get_json(&h, "/api/packages").await;
-    assert!(
-        body_aggregate["total"].as_u64().unwrap() > 0,
-        "aggregate scope still reads legacy in 14.2b.1: {body_aggregate}",
+    assert_eq!(
+        body_aggregate["total"], 0,
+        "aggregate scope must also reflect the per-project wipe: {body_aggregate}",
     );
 }
 

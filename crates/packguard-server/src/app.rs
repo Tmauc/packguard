@@ -97,18 +97,33 @@ async fn overview(
 ) -> Result<axum::response::Response, ApiError> {
     let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let body = match &scope {
-        ResolvedScope::Slug(project) => {
-            let pstore = s.project_stores.get_or_open(&project.slug).await?;
-            let pstore = pstore.lock().await;
-            services::overview::build(&pstore, &intel, None)?
-        }
-        _ => {
-            let store = s.store.lock().await;
-            services::overview::build(&store, &intel, scope.workspace_path())?
-        }
-    };
+    let slugs = scope.slugs(&s.project_stores)?;
+    let mut accum: Option<crate::dto::Overview> = None;
+    for slug in &slugs {
+        let pstore = s.project_stores.get_or_open(slug).await?;
+        let pstore = pstore.lock().await;
+        let part = services::overview::build(&pstore, &intel, scope.workspace_path())?;
+        accum = Some(match accum {
+            None => part,
+            Some(prev) => merge_overview(prev, part),
+        });
+    }
+    let body = accum.unwrap_or_else(empty_overview);
     Ok(with_deprecation_header(body, scope.is_legacy()))
+}
+
+fn empty_overview() -> crate::dto::Overview {
+    crate::dto::Overview {
+        health_score: None,
+        last_scan_at: None,
+        last_sync_at: None,
+        packages_total: 0,
+        packages_by_ecosystem: Vec::new(),
+        vulnerabilities: crate::dto::VulnSummary::default(),
+        malware: crate::dto::MalwareSummary::default(),
+        compliance: crate::dto::ComplianceSummary::default(),
+        top_risks: Vec::new(),
+    }
 }
 
 async fn packages_list(
@@ -117,17 +132,23 @@ async fn packages_list(
 ) -> Result<axum::response::Response, ApiError> {
     let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let body = match &scope {
-        ResolvedScope::Slug(project) => {
-            let pstore = s.project_stores.get_or_open(&project.slug).await?;
-            let pstore = pstore.lock().await;
-            services::packages::list(&pstore, &intel, &q, None)?
-        }
-        _ => {
-            let store = s.store.lock().await;
-            services::packages::list(&store, &intel, &q, scope.workspace_path())?
-        }
-    };
+    let slugs = scope.slugs(&s.project_stores)?;
+    let mut accum: Option<crate::dto::PackagesPage> = None;
+    for slug in &slugs {
+        let pstore = s.project_stores.get_or_open(slug).await?;
+        let pstore = pstore.lock().await;
+        let part = services::packages::list(&pstore, &intel, &q, scope.workspace_path())?;
+        accum = Some(match accum {
+            None => part,
+            Some(prev) => merge_packages_page(prev, part),
+        });
+    }
+    let body = accum.unwrap_or_else(|| crate::dto::PackagesPage {
+        total: 0,
+        page: q.page.unwrap_or(1).max(1),
+        per_page: q.per_page.unwrap_or(50).clamp(1, 500),
+        rows: Vec::new(),
+    });
     Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
@@ -138,18 +159,22 @@ async fn package_detail(
 ) -> Result<axum::response::Response, ApiError> {
     let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let detail = match &scope {
-        ResolvedScope::Slug(project) => {
-            let pstore = s.project_stores.get_or_open(&project.slug).await?;
-            let pstore = pstore.lock().await;
-            services::packages::detail(&pstore, &intel, &ecosystem, &name, None)?
-        }
-        _ => {
-            let store = s.store.lock().await;
-            services::packages::detail(&store, &intel, &ecosystem, &name, scope.workspace_path())?
+    let slugs = scope.slugs(&s.project_stores)?;
+    // Take the first store that has the package — package detail is
+    // single-row, no merge.
+    let mut detail: Option<crate::dto::PackageDetail> = None;
+    for slug in &slugs {
+        let pstore = s.project_stores.get_or_open(slug).await?;
+        let pstore = pstore.lock().await;
+        if let Some(d) =
+            services::packages::detail(&pstore, &intel, &ecosystem, &name, scope.workspace_path())?
+        {
+            detail = Some(d);
+            break;
         }
     }
-    .ok_or_else(|| ApiError::NotFound(format!("{ecosystem}/{name} not in scan cache")))?;
+    let detail = detail
+        .ok_or_else(|| ApiError::NotFound(format!("{ecosystem}/{name} not in scan cache")))?;
     Ok(with_deprecation_header(detail, scope.is_legacy()))
 }
 
@@ -163,7 +188,7 @@ async fn policy_get(
     // back to the server's repo_path.
     let repo: PathBuf = match &scope {
         ResolvedScope::Slug(project) => project.path.clone(),
-        ResolvedScope::LegacyPath(p) => p.clone(),
+        ResolvedScope::LegacyPath { workspace_path, .. } => workspace_path.clone(),
         ResolvedScope::Aggregate => s.repo_path.clone(),
     };
     let body = services::policies::read(&repo)?;
@@ -178,7 +203,7 @@ async fn policy_put(
     let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let repo: PathBuf = match &scope {
         ResolvedScope::Slug(project) => project.path.clone(),
-        ResolvedScope::LegacyPath(p) => p.clone(),
+        ResolvedScope::LegacyPath { workspace_path, .. } => workspace_path.clone(),
         ResolvedScope::Aggregate => s.repo_path.clone(),
     };
     let doc = services::policies::write(&repo, &body.yaml).map_err(policy_error_to_api)?;
@@ -191,31 +216,29 @@ async fn graph_get(
 ) -> Result<axum::response::Response, ApiError> {
     let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let body = match &scope {
-        ResolvedScope::Slug(project) => {
-            let pstore = s.project_stores.get_or_open(&project.slug).await?;
-            let pstore = pstore.lock().await;
-            services::graph::build(
-                &pstore,
-                &intel,
-                None,
-                q.workspace.as_deref(),
-                q.max_depth,
-                q.kind.as_deref(),
-            )?
-        }
-        _ => {
-            let store = s.store.lock().await;
-            services::graph::build(
-                &store,
-                &intel,
-                scope.workspace_path(),
-                q.workspace.as_deref(),
-                q.max_depth,
-                q.kind.as_deref(),
-            )?
-        }
-    };
+    let slugs = scope.slugs(&s.project_stores)?;
+    let mut accum: Option<crate::dto::GraphResponse> = None;
+    for slug in &slugs {
+        let pstore = s.project_stores.get_or_open(slug).await?;
+        let pstore = pstore.lock().await;
+        let part = services::graph::build(
+            &pstore,
+            &intel,
+            scope.workspace_path(),
+            q.workspace.as_deref(),
+            q.max_depth,
+            q.kind.as_deref(),
+        )?;
+        accum = Some(match accum {
+            None => part,
+            Some(prev) => merge_graph_response(prev, part),
+        });
+    }
+    let body = accum.unwrap_or_else(|| crate::dto::GraphResponse {
+        nodes: Vec::new(),
+        edges: Vec::new(),
+        oversize_warning: None,
+    });
     Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
@@ -225,22 +248,27 @@ async fn graph_contaminated(
 ) -> Result<axum::response::Response, ApiError> {
     let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let body = match &scope {
-        ResolvedScope::Slug(project) => {
-            let pstore = s.project_stores.get_or_open(&project.slug).await?;
-            let pstore = pstore.lock().await;
-            services::graph::contaminated_chains(&pstore, &intel, None, &q.vuln_id)?
-        }
-        _ => {
-            let store = s.store.lock().await;
-            services::graph::contaminated_chains(
-                &store,
-                &intel,
-                scope.workspace_path(),
-                &q.vuln_id,
-            )?
-        }
-    };
+    let slugs = scope.slugs(&s.project_stores)?;
+    let mut accum: Option<crate::dto::ContaminationResult> = None;
+    for slug in &slugs {
+        let pstore = s.project_stores.get_or_open(slug).await?;
+        let pstore = pstore.lock().await;
+        let part = services::graph::contaminated_chains(
+            &pstore,
+            &intel,
+            scope.workspace_path(),
+            &q.vuln_id,
+        )?;
+        accum = Some(match accum {
+            None => part,
+            Some(prev) => merge_contamination(prev, part),
+        });
+    }
+    let body = accum.unwrap_or_else(|| crate::dto::ContaminationResult {
+        hits: Vec::new(),
+        chains: Vec::new(),
+        from_cache: false,
+    });
     Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
@@ -250,17 +278,20 @@ async fn graph_vulnerabilities(
 ) -> Result<axum::response::Response, ApiError> {
     let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let body = match &scope {
-        ResolvedScope::Slug(project) => {
-            let pstore = s.project_stores.get_or_open(&project.slug).await?;
-            let pstore = pstore.lock().await;
-            services::graph::vulnerabilities(&pstore, &intel, None)?
-        }
-        _ => {
-            let store = s.store.lock().await;
-            services::graph::vulnerabilities(&store, &intel, scope.workspace_path())?
-        }
-    };
+    let slugs = scope.slugs(&s.project_stores)?;
+    let mut accum: Option<crate::dto::GraphVulnerabilityList> = None;
+    for slug in &slugs {
+        let pstore = s.project_stores.get_or_open(slug).await?;
+        let pstore = pstore.lock().await;
+        let part = services::graph::vulnerabilities(&pstore, &intel, scope.workspace_path())?;
+        accum = Some(match accum {
+            None => part,
+            Some(prev) => merge_vuln_list(prev, part),
+        });
+    }
+    let body = accum.unwrap_or_else(|| crate::dto::GraphVulnerabilityList {
+        entries: Vec::new(),
+    });
     Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
@@ -270,17 +301,24 @@ async fn package_compat(
     Query(q): Query<ProjectQuery>,
 ) -> Result<axum::response::Response, ApiError> {
     let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
-    let body = match &scope {
-        ResolvedScope::Slug(project) => {
-            let pstore = s.project_stores.get_or_open(&project.slug).await?;
-            let pstore = pstore.lock().await;
-            services::graph::compat(&pstore, None, &ecosystem, &name)?
-        }
-        _ => {
-            let store = s.store.lock().await;
-            services::graph::compat(&store, scope.workspace_path(), &ecosystem, &name)?
-        }
-    };
+    let slugs = scope.slugs(&s.project_stores)?;
+    let mut accum: Option<crate::dto::CompatResponse> = None;
+    for slug in &slugs {
+        let pstore = s.project_stores.get_or_open(slug).await?;
+        let pstore = pstore.lock().await;
+        let part = services::graph::compat(&pstore, scope.workspace_path(), &ecosystem, &name)?;
+        accum = Some(match accum {
+            None => part,
+            Some(prev) => merge_compat(prev, part),
+        });
+    }
+    let body = accum.unwrap_or_else(|| crate::dto::CompatResponse {
+        ecosystem: ecosystem.clone(),
+        name: name.clone(),
+        installed: None,
+        rows: Vec::new(),
+        dependents: Vec::new(),
+    });
     Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
@@ -289,25 +327,214 @@ async fn policy_dry_run(
     Query(q): Query<ProjectQuery>,
     Json(body): Json<PolicyDryRun>,
 ) -> Result<axum::response::Response, ApiError> {
+    // Validate the candidate YAML up-front so a malformed body
+    // surfaces 400 even when the registry has zero slugs to fan out
+    // (the per-store loop below is a no-op in that case and would
+    // otherwise return an empty 200).
+    services::policies::parse_candidate(&body.yaml).map_err(ApiError::BadRequest)?;
     let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let result = match &scope {
-        ResolvedScope::Slug(project) => {
-            let pstore = s.project_stores.get_or_open(&project.slug).await?;
-            let pstore = pstore.lock().await;
-            services::policies::dry_run(&pstore, &intel, &project.path, &body.yaml)
-        }
-        ResolvedScope::LegacyPath(p) => {
-            let store = s.store.lock().await;
-            services::policies::dry_run(&store, &intel, p, &body.yaml)
-        }
-        ResolvedScope::Aggregate => {
-            let store = s.store.lock().await;
-            services::policies::dry_run(&store, &intel, &s.repo_path, &body.yaml)
+    let repo = scope_repo_path(&scope, &s.repo_path);
+    let slugs = scope.slugs(&s.project_stores)?;
+    let mut combined: Option<crate::dto::PolicyDryRunResult> = None;
+    for slug in &slugs {
+        let pstore = s.project_stores.get_or_open(slug).await?;
+        let pstore = pstore.lock().await;
+        let part = services::policies::dry_run(&pstore, &intel, &repo, &body.yaml)
+            .map_err(policy_error_to_api)?;
+        combined = Some(match combined {
+            None => part,
+            Some(prev) => merge_dry_run(prev, part),
+        });
+    }
+    let result = combined.unwrap_or_default();
+    Ok(with_deprecation_header(result, scope.is_legacy()))
+}
+
+/// Choose the filesystem path the policy file lives at. Slug scope
+/// uses the project root; legacy path scope uses the original
+/// workspace path; aggregate / unknown falls back to the server's
+/// `repo_path`.
+fn scope_repo_path(scope: &ResolvedScope, fallback: &std::path::Path) -> PathBuf {
+    match scope {
+        ResolvedScope::Slug(project) => project.path.clone(),
+        ResolvedScope::LegacyPath { workspace_path, .. } => workspace_path.clone(),
+        ResolvedScope::Aggregate => fallback.to_path_buf(),
+    }
+}
+
+// ---- Phase 14.2b.2: per-store result mergers ------------------------------
+
+/// Sum two [`Overview`] payloads. Counts add, top_risks concat then
+/// truncate to 5 (sorted by score desc), `last_*_at` take the max.
+fn merge_overview(a: crate::dto::Overview, b: crate::dto::Overview) -> crate::dto::Overview {
+    use std::collections::BTreeMap;
+    let mut by_eco: BTreeMap<String, u32> = BTreeMap::new();
+    for row in a.packages_by_ecosystem.into_iter().chain(b.packages_by_ecosystem) {
+        *by_eco.entry(row.ecosystem).or_default() += row.count;
+    }
+    let packages_by_ecosystem = by_eco
+        .into_iter()
+        .map(|(ecosystem, count)| crate::dto::EcoCount { ecosystem, count })
+        .collect();
+    let packages_total = a.packages_total + b.packages_total;
+    let vulnerabilities = crate::dto::VulnSummary {
+        critical: a.vulnerabilities.critical + b.vulnerabilities.critical,
+        high: a.vulnerabilities.high + b.vulnerabilities.high,
+        medium: a.vulnerabilities.medium + b.vulnerabilities.medium,
+        low: a.vulnerabilities.low + b.vulnerabilities.low,
+        unknown: a.vulnerabilities.unknown + b.vulnerabilities.unknown,
+    };
+    let malware = crate::dto::MalwareSummary {
+        confirmed: a.malware.confirmed + b.malware.confirmed,
+        typosquat_suspects: a.malware.typosquat_suspects + b.malware.typosquat_suspects,
+    };
+    let compliance = crate::dto::ComplianceSummary {
+        compliant: a.compliance.compliant + b.compliance.compliant,
+        warnings: a.compliance.warnings + b.compliance.warnings,
+        violations: a.compliance.violations + b.compliance.violations,
+        insufficient: a.compliance.insufficient + b.compliance.insufficient,
+    };
+    let mut top_risks = a.top_risks;
+    top_risks.extend(b.top_risks);
+    top_risks.sort_by_key(|r| std::cmp::Reverse(r.score));
+    top_risks.truncate(5);
+    let health_score = packages_total
+        .checked_div(1)
+        .and_then(|_| (compliance.compliant * 100).checked_div(packages_total));
+    crate::dto::Overview {
+        health_score,
+        last_scan_at: max_opt(a.last_scan_at, b.last_scan_at),
+        last_sync_at: max_opt(a.last_sync_at, b.last_sync_at),
+        packages_total,
+        packages_by_ecosystem,
+        vulnerabilities,
+        malware,
+        compliance,
+        top_risks,
+    }
+}
+
+fn max_opt(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (None, x) | (x, None) => x,
+        (Some(x), Some(y)) => Some(if x >= y { x } else { y }),
+    }
+}
+
+/// Concat two `PackagesPage` results. Pagination is naive — total =
+/// sum of per-store totals, rows are appended. The dashboard reads
+/// `total` and `rows` independently, so a 2-store aggregate may show
+/// pagination boundaries that don't line up perfectly. v0.7.0's
+/// cross-project view is the natural place to revisit this.
+fn merge_packages_page(
+    mut a: crate::dto::PackagesPage,
+    b: crate::dto::PackagesPage,
+) -> crate::dto::PackagesPage {
+    a.total += b.total;
+    a.rows.extend(b.rows);
+    a
+}
+
+fn merge_graph_response(
+    mut a: crate::dto::GraphResponse,
+    b: crate::dto::GraphResponse,
+) -> crate::dto::GraphResponse {
+    use std::collections::BTreeSet;
+    let mut seen: BTreeSet<String> = a.nodes.iter().map(|n| n.id.clone()).collect();
+    for n in b.nodes {
+        if seen.insert(n.id.clone()) {
+            a.nodes.push(n);
         }
     }
-    .map_err(policy_error_to_api)?;
-    Ok(with_deprecation_header(result, scope.is_legacy()))
+    a.edges.extend(b.edges);
+    if let Some(w) = b.oversize_warning {
+        a.oversize_warning = Some(w);
+    }
+    a
+}
+
+fn merge_contamination(
+    mut a: crate::dto::ContaminationResult,
+    b: crate::dto::ContaminationResult,
+) -> crate::dto::ContaminationResult {
+    a.hits.extend(b.hits);
+    a.chains.extend(b.chains);
+    a.from_cache = a.from_cache && b.from_cache;
+    a
+}
+
+fn merge_vuln_list(
+    mut a: crate::dto::GraphVulnerabilityList,
+    b: crate::dto::GraphVulnerabilityList,
+) -> crate::dto::GraphVulnerabilityList {
+    use std::collections::BTreeSet;
+    let mut seen: BTreeSet<(String, String, String, String)> = a
+        .entries
+        .iter()
+        .map(|e| {
+            (
+                e.advisory_id.clone(),
+                e.ecosystem.clone(),
+                e.package_name.clone(),
+                e.package_version.clone(),
+            )
+        })
+        .collect();
+    for entry in b.entries {
+        let key = (
+            entry.advisory_id.clone(),
+            entry.ecosystem.clone(),
+            entry.package_name.clone(),
+            entry.package_version.clone(),
+        );
+        if seen.insert(key) {
+            a.entries.push(entry);
+        }
+    }
+    a
+}
+
+fn merge_compat(
+    mut a: crate::dto::CompatResponse,
+    b: crate::dto::CompatResponse,
+) -> crate::dto::CompatResponse {
+    use std::collections::BTreeMap;
+    let mut by_version: BTreeMap<String, crate::dto::CompatRow> =
+        a.rows.into_iter().map(|r| (r.version.clone(), r)).collect();
+    for r in b.rows {
+        by_version.entry(r.version.clone()).or_insert(r);
+    }
+    a.rows = by_version.into_values().collect();
+    if a.installed.is_none() {
+        a.installed = b.installed;
+    }
+    a.dependents.extend(b.dependents);
+    a
+}
+
+fn merge_workspaces(
+    mut a: crate::dto::WorkspacesResponse,
+    b: crate::dto::WorkspacesResponse,
+) -> crate::dto::WorkspacesResponse {
+    a.workspaces.extend(b.workspaces);
+    a
+}
+
+fn merge_dry_run(
+    mut a: crate::dto::PolicyDryRunResult,
+    b: crate::dto::PolicyDryRunResult,
+) -> crate::dto::PolicyDryRunResult {
+    a.candidate.compliant += b.candidate.compliant;
+    a.candidate.warnings += b.candidate.warnings;
+    a.candidate.violations += b.candidate.violations;
+    a.candidate.insufficient += b.candidate.insufficient;
+    a.current.compliant += b.current.compliant;
+    a.current.warnings += b.current.warnings;
+    a.current.violations += b.current.violations;
+    a.current.insufficient += b.current.insufficient;
+    a.changed_packages.extend(b.changed_packages);
+    a
 }
 
 fn policy_error_to_api(err: services::policies::PolicyError) -> ApiError {
@@ -327,73 +554,83 @@ const DEPRECATED_PATH_QUERY_HEADER: &str = "?project=<path> is deprecated, \
     use ?project=<slug> instead. \
     See https://packguard-docs.vercel.app/changelog/v0.6.0";
 
-/// Phase 14.1f scope outcome. Returned by [`resolve_scope`] so handlers
-/// know both *what* to filter by and *whether* the caller used the
-/// deprecated path-style query param (so the response can carry
-/// `X-PackGuard-Deprecated`).
+/// Phase 14.2b.2 — outcome of resolving `?project=<X>`. Every variant
+/// now resolves to a list of slugs the handler iterates against the
+/// `ProjectStoreCache`; the legacy global `Store` is no longer read
+/// by HTTP read handlers.
 ///
-/// The legacy `Option<PathBuf>` accessor is kept via [`Self::path`] so
-/// existing services keep filtering on `repos.path = ?` for now —
-/// project-aware SQL filtering lands in 14.2 alongside the per-project
-/// store cutover.
-/// Phase 14.2b — outcome of resolving `?project=<X>`.
-///
-/// 14.2b.1 routes only the *slug* form through the per-project store
-/// cache. The legacy *path* form keeps its 14.1f behavior (reads from
-/// the legacy global `Store`, just with the deprecation header) so
-/// the Phase 13 dashboard's `?project=<path>` calls continue to work
-/// while 14.2c migrates the CLI and 14.2d retires the legacy file.
-///
-/// Aggregate (`?project` absent) also stays on legacy: scans dual-
-/// write to both stores during the transition (see 14.2b's commit
-/// note), so aggregate reads stay byte-identical to the pre-bascule
-/// behavior.
+/// `LegacyPath` keeps the deprecation header alive for the Phase 13
+/// dashboard's `?project=<workspace path>` call shape but routes
+/// reads to the same per-project store as the slug form.
 #[derive(Debug, Clone)]
 enum ResolvedScope {
-    /// `?project` absent or empty → no filter. Reads route to the
-    /// legacy `Store` for 14.2b; aggregate-via-fanout across every
-    /// per-project store is 14.2b.2's job.
+    /// `?project` absent or empty → fan out across every project the
+    /// registry knows about (one read per per-project store under
+    /// `~/.packguard/projects/<slug>/`).
     Aggregate,
-    /// `?project=<slug>` (new form). The handler opens
-    /// `<home>/projects/<slug>/store.db` via `ProjectStoreCache` and
-    /// reads from that handle exclusively.
+    /// `?project=<slug>` (new form). Targets a single per-project
+    /// store; no workspace-path filter inside it.
     Slug(packguard_store::projects_registry::Project),
-    /// `?project=<absolute path>` (legacy form). 14.2b keeps this on
-    /// the legacy store + deprecation header. The 14.2b.2 fanout
-    /// alongside slug routing is deferred so this commit stays
-    /// scoped to read-side bascule for the slug form.
-    LegacyPath(PathBuf),
+    /// `?project=<absolute path>` (legacy form). The path resolves
+    /// via `ProjectsRegistry::get_by_path` (walk up to a `.git/`
+    /// ancestor) so reads land on the same per-project store as the
+    /// slug form. Paths outside any git tree fall back to the
+    /// `_default_` slug populated by the 14.1d migration. The
+    /// original workspace path is retained as a per-store filter so
+    /// the response stays scoped to the workspace the caller asked
+    /// for. Triggers `X-PackGuard-Deprecated` on the response.
+    LegacyPath {
+        project: packguard_store::projects_registry::Project,
+        workspace_path: PathBuf,
+    },
 }
 
 impl ResolvedScope {
-    /// Workspace-path filter passed to per-path services. Slug scopes
-    /// fall through to `None` — handlers route by slug instead.
+    /// Workspace-path filter passed to per-store services. Only
+    /// `LegacyPath` carries one — the slug form wants every workspace
+    /// under the project, and `Aggregate` fans out across every store.
     fn workspace_path(&self) -> Option<&std::path::Path> {
         match self {
             ResolvedScope::Aggregate | ResolvedScope::Slug(_) => None,
-            ResolvedScope::LegacyPath(p) => Some(p.as_path()),
+            ResolvedScope::LegacyPath { workspace_path, .. } => Some(workspace_path.as_path()),
         }
     }
 
     fn is_legacy(&self) -> bool {
-        matches!(self, ResolvedScope::LegacyPath(_))
+        matches!(self, ResolvedScope::LegacyPath { .. })
+    }
+
+    /// Slugs to iterate when fanning a request across per-project
+    /// stores. `Aggregate` returns every slug `slug_paths()` finds on
+    /// disk (sorted, deterministic). `Slug` and `LegacyPath` return
+    /// the single resolved slug.
+    fn slugs(
+        &self,
+        project_stores: &packguard_store::ProjectStoreCache,
+    ) -> Result<Vec<String>, ApiError> {
+        match self {
+            ResolvedScope::Aggregate => Ok(project_stores
+                .slug_paths()
+                .map_err(ApiError::Internal)?
+                .into_iter()
+                .map(|(s, _)| s)
+                .collect()),
+            ResolvedScope::Slug(p) => Ok(vec![p.slug.clone()]),
+            ResolvedScope::LegacyPath { project, .. } => Ok(vec![project.slug.clone()]),
+        }
     }
 }
 
-/// Validate + canonicalize the `?project=<X>` query param. Accepts a
-/// slug (new form) or an absolute path (legacy form, kept alive for
-/// the Phase 13 dashboard until 14.3 ships its slug-aware
-/// `ProjectSelector`).
+/// Validate + resolve the `?project=<X>` query param.
 ///
 /// - `None` / empty → [`ResolvedScope::Aggregate`].
-/// - Path (`/...`) → canonicalize, assert it lives in
-///   `store.distinct_repo_paths()`, return [`ResolvedScope::LegacyPath`].
-///   The legacy store is still the source of truth for path scopes
-///   in 14.2b.
-/// - Slug → registry lookup. The handler then routes through
-///   [`ProjectStoreCache`] for every read.
+/// - Path (`/...`) → walk up via `ProjectsRegistry::get_by_path`
+///   (looks for a `.git/` ancestor and matches the resulting slug).
+///   On miss, fall back to the `_default_` slug populated by the
+///   14.1d migration for paths outside any git tree. 404 if neither
+///   resolves.
+/// - Slug → `get_by_slug`. 404 if unknown.
 fn resolve_scope(
-    store: &packguard_store::Store,
     registry: &ProjectsRegistry,
     raw: Option<&str>,
 ) -> Result<ResolvedScope, ApiError> {
@@ -402,28 +639,51 @@ fn resolve_scope(
     };
     if raw.starts_with('/') {
         let candidate = PathBuf::from(raw);
-        let canonical = packguard_store::normalize_repo_path(&candidate);
-        let known: Vec<String> = store
-            .distinct_repo_paths()
-            .map_err(ApiError::Internal)?
-            .into_iter()
-            .map(|p| p.display().to_string())
-            .collect();
-        if known.iter().any(|p| p == &canonical) {
-            Ok(ResolvedScope::LegacyPath(PathBuf::from(canonical)))
-        } else {
-            let listed = if known.is_empty() {
-                "(no scans in store — run `packguard scan <path>` first)".to_string()
-            } else {
-                known
-                    .iter()
-                    .map(|p| format!("  - {p}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
-            Err(ApiError::NotFound(format!(
-                "unknown workspace '{raw}'. Known workspaces:\n{listed}"
-            )))
+        // Refuse paths that don't exist on disk — `/nowhere` should
+        // 404, not silently fall through to a `_default_` project.
+        let canonical = match candidate.canonicalize() {
+            Ok(c) => c,
+            Err(_) => {
+                return Err(ApiError::NotFound(format!(
+                    "unknown workspace '{raw}': path does not exist"
+                )));
+            }
+        };
+        // Walk up to the project root. For paths outside any `.git/`
+        // tree (test fixtures, scratch dirs), the 14.1d migration
+        // groups them under `_default_` — match that fallback so the
+        // legacy `?project=<workspace path>` query keeps resolving as
+        // long as the path is a real directory on disk.
+        let project = registry
+            .get_by_path(&canonical)
+            .ok()
+            .flatten()
+            .or_else(|| registry.get_by_slug("_default_").ok().flatten());
+        match project {
+            Some(p) => Ok(ResolvedScope::LegacyPath {
+                project: p,
+                workspace_path: canonical,
+            }),
+            None => {
+                let known: Vec<String> = registry
+                    .list_projects()
+                    .map_err(ApiError::Internal)?
+                    .into_iter()
+                    .map(|p| p.path.display().to_string())
+                    .collect();
+                let listed = if known.is_empty() {
+                    "(no projects registered — POST /api/projects first)".to_string()
+                } else {
+                    known
+                        .iter()
+                        .map(|p| format!("  - {p}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                Err(ApiError::NotFound(format!(
+                    "unknown workspace '{raw}'. Known projects:\n{listed}"
+                )))
+            }
         }
     } else {
         let project = registry.get_by_slug(raw).map_err(ApiError::Internal)?;
@@ -454,14 +714,13 @@ fn resolve_scope(
 }
 
 /// Lock-then-resolve helper. Acquires the legacy `Store` and the
-/// projects registry locks, runs [`resolve_scope`], drops both locks
-/// before returning. Handlers then re-lock whichever store the scope
-/// dictates (per-project for `Slug`, legacy for `Aggregate` /
-/// `LegacyPath`) without keeping a stale registry guard alive.
+/// projects registry lock, runs [`resolve_scope`], drops it before
+/// returning. Handlers then iterate per-project stores via
+/// [`ProjectStoreCache`] without keeping a registry guard alive
+/// across the read.
 async fn resolve_scope_locked(s: &AppState, raw: Option<&str>) -> Result<ResolvedScope, ApiError> {
-    let store = s.store.lock().await;
     let registry = s.projects.lock().await;
-    resolve_scope(&store, &registry, raw)
+    resolve_scope(&registry, raw)
 }
 
 /// Wrap a serializable body with `X-PackGuard-Deprecated` when the
@@ -543,14 +802,26 @@ async fn job_get(
         .ok_or_else(|| ApiError::NotFound(format!("job {id} not found")))
 }
 
-/// Phase 7a: every scanned repo as a workspace row the UI selector can
-/// paint. Already sorted by `last_scan_at DESC` upstream (see
-/// `store::scans_index`) — the most-recent scan lands at index 0, which
-/// is also what `packguard ui` picks as the default workspace when no
-/// path is passed (Polish-bis-2).
+/// Phase 7a / 14.2b.2: every scanned workspace across every
+/// per-project store. Aggregated via `slug_paths()` fanout — each
+/// per-project store contributes its `scans_index()` rows; results
+/// are concatenated. Already-sorted-by-last-scan-DESC ordering
+/// holds *within* each store but isn't globally re-sorted: the
+/// dashboard's selector tolerates per-project clusters.
 async fn workspaces_list(State(s): State<AppState>) -> Result<Json<WorkspacesResponse>, ApiError> {
-    let store = s.store.lock().await;
-    Ok(Json(services::workspaces::list(&store)?))
+    let mut accum: Option<WorkspacesResponse> = None;
+    for (slug, _) in s.project_stores.slug_paths()? {
+        let pstore = s.project_stores.get_or_open(&slug).await?;
+        let pstore = pstore.lock().await;
+        let part = services::workspaces::list(&pstore)?;
+        accum = Some(match accum {
+            None => part,
+            Some(prev) => merge_workspaces(prev, part),
+        });
+    }
+    Ok(Json(accum.unwrap_or_else(|| WorkspacesResponse {
+        workspaces: Vec::new(),
+    })))
 }
 
 // ---- Phase 12a: Page Actions ----------------------------------------------
@@ -564,32 +835,26 @@ async fn actions_list(
     let now = chrono::Utc::now();
     let include_dismissed = q.include_dismissed.unwrap_or(false);
     let include_deferred = q.include_deferred.unwrap_or(false);
-    let mut actions = match &scope {
-        ResolvedScope::Slug(project) => {
-            let pstore = s.project_stores.get_or_open(&project.slug).await?;
-            let pstore = pstore.lock().await;
-            packguard_actions::collect_all(
-                &pstore,
-                &intel,
-                None,
-                now,
-                include_dismissed,
-                include_deferred,
-            )
-        }
-        _ => {
-            let store = s.store.lock().await;
-            packguard_actions::collect_all(
-                &store,
-                &intel,
-                scope.workspace_path(),
-                now,
-                include_dismissed,
-                include_deferred,
-            )
-        }
+    let slugs = scope.slugs(&s.project_stores)?;
+    let mut actions: Vec<packguard_actions::Action> = Vec::new();
+    for slug in &slugs {
+        let pstore = s.project_stores.get_or_open(slug).await?;
+        let pstore = pstore.lock().await;
+        let part = packguard_actions::collect_all(
+            &pstore,
+            &intel,
+            scope.workspace_path(),
+            now,
+            include_dismissed,
+            include_deferred,
+        )
+        .map_err(ApiError::Internal)?;
+        actions.extend(part);
     }
-    .map_err(ApiError::Internal)?;
+    // The single-store generator already orders by severity desc; the
+    // multi-store concat preserves that ordering within each store
+    // chunk. For v0.6.0 (1 project) the chunk count is 1; multi-
+    // project re-sort is a 14.3+ concern.
     let total = actions.len() as u32;
     if let Some(raw) = q.min_severity.as_deref() {
         if let Some(threshold) = packguard_actions::ActionSeverity::parse(raw) {
