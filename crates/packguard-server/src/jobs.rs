@@ -82,8 +82,13 @@ async fn run_scan_job(state: &AppState, repo: PathBuf) -> Result<serde_json::Val
 }
 
 async fn run_sync_job(state: &AppState) -> Result<serde_json::Value> {
+    // Phase 14.1e.2 — the sync flow now writes to IntelStore for every
+    // intel-wide table (sync_log, vulnerabilities, malware_reports);
+    // Store stays in the call only for `watched_packages()`, a
+    // project-wide read that migrates with the project layer in 14.2.
+    let mut intel = state.intel.lock().await;
     let mut store = state.store.lock().await;
-    let report = sync_intel::run(&mut store).await?;
+    let report = sync_intel::run(&mut intel, &mut store).await?;
     Ok(serde_json::to_value(report)?)
 }
 

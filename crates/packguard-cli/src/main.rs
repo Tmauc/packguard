@@ -396,6 +396,13 @@ async fn sync(
 ) -> Result<()> {
     let mut store = Store::open(store_path)
         .with_context(|| format!("opening store at {}", store_path.display()))?;
+    // Phase 14.1e.2 — every intel-wide write (sync_log, vulnerabilities,
+    // malware_reports) goes to IntelStore now. Store is still opened
+    // because `watched_packages()` reads from project-wide tables that
+    // migrate with the project layer in 14.2.
+    let home = home_from_store_path(store_path);
+    let mut intel = IntelStore::open(&home)
+        .with_context(|| format!("opening intel store under {}", home.display()))?;
 
     let watched: packguard_intel::WatchedPackages = if include_all {
         None
@@ -412,7 +419,7 @@ async fn sync(
 
     if !skip_osv {
         for dump in [&packguard_intel::osv::NPM, &packguard_intel::osv::PYPI] {
-            let prior_state = store.get_sync_state(dump.id)?;
+            let prior_state = intel.get_sync_state(dump.id)?;
             let prior = packguard_intel::osv::PriorSyncState {
                 etag: prior_state.as_ref().and_then(|s| s.etag.clone()),
                 last_modified: prior_state.as_ref().and_then(|s| s.last_modified.clone()),
@@ -430,7 +437,7 @@ async fn sync(
                         // the 304 branch that returns
                         // `updated_state: None`.
                         let state = refreshed_sync_state_for_304(prior_state, Utc::now());
-                        store.put_sync_state(dump.id, &state)?;
+                        intel.put_sync_state(dump.id, &state)?;
                         println!(
                             "{} {} — not modified since last sync (re-checked)",
                             "=".dimmed(),
@@ -438,9 +445,9 @@ async fn sync(
                         );
                     } else {
                         let persisted_v =
-                            store.persist_vulnerabilities(&fetched.vulnerabilities)?;
+                            intel.persist_vulnerabilities(&fetched.vulnerabilities)?;
                         let persisted_m =
-                            store.persist_malware_reports(&fetched.malware_reports)?;
+                            intel.persist_malware_reports(&fetched.malware_reports)?;
                         let persisted = persisted_v + persisted_m;
                         if let Some(updated) = fetched.updated_state {
                             let mut state = prior_state.unwrap_or_default();
@@ -448,7 +455,7 @@ async fn sync(
                             state.last_modified = updated.last_modified;
                             state.synced_at = Some(chrono::Utc::now().to_rfc3339());
                             state.record_count = persisted as i64;
-                            store.put_sync_state(dump.id, &state)?;
+                            intel.put_sync_state(dump.id, &state)?;
                         }
                         println!(
                             "{} {} — scanned {}, persisted {} vuln + {} malware {}",
@@ -478,14 +485,14 @@ async fn sync(
             .unwrap_or_else(packguard_intel::ghsa::default_cache_dir)?;
         match packguard_intel::ghsa::sync(&cache, &watched) {
             Ok((vulns, malware, summary, head)) => {
-                let persisted_v = store.persist_vulnerabilities(&vulns)?;
-                let persisted_m = store.persist_malware_reports(&malware)?;
+                let persisted_v = intel.persist_vulnerabilities(&vulns)?;
+                let persisted_m = intel.persist_malware_reports(&malware)?;
                 let persisted = persisted_v + persisted_m;
-                let mut state = store.get_sync_state("ghsa")?.unwrap_or_default();
+                let mut state = intel.get_sync_state("ghsa")?.unwrap_or_default();
                 state.last_commit = Some(head);
                 state.synced_at = Some(chrono::Utc::now().to_rfc3339());
                 state.record_count = persisted as i64;
-                store.put_sync_state("ghsa", &state)?;
+                intel.put_sync_state("ghsa", &state)?;
                 println!(
                     "{} ghsa — scanned {}, persisted {} vuln + {} malware",
                     "✓".green(),
@@ -500,10 +507,10 @@ async fn sync(
         }
     }
 
-    let total = store.count_vulnerabilities()?;
+    let total = intel.count_vulnerabilities()?;
     // ---- typosquat refresh + scoring ----
-    refresh_typosquat_lists(&mut store).await;
-    let typosquat_persisted = score_typosquat_against_watched(&mut store)?;
+    refresh_typosquat_lists(&mut intel).await;
+    let typosquat_persisted = score_typosquat_against_watched(&mut intel, &mut store)?;
     if typosquat_persisted > 0 {
         println!(
             "{} typosquat — {} suspect package(s) flagged",
@@ -512,7 +519,7 @@ async fn sync(
         );
     }
 
-    let mal_total = store.count_malware_reports()?;
+    let mal_total = intel.count_malware_reports()?;
     println!(
         "{} store holds {} advisories + {} malware reports",
         "📚".dimmed(),
@@ -540,9 +547,9 @@ fn refreshed_sync_state_for_304(
 /// Refresh the PyPI top-N reference list when the cache is older than 7
 /// days. Failures are non-fatal — typosquat scoring will fall back to the
 /// embedded npm baseline + whatever the cache already holds.
-async fn refresh_typosquat_lists(store: &mut Store) {
+async fn refresh_typosquat_lists(intel: &mut IntelStore) {
     const KIND: &str = "typosquat-pypi-top";
-    let prior = match store.get_sync_state(KIND) {
+    let prior = match intel.get_sync_state(KIND) {
         Ok(s) => s,
         Err(err) => {
             tracing::warn!(?err, "typosquat sync_log read failed");
@@ -563,7 +570,7 @@ async fn refresh_typosquat_lists(store: &mut Store) {
             let mut state = prior.unwrap_or_default();
             state.synced_at = Some(Utc::now().to_rfc3339());
             state.record_count = n as i64;
-            if let Err(err) = store.put_sync_state(KIND, &state) {
+            if let Err(err) = intel.put_sync_state(KIND, &state) {
                 tracing::warn!(?err, "typosquat sync_log write failed");
             }
             println!(
@@ -582,8 +589,11 @@ async fn refresh_typosquat_lists(store: &mut Store) {
     }
 }
 
-/// Score every watched package and persist the suspects.
-fn score_typosquat_against_watched(store: &mut Store) -> Result<usize> {
+/// Score every watched package and persist the suspects to IntelStore.
+/// `watched_packages()` still reads from the legacy [`Store`] because
+/// it joins project-wide tables (`packages`, `dependencies`); that
+/// move waits for the project-layer cutover in 14.2.
+fn score_typosquat_against_watched(intel: &mut IntelStore, store: &mut Store) -> Result<usize> {
     let watched = store.watched_packages()?;
     if watched.is_empty() {
         return Ok(0);
@@ -606,7 +616,7 @@ fn score_typosquat_against_watched(store: &mut Store) -> Result<usize> {
     if reports.is_empty() {
         return Ok(0);
     }
-    store.persist_malware_reports(&reports)?;
+    intel.persist_malware_reports(&reports)?;
     Ok(reports.len())
 }
 
