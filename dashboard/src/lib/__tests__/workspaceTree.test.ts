@@ -100,6 +100,83 @@ describe("buildWorkspaceTree", () => {
     ]);
   });
 
+  it("handles a path that is both a folder ancestor and a leaf workspace (Turborepo)", () => {
+    // pnpm/Turborepo monorepos can register `front` as a workspace and
+    // `front/vesta`, `front/mellona` as nested workspaces. The tree must
+    // show `front` as a folder containing a `(root)` self-leaf alongside
+    // its sub-workspaces — never clobber one with the other.
+    const tree = buildWorkspaceTree([
+      "/repo/front",
+      "/repo/front/vesta",
+      "/repo/front/mellona",
+      "/repo/services/backend",
+    ]);
+    const front = tree.find(
+      (n) => n.kind === "folder" && n.label === "front",
+    ) as FolderNode;
+    expect(front).toBeDefined();
+    expect(front.children).toHaveLength(3);
+    const labels = front.children.map((c) => c.label);
+    expect(labels).toContain("(root)");
+    expect(labels).toContain("vesta");
+    expect(labels).toContain("mellona");
+    const rootLeaf = front.children.find(
+      (c) => c.kind === "leaf" && c.label === "(root)",
+    ) as WorkspaceLeaf;
+    expect(rootLeaf.path).toBe("/repo/front");
+  });
+
+  it("works regardless of insertion order (leaf first vs descendant first)", () => {
+    // Same shape as the Turborepo case but `/repo/front` arrives last,
+    // forcing the leaf-into-existing-folder branch instead of the
+    // promote-folder-from-existing-leaf branch.
+    const tree = buildWorkspaceTree([
+      "/repo/front/vesta",
+      "/repo/front/mellona",
+      "/repo/front",
+      "/repo/services/backend",
+    ]);
+    const front = tree.find(
+      (n) => n.kind === "folder" && n.label === "front",
+    ) as FolderNode;
+    expect(front).toBeDefined();
+    expect(front.children).toHaveLength(3);
+    const rootLeaf = front.children.find(
+      (c) => c.kind === "leaf" && c.label === "(root)",
+    ) as WorkspaceLeaf;
+    expect(rootLeaf.path).toBe("/repo/front");
+  });
+
+  it("sorts the (root) self-leaf first within its folder", () => {
+    const tree = buildWorkspaceTree([
+      "/repo/front",
+      "/repo/front/aaa",
+      "/repo/front/zzz",
+      "/repo/services/backend",
+    ]);
+    const front = tree.find(
+      (n) => n.kind === "folder" && n.label === "front",
+    ) as FolderNode;
+    expect(front.children.map((c) => c.label)).toEqual(["(root)", "aaa", "zzz"]);
+  });
+
+  it("does not collapse a (root) self-leaf into a compound folder label", () => {
+    // The single-child collapse rule normally folds `front/{vesta}` into
+    // a `front/vesta` leaf, but a (root) self-leaf carries semantic
+    // information that the merge would erase — keep the folder explicit.
+    const tree = buildWorkspaceTree([
+      "/repo/front",
+      "/repo/front/vesta",
+      "/repo/services/backend",
+    ]);
+    const front = tree.find(
+      (n) => n.kind === "folder" && n.label === "front",
+    ) as FolderNode;
+    expect(front.kind).toBe("folder");
+    expect(front.children).toHaveLength(2);
+    expect(front.children.map((c) => c.label)).toEqual(["(root)", "vesta"]);
+  });
+
   it("stamps every leaf with the folder IDs on its path from the tree root", () => {
     const tree = buildWorkspaceTree([
       "/repo/front/vesta",

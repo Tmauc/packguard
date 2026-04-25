@@ -80,6 +80,16 @@ function ensureFolder(
     id: idPrefix === "" ? segment : `${idPrefix}/${segment}`,
     children: new Map(),
   };
+  // Turborepo-style: a previous insertion registered this segment as a
+  // leaf workspace, but a subsequent path needs the same segment to act
+  // as a folder ancestor. Promote — keep the leaf reachable inside the
+  // new folder under a sentinel key with the (root) marker label.
+  if (existing && existing.kind === "leaf") {
+    fresh.children.set("__self__", {
+      ...existing,
+      label: "(root)",
+    });
+  }
   parent.children.set(segment, fresh);
   return fresh;
 }
@@ -94,12 +104,29 @@ function collapse(node: MutableFolder | WorkspaceLeaf): TreeNode {
   const children = Array.from(node.children.values())
     .map(collapse)
     // Alphabetical sort within each folder — leaves and folders are
-    // interleaved, keeping the listing predictable.
-    .sort((a, b) => a.label.localeCompare(b.label));
+    // interleaved, keeping the listing predictable. The (root) self-leaf
+    // marker (set when a workspace path is also a folder ancestor) sorts
+    // first so users find the parent workspace before its sub-workspaces.
+    .sort((a, b) => {
+      if (a.label === "(root)") return -1;
+      if (b.label === "(root)") return 1;
+      return a.label.localeCompare(b.label);
+    });
 
   if (children.length === 1) {
     const only = children[0];
     if (node.label === "") return only;
+    // A `(root)` self-leaf signals "this folder is also a workspace" —
+    // merging into a `front/(root)` compound label would erase that
+    // semantic, so keep the folder explicit.
+    if (only.kind === "leaf" && only.label === "(root)") {
+      return {
+        kind: "folder",
+        label: node.label,
+        id: node.id,
+        children,
+      };
+    }
     return {
       ...only,
       label: `${node.label}/${only.label}`,
@@ -143,12 +170,25 @@ export function buildWorkspaceTree(paths: string[]): TreeNode[] {
       cursor = ensureFolder(cursor, remainder[j], cursor.id);
     }
     const leafLabel = remainder[remainder.length - 1];
-    cursor.children.set(leafLabel, {
-      kind: "leaf",
-      label: leafLabel,
-      path: paths[i],
-      ancestors: [],
-    });
+    const existing = cursor.children.get(leafLabel);
+    if (existing && existing.kind === "folder") {
+      // The segment was already promoted to a folder by a previously
+      // inserted descendant path. Register the current workspace as the
+      // folder's (root) self-leaf instead of clobbering its sub-workspaces.
+      existing.children.set("__self__", {
+        kind: "leaf",
+        label: "(root)",
+        path: paths[i],
+        ancestors: [],
+      });
+    } else {
+      cursor.children.set(leafLabel, {
+        kind: "leaf",
+        label: leafLabel,
+        path: paths[i],
+        ancestors: [],
+      });
+    }
   }
   const collapsed = collapse(root);
   if (collapsed.kind === "leaf") {
