@@ -13,7 +13,10 @@ use rusqlite::{params, Connection};
 use serde_json::json;
 use tempfile::TempDir;
 
-use crate::migration::{migrate_legacy_if_present, MigrationReport};
+use crate::migration::{
+    migrate_legacy_if_present, rename_legacy_if_migration_complete, LegacyRenameOutcome,
+    MigrationReport,
+};
 use crate::{IntelStore, ProjectsRegistry, Store, SyncState};
 
 // --- fixture helpers ---------------------------------------------------
@@ -607,6 +610,89 @@ fn v8_does_not_apply_to_renamed_legacy_backup() {
             ".v0.5-backup must keep {table} (V7 schema frozen)"
         );
     }
+}
+
+// ---- 14.2d.3: legacy rename ---------------------------------------------
+
+#[test]
+fn rename_legacy_when_migration_complete_renames_atomically() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join(".packguard");
+    let _ = build_dual_project_legacy(&home);
+    // Run the migration so intel.db + projects.db + ≥1 project entry
+    // exist — the precondition the rename helper checks for.
+    migrate_legacy_if_present(&home).unwrap();
+    let legacy = home.join("store.db");
+    let backup = home.join("store.db.v0.5-backup");
+    assert!(legacy.is_file());
+    assert!(!backup.exists());
+
+    let outcome = rename_legacy_if_migration_complete(&home).unwrap();
+    assert_eq!(outcome, LegacyRenameOutcome::Renamed);
+    assert!(!legacy.exists(), "legacy must be gone after rename");
+    assert!(backup.is_file(), "backup must exist after rename");
+}
+
+#[test]
+fn rename_legacy_no_op_if_already_renamed() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join(".packguard");
+    let _ = build_dual_project_legacy(&home);
+    migrate_legacy_if_present(&home).unwrap();
+
+    // First rename — Renamed.
+    let first = rename_legacy_if_migration_complete(&home).unwrap();
+    assert_eq!(first, LegacyRenameOutcome::Renamed);
+    // Second invocation — AlreadyRenamed (legacy gone, backup exists).
+    let second = rename_legacy_if_migration_complete(&home).unwrap();
+    assert_eq!(second, LegacyRenameOutcome::AlreadyRenamed);
+    // Backup byte-identical to whatever the legacy held — sanity
+    // check that the no-op didn't touch the file.
+    let backup = home.join("store.db.v0.5-backup");
+    assert!(backup.is_file());
+}
+
+#[test]
+fn rename_legacy_no_op_if_intel_or_registry_missing() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join(".packguard");
+    std::fs::create_dir_all(&home).unwrap();
+    // Seed only the legacy — no intel.db, no projects.db.
+    let legacy = home.join("store.db");
+    let _ = Store::open_legacy_for_tests(&legacy).unwrap();
+    assert!(legacy.is_file());
+
+    let outcome = rename_legacy_if_migration_complete(&home).unwrap();
+    assert_eq!(outcome, LegacyRenameOutcome::MigrationIncomplete);
+    assert!(legacy.exists(), "incomplete migration must keep the legacy");
+}
+
+#[test]
+fn rename_legacy_no_op_if_no_legacy_present() {
+    // Fresh install: home doesn't have a `store.db` to rename.
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join(".packguard");
+    std::fs::create_dir_all(&home).unwrap();
+    let outcome = rename_legacy_if_migration_complete(&home).unwrap();
+    assert_eq!(outcome, LegacyRenameOutcome::NoLegacyPresent);
+}
+
+#[test]
+fn rename_legacy_refuses_to_clobber_existing_backup() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join(".packguard");
+    let _ = build_dual_project_legacy(&home);
+    migrate_legacy_if_present(&home).unwrap();
+    // Plant a backup file from a previous boot before re-renaming.
+    let backup = home.join("store.db.v0.5-backup");
+    std::fs::write(&backup, b"sentinel-existing-backup").unwrap();
+
+    let outcome = rename_legacy_if_migration_complete(&home).unwrap();
+    assert_eq!(outcome, LegacyRenameOutcome::BackupAlreadyExists);
+    // Both files still present — neither was clobbered.
+    assert!(home.join("store.db").is_file());
+    assert!(backup.is_file());
+    assert_eq!(std::fs::read(&backup).unwrap(), b"sentinel-existing-backup");
 }
 
 #[test]

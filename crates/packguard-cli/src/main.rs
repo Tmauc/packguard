@@ -294,10 +294,37 @@ async fn main() -> Result<()> {
             migration_report.workspaces_migrated,
             migration_report.vulnerabilities_migrated,
         );
-        eprintln!(
-            "  Legacy store at {}/store.db kept intact (read by project layer until v0.6.0 cutover).",
-            packguard_home.display()
-        );
+    }
+
+    // Phase 14.2d.3 — once the per-project layout is fully populated,
+    // retire the legacy `~/.packguard/store.db` by renaming it to
+    // `.v0.5-backup`. Idempotent: re-runs after the first cutover
+    // see `AlreadyRenamed` / `NoLegacyPresent` and stay silent.
+    use packguard_store::migration::LegacyRenameOutcome;
+    match packguard_store::migration::rename_legacy_if_migration_complete(&packguard_home)
+        .context("renaming legacy store to .v0.5-backup")?
+    {
+        LegacyRenameOutcome::Renamed => {
+            eprintln!(
+                "{} Renamed {}/store.db → store.db.v0.5-backup (legacy retired, per-project layer is now the source of truth).",
+                "✓".green(),
+                packguard_home.display(),
+            );
+            eprintln!("  You can delete the backup once you're confident in the v0.6.0 migration.");
+        }
+        LegacyRenameOutcome::BackupAlreadyExists => {
+            eprintln!(
+                "{} Both {}/store.db and store.db.v0.5-backup exist — refusing to clobber. \
+                 Inspect manually and delete the stale file before re-launching.",
+                "warn".yellow(),
+                packguard_home.display(),
+            );
+        }
+        LegacyRenameOutcome::AlreadyRenamed
+        | LegacyRenameOutcome::NoLegacyPresent
+        | LegacyRenameOutcome::MigrationIncomplete => {
+            // Silent — common cases on every subsequent boot.
+        }
     }
 
     let mut registry = ProjectsRegistry::open(&packguard_home).with_context(|| {

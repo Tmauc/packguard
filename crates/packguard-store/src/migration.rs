@@ -136,6 +136,66 @@ fn is_already_migrated(packguard_home: &Path) -> Result<bool> {
     Ok(!registry.list_projects()?.is_empty())
 }
 
+/// Outcome of [`rename_legacy_if_migration_complete`]. Carried back so
+/// the caller (CLI / future server entry-points) can decide whether to
+/// surface a banner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegacyRenameOutcome {
+    /// `<home>/store.db` was renamed to `<home>/store.db.v0.5-backup`.
+    Renamed,
+    /// Already renamed on a previous boot. No-op this time.
+    AlreadyRenamed,
+    /// No legacy file present (fresh install or already cleaned up).
+    NoLegacyPresent,
+    /// Migration outputs incomplete (intel.db / projects.db missing,
+    /// or registry empty). The legacy is kept as the source of truth
+    /// until the migration finishes.
+    MigrationIncomplete,
+    /// Both the legacy and the backup exist — refuse to overwrite a
+    /// pre-existing backup. User must clean up manually.
+    BackupAlreadyExists,
+}
+
+/// Phase 14.2d.3 — rename `<home>/store.db` to
+/// `<home>/store.db.v0.5-backup` once the per-project migration is
+/// confirmed complete (intel.db + projects.db + ≥1 registry entry).
+/// Idempotent: re-running on an already-renamed home is a no-op,
+/// re-running before migration finishes leaves the legacy in place.
+///
+/// `std::fs::rename` is atomic on the same filesystem (which the
+/// backup always is — same parent dir), so a crash mid-rename leaves
+/// the file at exactly one of the two paths.
+pub fn rename_legacy_if_migration_complete(packguard_home: &Path) -> Result<LegacyRenameOutcome> {
+    let legacy = packguard_home.join("store.db");
+    let backup = packguard_home.join("store.db.v0.5-backup");
+
+    if !legacy.is_file() {
+        // Distinguish "fresh install" from "already renamed" so the CLI
+        // can suppress the "you can delete the backup" hint outside
+        // the cutover boot.
+        return Ok(if backup.exists() {
+            LegacyRenameOutcome::AlreadyRenamed
+        } else {
+            LegacyRenameOutcome::NoLegacyPresent
+        });
+    }
+    if backup.exists() {
+        // Both files present — defensive: the migration shouldn't be
+        // re-creating `store.db` once renamed. Refuse to clobber.
+        return Ok(LegacyRenameOutcome::BackupAlreadyExists);
+    }
+    // Verify the new layout is fully populated before retiring the
+    // legacy. `is_already_migrated` already checks intel.db +
+    // projects.db + ≥1 project row.
+    if !is_already_migrated(packguard_home)? {
+        return Ok(LegacyRenameOutcome::MigrationIncomplete);
+    }
+
+    std::fs::rename(&legacy, &backup)
+        .with_context(|| format!("renaming {} to {}", legacy.display(), backup.display()))?;
+    Ok(LegacyRenameOutcome::Renamed)
+}
+
 // --- Intel-wide --------------------------------------------------------
 
 /// Returns `true` when the legacy SQLite holds a table with this name.

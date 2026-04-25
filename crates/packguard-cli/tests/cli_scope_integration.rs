@@ -404,7 +404,10 @@ fn cli_audit_reads_per_project_store_via_resolved_slug() {
 fn cli_does_not_touch_legacy_store_db_after_scan_audit_dismiss() {
     // Smoke #6 + #7 from the brief, narrowed to a single test process:
     // record the legacy MD5, run a representative read + write loop,
-    // and assert the file on disk hasn't shifted by a single byte.
+    // and assert the bytes never change. After 14.2d.3 the first CLI
+    // boot also renames `<home>/store.db` → `<home>/store.db.v0.5-backup`,
+    // so the byte-identity check tracks whichever path currently holds
+    // the legacy bytes (helper below).
     let tmp = tempfile::tempdir().unwrap();
     let (store_path, _repo) = seed_legacy_with_default_repo(tmp.path());
     let baseline = file_md5(&store_path);
@@ -423,7 +426,11 @@ fn cli_does_not_touch_legacy_store_db_after_scan_audit_dismiss() {
         "scans failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(file_md5(&store_path), baseline, "scans wrote the legacy");
+    assert_eq!(
+        legacy_md5(tmp.path()),
+        baseline,
+        "scans changed the legacy bytes",
+    );
 
     // 2. read path: audit on the seeded `_default_` project.
     let out = Command::new(bin())
@@ -439,7 +446,11 @@ fn cli_does_not_touch_legacy_store_db_after_scan_audit_dismiss() {
         "audit failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(file_md5(&store_path), baseline, "audit wrote the legacy");
+    assert_eq!(
+        legacy_md5(tmp.path()),
+        baseline,
+        "audit changed the legacy bytes",
+    );
 
     // 3. write path: re-scan a non-git dir under tmp. The CLI must
     //    update the per-project store, never the legacy.
@@ -468,7 +479,22 @@ fn cli_does_not_touch_legacy_store_db_after_scan_audit_dismiss() {
         "scan failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(file_md5(&store_path), baseline, "scan wrote the legacy");
+    assert_eq!(
+        legacy_md5(tmp.path()),
+        baseline,
+        "scan changed the legacy bytes",
+    );
+}
+
+/// Returns the MD5 of whichever path currently holds the legacy bytes
+/// — `<home>/store.db` before the cutover, `<home>/store.db.v0.5-backup`
+/// after 14.2d.3 has run. Either way the bytes themselves never change.
+fn legacy_md5(home: &Path) -> String {
+    let backup = home.join("store.db.v0.5-backup");
+    if backup.is_file() {
+        return file_md5(&backup);
+    }
+    file_md5(&home.join("store.db"))
 }
 
 #[test]
@@ -602,11 +628,12 @@ fn cli_actions_dismiss_writes_to_per_project_store_only() {
         String::from_utf8_lossy(&dismiss.stderr)
     );
 
-    // The sentinel legacy file must NOT have shifted.
+    // The sentinel bytes must survive the boot (rename moves them to
+    // `.v0.5-backup` post-14.2d.3, but never modifies the content).
     assert_eq!(
-        file_md5(&store_path),
+        legacy_md5(home),
         baseline,
-        "actions dismiss wrote the legacy store",
+        "actions dismiss changed the legacy bytes",
     );
 
     // The per-project store must hold the new dismissal row — verify
