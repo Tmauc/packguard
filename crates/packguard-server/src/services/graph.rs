@@ -15,7 +15,7 @@ use crate::dto::{
 use anyhow::Result;
 use packguard_core::MalwareKind;
 use packguard_intel::match_vulnerabilities;
-use packguard_store::{Store, StoredEdge};
+use packguard_store::{IntelStore, Store, StoredEdge};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
@@ -41,6 +41,7 @@ const MAX_BFS_DEPTH: u32 = 32;
 
 pub fn build(
     store: &Store,
+    intel: &IntelStore,
     project: Option<&Path>,
     workspace_filter: Option<&str>,
     max_depth: Option<u32>,
@@ -87,7 +88,7 @@ pub fn build(
         };
         let node = ensure_node(
             &mut nodes,
-            store,
+            intel,
             &dep.ecosystem,
             &dep.name,
             installed,
@@ -142,7 +143,7 @@ pub fn build(
             if !unresolved {
                 let node = ensure_node(
                     &mut nodes,
-                    store,
+                    intel,
                     &ecosystem,
                     &target_name,
                     &target_version,
@@ -228,7 +229,7 @@ fn kind_label(k: packguard_core::DepKind) -> &'static str {
 
 fn ensure_node<'a>(
     nodes: &'a mut BTreeMap<String, GraphNode>,
-    store: &Store,
+    intel: &IntelStore,
     ecosystem: &str,
     name: &str,
     version: &str,
@@ -237,7 +238,7 @@ fn ensure_node<'a>(
     let id = format!("{ecosystem}:{name}@{version}");
     if let std::collections::btree_map::Entry::Vacant(entry) = nodes.entry(id.clone()) {
         // Compute cve severity + malware flags lazily per (pkg, version).
-        let advisories = store.load_vulnerabilities(ecosystem, name)?;
+        let advisories = intel.load_vulnerabilities_for(ecosystem, name)?;
         let core_advisories: Vec<packguard_core::Vulnerability> = advisories
             .into_iter()
             .map(|s| packguard_core::Vulnerability {
@@ -264,7 +265,7 @@ fn ensure_node<'a>(
             .filter(|s| !matches!(s, packguard_core::Severity::Unknown))
             .map(|s| s.as_str().to_string());
 
-        let malware = store.load_malware_reports(ecosystem, name)?;
+        let malware = intel.load_malware_reports_for(ecosystem, name)?;
         let has_malware = malware.iter().any(|m| {
             matches!(m.kind, MalwareKind::Malware)
                 && (m.version.is_none() || m.version.as_deref() == Some(version))
@@ -308,7 +309,11 @@ fn ensure_node<'a>(
 /// deliberately absent — computing per-CVE contamination BFS at palette
 /// fetch time is wasteful since selection triggers `?focus_cve=…` which
 /// already renders the chains on the canvas.
-pub fn vulnerabilities(store: &Store, project: Option<&Path>) -> Result<GraphVulnerabilityList> {
+pub fn vulnerabilities(
+    store: &Store,
+    intel: &IntelStore,
+    project: Option<&Path>,
+) -> Result<GraphVulnerabilityList> {
     let paths = scope_paths(store, project)?;
     let mut all_deps: Vec<packguard_store::StoredDependency> = Vec::new();
     let mut all_edges: Vec<StoredEdge> = Vec::new();
@@ -347,8 +352,8 @@ pub fn vulnerabilities(store: &Store, project: Option<&Path>) -> Result<GraphVul
         let core = vuln_cache
             .entry((eco.clone(), name.clone()))
             .or_insert_with(|| {
-                store
-                    .load_vulnerabilities(eco, name)
+                intel
+                    .load_vulnerabilities_for(eco, name)
                     .unwrap_or_default()
                     .into_iter()
                     .map(|v| packguard_core::Vulnerability {
@@ -424,6 +429,7 @@ fn severity_rank(s: &str) -> u8 {
 
 pub fn contaminated_chains(
     store: &Store,
+    intel: &IntelStore,
     project: Option<&Path>,
     advisory_id: &str,
 ) -> Result<ContaminationResult> {
@@ -475,7 +481,9 @@ pub fn contaminated_chains(
         let core = advisory_cache
             .entry((eco.clone(), name.clone()))
             .or_insert_with(|| {
-                let vulns = store.load_vulnerabilities(eco, name).unwrap_or_default();
+                let vulns = intel
+                    .load_vulnerabilities_for(eco, name)
+                    .unwrap_or_default();
                 vulns
                     .into_iter()
                     .filter(|v| {

@@ -5,11 +5,15 @@ use crate::dto::{
 };
 use crate::services::packages::{evaluate_row, PackageRowFull};
 use anyhow::Result;
-use packguard_store::Store;
+use packguard_store::{IntelStore, Store};
 use std::collections::BTreeMap;
 
-pub fn build(store: &Store, project: Option<&std::path::Path>) -> Result<Overview> {
-    let rows = evaluate_all(store, project)?;
+pub fn build(
+    store: &Store,
+    intel: &IntelStore,
+    project: Option<&std::path::Path>,
+) -> Result<Overview> {
+    let rows = evaluate_all(store, intel, project)?;
     let packages_total = rows.len() as u32;
 
     // Per-ecosystem package counts (deterministic order via BTreeMap).
@@ -96,13 +100,13 @@ pub fn build(store: &Store, project: Option<&std::path::Path>) -> Result<Overvie
         .iter()
         .filter_map(|r| r.row.last_scanned_at.clone())
         .max();
-    let last_sync_at = store
+    let last_sync_at = intel
         .get_sync_state("osv-npm")
         .ok()
         .flatten()
         .and_then(|s| s.synced_at)
         .max(
-            store
+            intel
                 .get_sync_state("osv-pypi")
                 .ok()
                 .flatten()
@@ -122,7 +126,11 @@ pub fn build(store: &Store, project: Option<&std::path::Path>) -> Result<Overvie
     })
 }
 
-fn evaluate_all(store: &Store, project: Option<&std::path::Path>) -> Result<Vec<PackageRowFull>> {
+fn evaluate_all(
+    store: &Store,
+    intel: &IntelStore,
+    project: Option<&std::path::Path>,
+) -> Result<Vec<PackageRowFull>> {
     let watched = match project {
         Some(p) => store.watched_packages_for_path(p)?,
         None => store.watched_packages()?,
@@ -131,7 +139,7 @@ fn evaluate_all(store: &Store, project: Option<&std::path::Path>) -> Result<Vec<
     let now = chrono::Utc::now();
     let mut out = Vec::new();
     for (eco, name) in watched {
-        if let Some(row) = evaluate_row(store, &policy, &now, &eco, &name)? {
+        if let Some(row) = evaluate_row(store, intel, &policy, &now, &eco, &name)? {
             out.push(row);
         }
     }

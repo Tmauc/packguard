@@ -18,17 +18,17 @@ struct Harness {
     _temp: tempfile::TempDir,
 }
 
-async fn spawn(setup: impl FnOnce(&mut Store, &Path)) -> Harness {
+async fn spawn(setup: impl FnOnce(&mut Store, &mut IntelStore, &Path)) -> Harness {
     let temp = tempfile::tempdir().unwrap();
     let store_path = temp.path().join("store.db");
     let repo_path = temp.path().join("repo");
     std::fs::create_dir_all(&repo_path).unwrap();
     let mut store = Store::open(&store_path).unwrap();
-    setup(&mut store, &repo_path);
+    let mut intel = IntelStore::open(temp.path()).unwrap();
+    setup(&mut store, &mut intel, &repo_path);
     drop(store);
 
     let store = Store::open(&store_path).unwrap();
-    let intel = IntelStore::open_in_memory().unwrap();
     let projects = ProjectsRegistry::open_in_memory().unwrap();
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
@@ -60,7 +60,7 @@ async fn post_json(harness: &Harness, path: &str) -> (reqwest::StatusCode, serde
     (status, body)
 }
 
-fn seed_lodash_with_high_cve(store: &mut Store, repo: &Path) {
+fn seed_lodash_with_high_cve(store: &mut Store, intel: &mut IntelStore, repo: &Path) {
     let project = Project {
         ecosystem: "npm",
         root: repo.to_path_buf(),
@@ -133,7 +133,7 @@ fn seed_lodash_with_high_cve(store: &mut Store, repo: &Path) {
         published_at: Some("2021-02-15T00:00:00Z".into()),
         modified_at: None,
     };
-    store
+    intel
         .persist_vulnerabilities(std::slice::from_ref(&vuln))
         .unwrap();
 
@@ -149,7 +149,7 @@ fn seed_lodash_with_high_cve(store: &mut Store, repo: &Path) {
         evidence: serde_json::json!({"id": "MAL-2024-42"}),
         reported_at: None,
     };
-    store
+    intel
         .persist_malware_reports(std::slice::from_ref(&malware))
         .unwrap();
 }
@@ -158,7 +158,7 @@ fn seed_lodash_with_high_cve(store: &mut Store, repo: &Path) {
 
 #[tokio::test]
 async fn health_endpoint_returns_ok() {
-    let h = spawn(|_, _| {}).await;
+    let h = spawn(|_, _, _| {}).await;
     let body = get_json(&h, "/api/health").await;
     assert_eq!(body, serde_json::json!({ "ok": true }));
 }
@@ -167,7 +167,7 @@ async fn health_endpoint_returns_ok() {
 
 #[tokio::test]
 async fn overview_with_empty_store_returns_zeroed_payload() {
-    let h = spawn(|_, _| {}).await;
+    let h = spawn(|_, _, _| {}).await;
     let body = get_json(&h, "/api/overview").await;
     assert_eq!(body["packages_total"], 0);
     assert!(body["health_score"].is_null());
@@ -296,7 +296,7 @@ async fn package_detail_policy_trace_recommends_a_safe_upgrade() {
 async fn package_detail_version_rows_carry_severity_when_affected() {
     // Seed a package whose registry advertises both an affected and a fixed
     // version; confirm the severity field lines up with the matcher.
-    let h = spawn(|store, repo| {
+    let h = spawn(|store, intel, repo| {
         let project = Project {
             ecosystem: "npm",
             root: repo.to_path_buf(),
@@ -360,7 +360,7 @@ async fn package_detail_version_rows_carry_severity_when_affected() {
             published_at: None,
             modified_at: None,
         };
-        store
+        intel
             .persist_vulnerabilities(std::slice::from_ref(&vuln))
             .unwrap();
     })
@@ -392,7 +392,7 @@ async fn package_detail_unknown_returns_404() {
 
 #[tokio::test]
 async fn policies_returns_conservative_defaults_when_no_file() {
-    let h = spawn(|_, _| {}).await;
+    let h = spawn(|_, _, _| {}).await;
     let body = get_json(&h, "/api/policies").await;
     assert_eq!(body["from_file"], false);
     let yaml = body["yaml"].as_str().unwrap();
@@ -401,7 +401,7 @@ async fn policies_returns_conservative_defaults_when_no_file() {
 
 #[tokio::test]
 async fn policies_returns_repo_file_when_present() {
-    let h = spawn(|_, repo| {
+    let h = spawn(|_, _, repo| {
         std::fs::write(
             repo.join(".packguard.yml"),
             "defaults:\n  offset: { major: 0 }\n",
@@ -491,7 +491,7 @@ async fn policies_dry_run_surfaces_compliance_delta_when_policy_relaxes() {
 
 #[tokio::test]
 async fn policies_dry_run_rejects_bad_yaml_with_line_info() {
-    let h = spawn(|_, _| {}).await;
+    let h = spawn(|_, _, _| {}).await;
     let (status, body) = post_json_body(
         &h,
         "/api/policies/dry-run",
@@ -512,7 +512,7 @@ async fn policies_dry_run_rejects_bad_yaml_with_line_info() {
 
 #[tokio::test]
 async fn policies_put_writes_the_file_and_returns_the_new_document() {
-    let h = spawn(|_, _| {}).await;
+    let h = spawn(|_, _, _| {}).await;
     let yaml = "defaults:\n  offset: { major: 0 }\n  min_age_days: 3\n";
     let (status, body) = put_json(&h, "/api/policies", serde_json::json!({ "yaml": yaml })).await;
     assert_eq!(status, reqwest::StatusCode::OK);
@@ -526,7 +526,7 @@ async fn policies_put_writes_the_file_and_returns_the_new_document() {
 
 #[tokio::test]
 async fn policies_put_rejects_invalid_yaml_without_clobbering_disk() {
-    let h = spawn(|_, repo| {
+    let h = spawn(|_, _, repo| {
         std::fs::write(
             repo.join(".packguard.yml"),
             "defaults:\n  offset: { major: 0 }\n",
@@ -550,7 +550,7 @@ async fn policies_put_rejects_invalid_yaml_without_clobbering_disk() {
 
 #[tokio::test]
 async fn scan_returns_job_id_and_eventually_fails_when_no_manifest() {
-    let h = spawn(|_, _| {}).await;
+    let h = spawn(|_, _, _| {}).await;
     let (status, body) = post_json(&h, "/api/scan").await;
     assert_eq!(status, reqwest::StatusCode::ACCEPTED);
     let id = body["id"].as_str().unwrap().to_string();
@@ -671,7 +671,7 @@ async fn scan_walks_every_registered_repo_not_just_server_cwd() {
 
 #[tokio::test]
 async fn job_unknown_returns_404() {
-    let h = spawn(|_, _| {}).await;
+    let h = spawn(|_, _, _| {}).await;
     let url = format!("{}/api/jobs/00000000-0000-0000-0000-000000000000", h.base);
     let resp = reqwest::get(&url).await.unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
@@ -697,7 +697,7 @@ async fn scan_with_custom_path_returns_job_id_and_scans_that_path() {
     )
     .unwrap();
 
-    let h = spawn(|_, _| {}).await;
+    let h = spawn(|_, _, _| {}).await;
     let resp = reqwest::Client::new()
         .post(format!("{}/api/scan", h.base))
         .query(&[("path", alt.path().to_str().unwrap())])
@@ -734,7 +734,7 @@ async fn scan_with_custom_path_returns_job_id_and_scans_that_path() {
 
 #[tokio::test]
 async fn scan_with_nonexistent_path_returns_400() {
-    let h = spawn(|_, _| {}).await;
+    let h = spawn(|_, _, _| {}).await;
     // Use a path we know doesn't exist. Whatever tempdir randomness
     // there is, /tmp/packguard-dne-<uuid> won't collide.
     let phantom = format!("/tmp/packguard-dne-{}", uuid::Uuid::new_v4());
@@ -765,7 +765,7 @@ async fn scan_with_file_path_returns_400() {
     let file_path = temp.path().join("not-a-dir.txt");
     std::fs::write(&file_path, "hi").unwrap();
 
-    let h = spawn(|_, _| {}).await;
+    let h = spawn(|_, _, _| {}).await;
     let resp = reqwest::Client::new()
         .post(format!("{}/api/scan", h.base))
         .query(&[("path", file_path.to_str().unwrap())])
@@ -795,7 +795,7 @@ async fn poll_job(harness: &Harness, id: &str) -> serde_json::Value {
 
 // ---------- Phase 5: /api/graph + contamination + compat -------------------
 
-fn seed_react_chain_with_lodash_cve(store: &mut Store, repo: &Path) {
+fn seed_react_chain_with_lodash_cve(store: &mut Store, intel: &mut IntelStore, repo: &Path) {
     // `demo` depends on react@18.2.0. react depends on loose-envify@1.4.0.
     // loose-envify depends on lodash@4.17.20 (to line up with the CVE below).
     let project = Project {
@@ -910,7 +910,7 @@ fn seed_react_chain_with_lodash_cve(store: &mut Store, repo: &Path) {
         published_at: None,
         modified_at: None,
     };
-    store
+    intel
         .persist_vulnerabilities(std::slice::from_ref(&vuln))
         .unwrap();
 }
@@ -937,11 +937,12 @@ async fn api_graph_matches_service_output_when_repo_path_is_non_canonical() {
     let store_path = temp.path().join("store.db");
     {
         let mut store = Store::open(&store_path).unwrap();
-        seed_react_chain_with_lodash_cve(&mut store, &raw_repo);
+        let mut intel = IntelStore::open(temp.path()).unwrap();
+        seed_react_chain_with_lodash_cve(&mut store, &mut intel, &raw_repo);
     }
 
     let store = Store::open(&store_path).unwrap();
-    let intel = IntelStore::open_in_memory().unwrap();
+    let intel = IntelStore::open(temp.path()).unwrap();
     let projects = ProjectsRegistry::open_in_memory().unwrap();
     let app = router(ServerConfig {
         repo_path: canonical_repo.clone(),
@@ -974,8 +975,10 @@ async fn api_graph_matches_service_output_when_repo_path_is_non_canonical() {
     // directly here (avoiding a child-process spawn + its own path-
     // canonicalize), with the canonical path — same data, same JSON.
     let fresh_store = Store::open(&store_path).unwrap();
+    let fresh_intel = IntelStore::open(temp.path()).unwrap();
     let service_response = packguard_server::services::graph::build(
         &fresh_store,
+        &fresh_intel,
         Some(&canonical_repo),
         None,
         None,
@@ -1110,7 +1113,7 @@ async fn vulnerabilities_endpoint_lists_cves_hit_in_scope() {
 
 #[tokio::test]
 async fn vulnerabilities_endpoint_returns_empty_when_store_is_empty() {
-    let h = spawn(|_, _| {}).await;
+    let h = spawn(|_, _, _| {}).await;
     let body = get_json(&h, "/api/graph/vulnerabilities").await;
     assert!(body["entries"].as_array().unwrap().is_empty());
 }
@@ -1145,7 +1148,7 @@ async fn compat_endpoint_exposes_engines_peer_deps_and_dependents() {
 #[tokio::test]
 async fn workspaces_endpoint_lists_registered_scans_sorted_by_last_scan_desc() {
     // Empty store → empty list, not an error.
-    let h = spawn(|_, _| {}).await;
+    let h = spawn(|_, _, _| {}).await;
     let body = get_json(&h, "/api/workspaces").await;
     assert_eq!(body["workspaces"].as_array().unwrap().len(), 0);
 }
@@ -1400,6 +1403,333 @@ async fn actions_dismiss_on_unknown_id_returns_404() {
     let url = format!("{}/api/actions/nonexistent/dismiss", h.base);
     let resp = reqwest::Client::new().post(&url).send().await.unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+// ---- Phase 14.1e.3: IntelStore is the single read source for intel data ----
+
+/// Phase 14.1e.3 negative contract: vulnerabilities written into the
+/// legacy `Store` intel tables (the same tables migration V7 left in
+/// place after copying their content into IntelStore) must NOT surface
+/// in any consumer endpoint. Sync, audit, packages-detail, actions —
+/// all read from IntelStore now. The legacy rows remain on disk until
+/// 14.2 drops the columns; this test guards against an accidental
+/// regression where one read path snaps back to the old store.
+#[tokio::test]
+async fn legacy_store_intel_tables_are_no_longer_read() {
+    let temp = tempfile::tempdir().unwrap();
+    let store_path = temp.path().join("store.db");
+    let repo_path = temp.path().join("repo");
+    std::fs::create_dir_all(&repo_path).unwrap();
+    {
+        let mut store = Store::open(&store_path).unwrap();
+        // Seed the project + a HIGH advisory, but ONLY in the legacy
+        // store. Leave IntelStore empty.
+        let project = Project {
+            ecosystem: "npm",
+            root: repo_path.clone(),
+            manifest_path: repo_path.join("package.json"),
+            name: Some("demo".into()),
+            workspace: None,
+            dependencies: vec![Dependency {
+                name: "lodash".into(),
+                declared_range: "^4.17.0".into(),
+                installed: Some("4.17.20".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("package-lock.json".into()),
+            }],
+            edges: Vec::new(),
+            compatibility: Vec::new(),
+        };
+        let mut remotes = BTreeMap::new();
+        remotes.insert(
+            "lodash".into(),
+            RemotePackage {
+                name: "lodash".into(),
+                latest: Some("4.17.21".into()),
+                latest_published_at: Some("2024-06-01T00:00:00Z".into()),
+                versions: vec![],
+            },
+        );
+        store
+            .save_project(&repo_path, &project, &remotes, "fp")
+            .unwrap();
+        let vuln = Vulnerability {
+            source: "osv".into(),
+            advisory_id: "GHSA-legacy-only".into(),
+            ecosystem: "npm".into(),
+            package_name: "lodash".into(),
+            severity: Severity::High,
+            cve_id: Some("CVE-2021-23337".into()),
+            aliases: vec![],
+            summary: Some("Legacy-only advisory".into()),
+            url: None,
+            affected: AffectedSpec {
+                ranges: vec![AffectedRange {
+                    kind: AffectedRangeKind::Semver,
+                    events: vec![
+                        AffectedEvent::Introduced("0.0.0".into()),
+                        AffectedEvent::Fixed("4.17.21".into()),
+                    ],
+                }],
+                versions: vec![],
+            },
+            fixed_versions: vec!["4.17.21".into()],
+            published_at: None,
+            modified_at: None,
+        };
+        store.persist_vulnerabilities(&[vuln]).unwrap();
+    }
+
+    let store = Store::open(&store_path).unwrap();
+    let intel = IntelStore::open(temp.path()).unwrap();
+    assert_eq!(
+        intel.count_vulnerabilities().unwrap(),
+        0,
+        "intel store must start empty for this contract"
+    );
+    let projects = ProjectsRegistry::open_in_memory().unwrap();
+    let app = router(ServerConfig {
+        repo_path: repo_path.clone(),
+        store,
+        intel,
+        projects,
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    // /api/packages/{eco}/{name} must report zero vulnerabilities even
+    // though the legacy store has one. If a read path regresses to
+    // `Store::load_vulnerabilities` this assertion blows up.
+    let detail: serde_json::Value = reqwest::get(format!("{base}/api/packages/npm/lodash"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let vulns = detail["vulnerabilities"].as_array().unwrap();
+    assert!(
+        vulns.is_empty(),
+        "intel-empty store must not surface legacy vulns: {vulns:?}"
+    );
+
+    // /api/graph/vulnerabilities (the palette endpoint) is the second
+    // intel read path — same contract.
+    let palette: serde_json::Value = reqwest::get(format!("{base}/api/graph/vulnerabilities"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let entries = palette["entries"].as_array().unwrap();
+    assert!(
+        entries.is_empty(),
+        "graph palette must not read from legacy intel tables: {entries:?}"
+    );
+
+    // /api/actions must not emit FixCveHigh — the generator now reads
+    // its CVE rows from IntelStore.
+    let actions: serde_json::Value = reqwest::get(format!("{base}/api/actions"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let cve_actions: Vec<&serde_json::Value> = actions["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["kind"] == "FixCveHigh" || a["kind"] == "FixCveCritical")
+        .collect();
+    assert!(
+        cve_actions.is_empty(),
+        "actions generator must not emit CVE actions sourced from legacy store: {cve_actions:?}"
+    );
+}
+
+/// Phase 14.1e.3 positive contract: a critical CVE seeded ONLY into
+/// IntelStore must surface end-to-end through the `/api/actions`
+/// generator path. This complements the legacy-only negative test
+/// above — together they pin the read path to IntelStore.
+#[tokio::test]
+async fn actions_generator_reads_cve_from_intel_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let store_path = temp.path().join("store.db");
+    let repo_path = temp.path().join("repo");
+    std::fs::create_dir_all(&repo_path).unwrap();
+    {
+        let mut store = Store::open(&store_path).unwrap();
+        let mut intel = IntelStore::open(temp.path()).unwrap();
+        let project = Project {
+            ecosystem: "npm",
+            root: repo_path.clone(),
+            manifest_path: repo_path.join("package.json"),
+            name: Some("demo".into()),
+            workspace: None,
+            dependencies: vec![Dependency {
+                name: "lodash".into(),
+                declared_range: "^4.17.0".into(),
+                installed: Some("4.17.20".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("package-lock.json".into()),
+            }],
+            edges: Vec::new(),
+            compatibility: Vec::new(),
+        };
+        let mut remotes = BTreeMap::new();
+        remotes.insert(
+            "lodash".into(),
+            RemotePackage {
+                name: "lodash".into(),
+                latest: Some("4.17.21".into()),
+                latest_published_at: Some("2024-06-01T00:00:00Z".into()),
+                versions: vec![],
+            },
+        );
+        store
+            .save_project(&repo_path, &project, &remotes, "fp")
+            .unwrap();
+        let vuln = Vulnerability {
+            source: "osv".into(),
+            advisory_id: "GHSA-intel-only-crit".into(),
+            ecosystem: "npm".into(),
+            package_name: "lodash".into(),
+            severity: Severity::Critical,
+            cve_id: Some("CVE-2026-99999".into()),
+            aliases: vec![],
+            summary: Some("Critical-only-in-intel".into()),
+            url: None,
+            affected: AffectedSpec {
+                ranges: vec![AffectedRange {
+                    kind: AffectedRangeKind::Semver,
+                    events: vec![
+                        AffectedEvent::Introduced("0.0.0".into()),
+                        AffectedEvent::Fixed("4.17.21".into()),
+                    ],
+                }],
+                versions: vec![],
+            },
+            fixed_versions: vec!["4.17.21".into()],
+            published_at: None,
+            modified_at: None,
+        };
+        intel.persist_vulnerabilities(&[vuln]).unwrap();
+        // Legacy Store stays empty for the intel tables — guard.
+        assert_eq!(
+            store.count_vulnerabilities().unwrap(),
+            0,
+            "legacy store must be empty for this contract"
+        );
+    }
+
+    let store = Store::open(&store_path).unwrap();
+    let intel = IntelStore::open(temp.path()).unwrap();
+    let projects = ProjectsRegistry::open_in_memory().unwrap();
+    let app = router(ServerConfig {
+        repo_path: repo_path.clone(),
+        store,
+        intel,
+        projects,
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let actions: serde_json::Value = reqwest::get(format!("{base}/api/actions"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let cve_critical_count = actions["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["kind"] == "FixCveCritical" && a["target"]["name"] == "lodash")
+        .count();
+    assert!(
+        cve_critical_count >= 1,
+        "FixCveCritical must surface for an intel-only critical CVE: {actions:?}"
+    );
+}
+
+/// Phase 14.1e.3: `/api/overview` must read its `last_sync_at` from
+/// IntelStore. After 14.1e.2 every sync write lands on IntelStore, so
+/// the legacy `Store::sync_log` rows are stale — reading from them
+/// would show "Synced N days ago" when in fact the sync just ran.
+#[tokio::test]
+async fn overview_last_sync_at_reads_from_intel_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let store_path = temp.path().join("store.db");
+    let repo_path = temp.path().join("repo");
+    std::fs::create_dir_all(&repo_path).unwrap();
+    let intel_synced_at = "2026-04-25T10:00:00+00:00".to_string();
+    {
+        let mut store = Store::open(&store_path).unwrap();
+        let mut intel = IntelStore::open(temp.path()).unwrap();
+        // Stamp a sync row in IntelStore. Stamp a stale, easily
+        // distinguishable timestamp on the legacy store too — if the
+        // overview reads from there, we'll see this 2020 marker.
+        intel
+            .put_sync_state(
+                "osv-npm",
+                &packguard_store::SyncState {
+                    etag: None,
+                    last_modified: None,
+                    last_commit: None,
+                    synced_at: Some(intel_synced_at.clone()),
+                    record_count: 0,
+                },
+            )
+            .unwrap();
+        store
+            .put_sync_state(
+                "osv-npm",
+                &packguard_store::SyncState {
+                    etag: None,
+                    last_modified: None,
+                    last_commit: None,
+                    synced_at: Some("2020-01-01T00:00:00+00:00".into()),
+                    record_count: 0,
+                },
+            )
+            .unwrap();
+    }
+
+    let store = Store::open(&store_path).unwrap();
+    let intel = IntelStore::open(temp.path()).unwrap();
+    let projects = ProjectsRegistry::open_in_memory().unwrap();
+    let app = router(ServerConfig {
+        repo_path: repo_path.clone(),
+        store,
+        intel,
+        projects,
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let overview: serde_json::Value = reqwest::get(format!("{base}/api/overview"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        overview["last_sync_at"].as_str(),
+        Some(intel_synced_at.as_str()),
+        "/api/overview must surface the IntelStore sync timestamp, \
+         not the (now stale) legacy one: {overview}"
+    );
 }
 
 #[tokio::test]

@@ -16,7 +16,7 @@ use packguard_policy::{
     build_offset_cascade_trace, compute_recommended_version_full, evaluate_dependency_full,
     Compliance, Dialect, Policy, Stability,
 };
-use packguard_store::Store;
+use packguard_store::{IntelStore, Store};
 
 /// `PackageRow` + the dependency it came from so the overview service can
 /// fold it into top-risk computation without re-querying.
@@ -26,6 +26,7 @@ pub struct PackageRowFull {
 
 pub fn list(
     store: &Store,
+    intel: &IntelStore,
     query: &PackagesQuery,
     project: Option<&std::path::Path>,
 ) -> Result<PackagesPage> {
@@ -38,7 +39,7 @@ pub fn list(
     };
     let mut rows: Vec<PackageRow> = Vec::with_capacity(watched.len());
     for (eco, name) in watched {
-        if let Some(full) = evaluate_row(store, &policy, &now, &eco, &name)? {
+        if let Some(full) = evaluate_row(store, intel, &policy, &now, &eco, &name)? {
             rows.push(full.row);
         }
     }
@@ -67,6 +68,7 @@ pub fn list(
 
 pub fn detail(
     store: &Store,
+    intel: &IntelStore,
     ecosystem: &str,
     name: &str,
     project: Option<&std::path::Path>,
@@ -113,13 +115,13 @@ pub fn detail(
     };
     let now = chrono::Utc::now();
 
-    let Some(full) = evaluate_row(store, &policy, &now, ecosystem, name)? else {
+    let Some(full) = evaluate_row(store, intel, &policy, &now, ecosystem, name)? else {
         return Ok(None);
     };
 
     let stored_versions = store.load_package_versions(ecosystem, name)?;
-    let stored_vulns = store.load_vulnerabilities(ecosystem, name)?;
-    let stored_malware = store.load_malware_reports(ecosystem, name)?;
+    let stored_vulns = intel.load_vulnerabilities_for(ecosystem, name)?;
+    let stored_malware = intel.load_malware_reports_for(ecosystem, name)?;
 
     // Re-run the matcher per-version so we can colour each row by the
     // highest severity affecting it. The list stays small (<= 500 versions
@@ -323,6 +325,7 @@ fn trace_reason(tag: &ComplianceTag, installed: Option<&str>, recommended: Optio
 /// when the package isn't tracked under any workspace yet.
 pub fn evaluate_row(
     store: &Store,
+    intel: &IntelStore,
     policy: &Policy,
     now: &chrono::DateTime<chrono::Utc>,
     ecosystem: &str,
@@ -347,7 +350,7 @@ pub fn evaluate_row(
         })
         .collect();
 
-    let stored_vulns = store.load_vulnerabilities(ecosystem, name)?;
+    let stored_vulns = intel.load_vulnerabilities_for(ecosystem, name)?;
     let advisories: Vec<packguard_core::Vulnerability> = stored_vulns
         .into_iter()
         .map(|s| packguard_core::Vulnerability {
@@ -384,7 +387,7 @@ pub fn evaluate_row(
         .cloned()
         .unwrap_or_default();
 
-    let stored_malware = store.load_malware_reports(ecosystem, name)?;
+    let stored_malware = intel.load_malware_reports_for(ecosystem, name)?;
     let malware_core: Vec<packguard_core::MalwareReport> = stored_malware
         .iter()
         .map(|m| packguard_core::MalwareReport {

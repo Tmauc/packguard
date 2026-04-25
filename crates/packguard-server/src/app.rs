@@ -91,8 +91,13 @@ async fn overview(
     Query(q): Query<ProjectQuery>,
 ) -> Result<Json<Overview>, ApiError> {
     let store = s.store.lock().await;
+    let intel = s.intel.lock().await;
     let project = resolve_project_filter(&store, q.project.as_deref())?;
-    Ok(Json(services::overview::build(&store, project.as_deref())?))
+    Ok(Json(services::overview::build(
+        &store,
+        &intel,
+        project.as_deref(),
+    )?))
 }
 
 async fn packages_list(
@@ -100,9 +105,11 @@ async fn packages_list(
     Query(q): Query<PackagesQuery>,
 ) -> Result<Json<PackagesPage>, ApiError> {
     let store = s.store.lock().await;
+    let intel = s.intel.lock().await;
     let project = resolve_project_filter(&store, q.project.as_deref())?;
     Ok(Json(services::packages::list(
         &store,
+        &intel,
         &q,
         project.as_deref(),
     )?))
@@ -114,8 +121,9 @@ async fn package_detail(
     Query(q): Query<ProjectQuery>,
 ) -> Result<Json<PackageDetail>, ApiError> {
     let store = s.store.lock().await;
+    let intel = s.intel.lock().await;
     let project = resolve_project_filter(&store, q.project.as_deref())?;
-    services::packages::detail(&store, &ecosystem, &name, project.as_deref())?
+    services::packages::detail(&store, &intel, &ecosystem, &name, project.as_deref())?
         .map(Json)
         .ok_or_else(|| ApiError::NotFound(format!("{ecosystem}/{name} not in scan cache")))
 }
@@ -149,9 +157,11 @@ async fn graph_get(
     Query(q): Query<GraphQuery>,
 ) -> Result<Json<GraphResponse>, ApiError> {
     let store = s.store.lock().await;
+    let intel = s.intel.lock().await;
     let project = resolve_project_filter(&store, q.project.as_deref())?;
     Ok(Json(services::graph::build(
         &store,
+        &intel,
         project.as_deref(),
         q.workspace.as_deref(),
         q.max_depth,
@@ -164,9 +174,11 @@ async fn graph_contaminated(
     Query(q): Query<ContaminatedQuery>,
 ) -> Result<Json<ContaminationResult>, ApiError> {
     let store = s.store.lock().await;
+    let intel = s.intel.lock().await;
     let project = resolve_project_filter(&store, q.project.as_deref())?;
     Ok(Json(services::graph::contaminated_chains(
         &store,
+        &intel,
         project.as_deref(),
         &q.vuln_id,
     )?))
@@ -177,9 +189,11 @@ async fn graph_vulnerabilities(
     Query(q): Query<ProjectQuery>,
 ) -> Result<Json<GraphVulnerabilityList>, ApiError> {
     let store = s.store.lock().await;
+    let intel = s.intel.lock().await;
     let project = resolve_project_filter(&store, q.project.as_deref())?;
     Ok(Json(services::graph::vulnerabilities(
         &store,
+        &intel,
         project.as_deref(),
     )?))
 }
@@ -205,9 +219,10 @@ async fn policy_dry_run(
     Json(body): Json<PolicyDryRun>,
 ) -> Result<Json<PolicyDryRunResult>, ApiError> {
     let store = s.store.lock().await;
+    let intel = s.intel.lock().await;
     let project = resolve_project_filter(&store, q.project.as_deref())?;
     let repo = project.as_deref().unwrap_or(&s.repo_path);
-    services::policies::dry_run(&store, repo, &body.yaml)
+    services::policies::dry_run(&store, &intel, repo, &body.yaml)
         .map(Json)
         .map_err(policy_error_to_api)
 }
@@ -341,12 +356,14 @@ async fn actions_list(
     Query(q): Query<ActionsQuery>,
 ) -> Result<Json<ActionsResponse>, ApiError> {
     let store = s.store.lock().await;
+    let intel = s.intel.lock().await;
     let project = resolve_project_filter(&store, q.project.as_deref())?;
     let now = chrono::Utc::now();
     let include_dismissed = q.include_dismissed.unwrap_or(false);
     let include_deferred = q.include_deferred.unwrap_or(false);
     let mut actions = packguard_actions::collect_all(
         &store,
+        &intel,
         project.as_deref(),
         now,
         include_dismissed,
@@ -368,10 +385,11 @@ async fn actions_list(
 /// scope between the user seeing and clicking the action.
 fn locate_action(
     store: &packguard_store::Store,
+    intel: &packguard_store::IntelStore,
     id: &str,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<packguard_actions::Action, ApiError> {
-    let all = packguard_actions::collect_all(store, None, now, false, false)
+    let all = packguard_actions::collect_all(store, intel, None, now, false, false)
         .map_err(ApiError::Internal)?;
     all.into_iter()
         .find(|a| a.id == id)
@@ -385,8 +403,9 @@ async fn actions_dismiss(
 ) -> Result<Json<ActionDismissResponse>, ApiError> {
     let req = body.map(|Json(b)| b).unwrap_or_default();
     let mut store = s.store.lock().await;
+    let intel = s.intel.lock().await;
     let now = chrono::Utc::now();
-    let action = locate_action(&store, &id, now)?;
+    let action = locate_action(&store, &intel, &id, now)?;
     packguard_actions::dismiss(&mut store, &action, req.reason.as_deref(), now)
         .map_err(ApiError::Internal)?;
     Ok(Json(ActionDismissResponse {
@@ -402,8 +421,9 @@ async fn actions_defer(
     let req = body.map(|Json(b)| b).unwrap_or_default();
     let days = req.days.unwrap_or(7).clamp(1, 365);
     let mut store = s.store.lock().await;
+    let intel = s.intel.lock().await;
     let now = chrono::Utc::now();
-    let action = locate_action(&store, &id, now)?;
+    let action = locate_action(&store, &intel, &id, now)?;
     let until = packguard_actions::defer(&mut store, &action, days, req.reason.as_deref(), now)
         .map_err(ApiError::Internal)?;
     Ok(Json(ActionDeferResponse {

@@ -8,7 +8,7 @@ use crate::dto::{
 };
 use anyhow::{Context, Result};
 use packguard_policy::{parse_policy, Policy, CONSERVATIVE_DEFAULTS_YAML};
-use packguard_store::Store;
+use packguard_store::{IntelStore, Store};
 use std::path::Path;
 
 const MAX_CHANGED_PACKAGES: usize = 50;
@@ -99,6 +99,7 @@ impl From<anyhow::Error> for PolicyError {
 /// `MAX_CHANGED_PACKAGES` packages whose compliance tag flipped.
 pub fn dry_run(
     store: &Store,
+    intel: &IntelStore,
     repo_path: &Path,
     candidate_yaml: &str,
 ) -> std::result::Result<PolicyDryRunResult, PolicyError> {
@@ -114,12 +115,12 @@ pub fn dry_run(
 
     for (eco, name) in watched {
         let Some(cand_row) =
-            crate::services::packages::evaluate_row(store, &candidate, &now, &eco, &name)?
+            crate::services::packages::evaluate_row(store, intel, &candidate, &now, &eco, &name)?
         else {
             continue;
         };
         let Some(cur_row) =
-            crate::services::packages::evaluate_row(store, &current, &now, &eco, &name)?
+            crate::services::packages::evaluate_row(store, intel, &current, &now, &eco, &name)?
         else {
             continue;
         };
