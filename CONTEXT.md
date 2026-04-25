@@ -2578,10 +2578,40 @@ Au premier run v0.6.0 sur un store legacy `~/.packguard/store.db` :
 
 **Phase 14 — Per-project store** (~10-12 commits) :
 
-- **14.1 Backend** — table `projects` + multi-store + migration V7 + endpoints `GET/POST /api/projects` + intel extraction (~4 commits)
-- **14.2 CLI auto-detection** — walk-up `.git/` depuis cwd dans tous les commands (`scan`, `ui`, `report`, `audit`, `actions`, `graph`), `--project <slug>` flag, `PACKGUARD_PROJECT` env var, fallback `_default_` (~2 commits)
+- **14.1 Backend** — table `projects` + multi-store + migration V7 + endpoints `GET/POST /api/projects` + intel extraction. **Re-splitté en 8 sub-phases** sur insistance Thomas (sécurité + bisectabilité). ✅ entièrement done 2026-04-25.
+- **14.2 CLI auto-detection + bascule project layer** — walk-up `.git/` depuis cwd dans tous les commands, `--project <slug>` flag, `PACKGUARD_PROJECT` env var, fallback `_default_`, plus la bascule full project layer côté server. **Re-splitté en 5 sub-phases**. ✅ entièrement done 2026-04-25.
 - **14.3 Dashboard** — `ProjectSelector` header component + `AddProjectModal` + boot flow (auto-select cwd / blocking modal si inconnu) + URL params renaming + scope cascade au workspace (~3-4 commits)
 - **14.4 Docs** — README v0.6.0 bullet + nouveau `concepts/project-store.mdx` + `per-project.mdx` ajusté pour distinguer project vs workspace + migration note (~2 commits)
+
+### v0.6.0 — Récap journée 2026-04-25 (Phase 14.1 + 14.2 done)
+
+**Phase 14.1 — Backend foundation (8 sub-phases, 11 commits)** :
+- 14.1a ✅ `ac41245` — helpers `find_project_root` + `slugify` dans `packguard-core`
+- 14.1b ✅ `6c8b70e` — projects registry `~/.packguard/projects.db` + schema V1 isolé + CRUD complet
+- 14.1c ✅ `1d0be07` — `IntelStore` scaffolding `~/.packguard/intel/intel.db`. Finding clé : 2 tables (`vulnerabilities`, `malware_reports`) avaient FK `pkg_id` vers `packages` legacy → schema V1 IntelStore diverge intentionnellement avec natural keys `(ecosystem, package_name)`. Catalog vraiment intel-wide.
+- 14.1d ✅ `d7882b1` — migration data lossless legacy → per-project layout (read-only legacy, JOIN dénormalisation FK, idempotent)
+- 14.1e.1 ✅ `49aa3c1` + `74c1b1d` — plomberie : AppState + ServerConfig gagnent IntelStore + ProjectsRegistry, boot wiring `migrate_legacy_if_present`. Aucune bascule code path.
+- 14.1e.2 ✅ `5cbf372` — bascule producteurs sync flow (11 sites `services/sync_intel.rs` + CLI sync) → IntelStore writes. Smoke : md5 legacy intact post-sync.
+- 14.1e.3 ✅ `f7c5835` + `396db15` — bascule consommateurs (handlers server + CLI + actions generator) → IntelStore reads. Negative test load-bearing : intel wipe + legacy plein → tous les consumers retournent 0.
+- 14.1f ✅ `cbe5424` + `e433426` — endpoints `GET/POST /api/projects` + DTO ts-rs + scope param backcompat (`?project=<slug>` ou path legacy avec deprecation header). 10 nouveaux tests api.
+
+**Phase 14.2 — Project layer (5 sub-phases, 13 commits)** :
+- 14.2a ✅ `5e0caef` — `ProjectStoreCache` infra avec lazy open + concurrent-safe (test 16 tasks → 1 cached Arc)
+- 14.2b.1 ✅ `dcb1ac5` + `faa6cea` — bascule slug-scope reads (11 handlers : overview/packages/package_detail/graph/contamination/graph_vulnerabilities/compat/policies×3/actions_list) + scan/AddProject dual-write transitional
+- 14.2b.2 ✅ `fb43316` + `5524d1f` + `506985f` + `30864e1` — action writes route per-project (locate_action via fanout `slug_paths()` car RefreshSync `_global` n'a pas real workspace_path) + aggregate fanout via `slug_paths()` + drop dual-write transitional + `sync_intel::watched_packages` fanout
+- 14.2c ✅ `895fcb9` + `cf47b47` + `994ffcb` — CLI auto-detect cwd → slug + helper `resolve_cli_scope` (priorité flag > env > cwd → `.git/` > `_default_`). Tous les CLI commands basculés. Edge case `_default_` validée (cd ~/Documents → fallback).
+- 14.2d ✅ `fe8f190` + `adccf1e` + `b6dbac4` — V8 migration drop intel tables du Store schema + retire `state.store: Arc<Mutex<Store>>` du AppState + rename auto `~/.packguard/store.db` → `.v0.5-backup` post-migration (idempotent). Migration intel V2 : table `jobs` move vers IntelStore.
+
+**Stats journée** :
+- Rust tests : 393 → 478 (+85)
+- Vitest : 134 (inchangé tout au long, dashboard non touché)
+- Régressions : 0
+- Nouvelles deps : 0 (tokio promu workspace dep, légitime)
+- md5 legacy : strictement byte-identical entre `~/.packguard/store.db` original et `~/.packguard/store.db.v0.5-backup` final
+
+**Pattern méthodo retenu** : split aggressif des phases-mère en sub-phases additive → migration data → bascule code path. Chaque sub-phase = 1 agent, 1 rapport, 1 validation. Bisectabilité préservée à chaque palier. Investigation préalable obligatoire avant les bascules code-path-wise (l'agent fait `grep` les call sites, propose split si volume >5h).
+
+**Reste avant ship v0.6.0** : Phase 14.3 (Dashboard ProjectSelector + AddProjectModal + boot flow + URL renaming) + Phase 14.4 (docs) + bump 0.5.1 → 0.6.0.
 
 ### Critères de sortie v0.6.0
 
