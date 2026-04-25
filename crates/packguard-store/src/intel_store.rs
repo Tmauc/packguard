@@ -575,12 +575,16 @@ mod tests {
     fn intel_store_is_isolated_from_project_store() {
         // Both stores live under the same packguard_home, but they
         // hold separate SQLite files. Writes to the intel catalog
-        // must NOT bleed into the per-project store, and vice versa.
+        // land in `intel.db`; per-project stores never see them.
+        // Post-V8 the project store no longer carries the legacy
+        // `vulnerabilities`/`malware_reports` tables at all, so the
+        // isolation check is reduced to: the two SQLite files coexist
+        // and the intel writes only show up in IntelStore counts.
         let tmp = tempdir().unwrap();
         let pg_home = tmp.path().join(".packguard");
         std::fs::create_dir_all(&pg_home).unwrap();
         let project_db = pg_home.join("projects/sample/store.db");
-        let project = Store::open(&project_db).unwrap();
+        let _project = Store::open(&project_db).unwrap();
         let mut intel = IntelStore::open(&pg_home).unwrap();
         intel
             .persist_vulnerabilities(&[sample_vuln("npm", "lodash", "GHSA-zzzz-zzzz-zzzz")])
@@ -588,13 +592,8 @@ mod tests {
         intel
             .persist_malware_reports(&[sample_malware("npm", "evilpkg", "MAL-9999")])
             .unwrap();
-        // Project store sees nothing — its tables are separate.
-        assert_eq!(project.count_vulnerabilities().unwrap(), 0);
-        assert_eq!(project.count_malware_reports().unwrap(), 0);
-        // Intel store has the writes.
         assert_eq!(intel.count_vulnerabilities().unwrap(), 1);
         assert_eq!(intel.count_malware_reports().unwrap(), 1);
-        // The two SQLite files coexist under the same packguard_home.
         assert!(pg_home.join("intel/intel.db").is_file());
         assert!(project_db.is_file());
     }

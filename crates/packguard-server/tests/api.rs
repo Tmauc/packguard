@@ -1481,7 +1481,10 @@ async fn legacy_store_intel_tables_are_no_longer_read() {
         },
     );
     {
-        let mut store = Store::open(&store_path).unwrap();
+        // 14.2d — V8 dropped intel tables from per-project schema; use
+        // the V7 fixture opener so the legacy seed step still has the
+        // `vulnerabilities` table to write into.
+        let mut store = Store::open_legacy_for_tests(&store_path).unwrap();
         // Seed the project + a HIGH advisory, but ONLY in the legacy
         // store. Leave IntelStore empty.
         store
@@ -1735,7 +1738,10 @@ async fn overview_last_sync_at_reads_from_intel_store() {
     std::fs::create_dir_all(&repo_path).unwrap();
     let intel_synced_at = "2026-04-25T10:00:00+00:00".to_string();
     {
-        let mut store = Store::open(&store_path).unwrap();
+        // 14.2d — V8 dropped `sync_log` from per-project schema; use
+        // the V7 fixture opener so the legacy seed step still has the
+        // table available to write a "stale" marker into.
+        let mut store = Store::open_legacy_for_tests(&store_path).unwrap();
         let mut intel = IntelStore::open(temp.path()).unwrap();
         // Stamp a sync row in IntelStore. Stamp a stale, easily
         // distinguishable timestamp on the legacy store too — if the

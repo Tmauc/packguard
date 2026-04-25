@@ -682,7 +682,10 @@ fn collect_all_does_not_read_legacy_store_intel_tables() {
     std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
     std::fs::write(repo.join(".packguard.yml"), PERMISSIVE_POLICY_YAML).unwrap();
 
-    let mut store = Store::open_in_memory().unwrap();
+    // 14.2d — V8 dropped intel tables from per-project schema. Seed a
+    // V7 store so the legacy `persist_vulnerabilities` /
+    // `persist_malware_reports` calls below have somewhere to write.
+    let mut store = Store::open_in_memory_legacy_for_tests().unwrap();
     let intel = IntelStore::open_in_memory().unwrap();
 
     // Seed a real scan with a vulnerable lodash + a flagged posthog-js

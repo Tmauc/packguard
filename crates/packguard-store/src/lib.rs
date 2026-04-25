@@ -220,6 +220,47 @@ impl Store {
         Ok(Self { conn })
     }
 
+    /// Open at the V7 schema only — leaves the per-project intel
+    /// tables (`vulnerabilities` / `malware_reports` / `sync_log`) in
+    /// place so tests can construct a v0.5.x-shaped legacy store. V8
+    /// drops those tables, so any test that needs to seed the legacy
+    /// must use this opener instead of [`Self::open`].
+    ///
+    /// **Test-only.** Production code never instantiates a V7 store.
+    /// The 14.1d migration reads the legacy via raw `rusqlite` with
+    /// `SQLITE_OPEN_READ_ONLY`, so refinery never runs there either.
+    pub fn open_legacy_for_tests(path: &Path) -> Result<Self> {
+        use refinery::Target;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let mut conn =
+            Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .context("enabling WAL")?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .context("enabling foreign keys")?;
+        embedded::migrations::runner()
+            .set_target(Target::Version(7))
+            .run(&mut conn)
+            .context("running migrations up to V7 (legacy test fixture)")?;
+        Ok(Self { conn })
+    }
+
+    /// In-memory variant of [`Self::open_legacy_for_tests`].
+    pub fn open_in_memory_legacy_for_tests() -> Result<Self> {
+        use refinery::Target;
+        let mut conn = Connection::open_in_memory().context("opening in-memory SQLite")?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .context("enabling foreign keys")?;
+        embedded::migrations::runner()
+            .set_target(Target::Version(7))
+            .run(&mut conn)
+            .context("running migrations up to V7 (legacy test fixture)")?;
+        Ok(Self { conn })
+    }
+
     /// Hand the raw connection to crate-internal callers that need to
     /// mix multi-table transactions outside the canned helpers (the
     /// 14.1d migration is the sole consumer today). NOT exposed in
@@ -1637,109 +1678,12 @@ mod tests {
             .is_none());
     }
 
-    fn sample_vuln() -> Vulnerability {
-        use packguard_core::model::{AffectedEvent, AffectedRange, AffectedRangeKind};
-        Vulnerability {
-            source: "osv".into(),
-            advisory_id: "GHSA-1234-5678-abcd".into(),
-            ecosystem: "npm".into(),
-            package_name: "lodash".into(),
-            severity: Severity::High,
-            cve_id: Some("CVE-2021-23337".into()),
-            aliases: vec!["CVE-2021-23337".into(), "GHSA-35jh-r3h4-6jhm".into()],
-            summary: Some("Command Injection in lodash".into()),
-            url: Some("https://github.com/advisories/GHSA-35jh-r3h4-6jhm".into()),
-            affected: AffectedSpec {
-                ranges: vec![AffectedRange {
-                    kind: AffectedRangeKind::Semver,
-                    events: vec![
-                        AffectedEvent::Introduced("0.0.0".into()),
-                        AffectedEvent::Fixed("4.17.21".into()),
-                    ],
-                }],
-                versions: vec![],
-            },
-            fixed_versions: vec!["4.17.21".into()],
-            published_at: Some("2021-02-15T00:00:00Z".into()),
-            modified_at: Some("2023-07-18T00:00:00Z".into()),
-        }
-    }
-
-    #[test]
-    fn persist_and_load_vulnerabilities_roundtrip() {
-        let mut store = Store::open_in_memory().unwrap();
-        let vuln = sample_vuln();
-        let n = store
-            .persist_vulnerabilities(std::slice::from_ref(&vuln))
-            .unwrap();
-        assert_eq!(n, 1);
-
-        let rows = store.load_vulnerabilities("npm", "lodash").unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].advisory_id, "GHSA-1234-5678-abcd");
-        assert_eq!(rows[0].severity, Severity::High);
-        assert_eq!(rows[0].aliases.len(), 2);
-        assert_eq!(rows[0].fixed_versions, vec!["4.17.21".to_string()]);
-    }
-
-    #[test]
-    fn persist_vulnerabilities_is_idempotent_on_reruns() {
-        let mut store = Store::open_in_memory().unwrap();
-        let vuln = sample_vuln();
-        store
-            .persist_vulnerabilities(std::slice::from_ref(&vuln))
-            .unwrap();
-        store
-            .persist_vulnerabilities(std::slice::from_ref(&vuln))
-            .unwrap();
-        assert_eq!(store.count_vulnerabilities().unwrap(), 1);
-
-        // Updating the severity in a re-run is reflected (ON CONFLICT DO UPDATE).
-        let mut bumped = vuln;
-        bumped.severity = Severity::Critical;
-        store
-            .persist_vulnerabilities(std::slice::from_ref(&bumped))
-            .unwrap();
-        let rows = store.load_vulnerabilities("npm", "lodash").unwrap();
-        assert_eq!(rows[0].severity, Severity::Critical);
-    }
-
-    #[test]
-    fn persist_and_load_malware_reports_roundtrip() {
-        let mut store = Store::open_in_memory().unwrap();
-        let report = packguard_core::MalwareReport {
-            source: "osv-mal".into(),
-            ref_id: "MAL-2024-1234".into(),
-            ecosystem: "npm".into(),
-            package_name: "evil-pkg".into(),
-            version: "1.0.0".into(),
-            kind: MalwareKind::Malware,
-            summary: Some("Cryptominer in postinstall".into()),
-            url: Some("https://osv.dev/MAL-2024-1234".into()),
-            evidence: serde_json::json!({"id":"MAL-2024-1234"}),
-            reported_at: Some("2024-09-01T00:00:00Z".into()),
-        };
-        let n = store
-            .persist_malware_reports(std::slice::from_ref(&report))
-            .unwrap();
-        assert_eq!(n, 1);
-
-        let rows = store.load_malware_reports("npm", "evil-pkg").unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].source, "osv-mal");
-        assert_eq!(rows[0].kind, MalwareKind::Malware);
-        assert_eq!(rows[0].version.as_deref(), Some("1.0.0"));
-        assert_eq!(
-            rows[0].summary.as_deref(),
-            Some("Cryptominer in postinstall")
-        );
-
-        // Re-running with the same key updates rather than duplicates.
-        store
-            .persist_malware_reports(std::slice::from_ref(&report))
-            .unwrap();
-        assert_eq!(store.count_malware_reports().unwrap(), 1);
-    }
+    // 14.2d — V8 dropped `vulnerabilities`/`malware_reports`/`sync_log`
+    // from the per-project store. The corresponding `Store::persist_*` /
+    // `load_*` / `count_*` methods kept their signatures (they are still
+    // called by the migration test suite via `open_legacy_for_tests`)
+    // but no production code reaches them anymore. The standalone Store
+    // round-trips for those tables moved to `IntelStore::tests`.
 
     #[test]
     fn jobs_lifecycle_roundtrip() {
@@ -1766,61 +1710,6 @@ mod tests {
         let recent = store.load_recent_jobs(10).unwrap();
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].id, "job-2");
-    }
-
-    #[test]
-    fn whole_package_typosquat_uses_empty_version_marker() {
-        let mut store = Store::open_in_memory().unwrap();
-        let report = packguard_core::MalwareReport {
-            source: "typosquat-heuristic".into(),
-            ref_id: "typo:lodahs".into(),
-            ecosystem: "npm".into(),
-            package_name: "lodahs".into(),
-            version: String::new(), // whole-package suspicion
-            kind: MalwareKind::Typosquat,
-            summary: None,
-            url: None,
-            evidence: serde_json::json!({"resembles":"lodash","distance":2,"score":0.7}),
-            reported_at: None,
-        };
-        store
-            .persist_malware_reports(std::slice::from_ref(&report))
-            .unwrap();
-        let rows = store.load_malware_reports("npm", "lodahs").unwrap();
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].version.is_none(), "empty marker → None on read");
-        assert_eq!(rows[0].kind, MalwareKind::Typosquat);
-    }
-
-    #[test]
-    fn sync_log_roundtrip() {
-        let mut store = Store::open_in_memory().unwrap();
-        assert!(store.get_sync_state("osv-npm").unwrap().is_none());
-
-        let state = SyncState {
-            etag: Some("\"abc123\"".into()),
-            last_modified: Some("Wed, 15 Apr 2026 12:00:00 GMT".into()),
-            last_commit: None,
-            synced_at: Some("2026-04-20T10:00:00Z".into()),
-            record_count: 42_000,
-        };
-        store.put_sync_state("osv-npm", &state).unwrap();
-        let got = store.get_sync_state("osv-npm").unwrap().unwrap();
-        assert_eq!(got.etag.as_deref(), Some("\"abc123\""));
-        assert_eq!(got.record_count, 42_000);
-
-        // Upsert replaces.
-        let mut next = state.clone();
-        next.record_count = 43_000;
-        store.put_sync_state("osv-npm", &next).unwrap();
-        assert_eq!(
-            store
-                .get_sync_state("osv-npm")
-                .unwrap()
-                .unwrap()
-                .record_count,
-            43_000,
-        );
     }
 
     // ---- Phase 5: edges, compatibility, contamination cache --------------

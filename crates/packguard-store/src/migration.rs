@@ -138,7 +138,27 @@ fn is_already_migrated(packguard_home: &Path) -> Result<bool> {
 
 // --- Intel-wide --------------------------------------------------------
 
+/// Returns `true` when the legacy SQLite holds a table with this name.
+/// Used to short-circuit the intel-copy phases against a legacy file
+/// whose intel tables were dropped by V8 (the test seeds reach this
+/// state when they call `Store::open` instead of
+/// `Store::open_legacy_for_tests`; production never opens the legacy
+/// file via refinery, so V8 never fires there).
+fn legacy_has_table(legacy: &Connection, name: &str) -> Result<bool> {
+    let count: i64 = legacy
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            [name],
+            |row| row.get(0),
+        )
+        .with_context(|| format!("probing sqlite_master for {name}"))?;
+    Ok(count > 0)
+}
+
 fn migrate_sync_log(legacy: &Connection, intel: &mut IntelStore) -> Result<usize> {
+    if !legacy_has_table(legacy, "sync_log")? {
+        return Ok(0);
+    }
     let mut stmt = legacy
         .prepare(
             "SELECT kind, etag, last_modified, last_commit, synced_at, record_count \
@@ -168,6 +188,9 @@ fn migrate_sync_log(legacy: &Connection, intel: &mut IntelStore) -> Result<usize
 }
 
 fn migrate_vulnerabilities(legacy: &Connection, intel: &mut IntelStore) -> Result<usize> {
+    if !legacy_has_table(legacy, "vulnerabilities")? {
+        return Ok(0);
+    }
     // Denormalize the FK: read p.ecosystem + p.name in the same row so
     // intel.db can store the natural key inline.
     let mut stmt = legacy
@@ -219,6 +242,9 @@ fn migrate_vulnerabilities(legacy: &Connection, intel: &mut IntelStore) -> Resul
 }
 
 fn migrate_malware_reports(legacy: &Connection, intel: &mut IntelStore) -> Result<usize> {
+    if !legacy_has_table(legacy, "malware_reports")? {
+        return Ok(0);
+    }
     let mut stmt = legacy
         .prepare(
             "SELECT m.source, m.ref_id, p.ecosystem, p.name, m.version, m.kind, \

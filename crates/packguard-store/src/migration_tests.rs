@@ -107,7 +107,12 @@ fn build_dual_project_legacy(home: &Path) -> (PathBuf, PathBuf) {
     let repo_b = make_git_root(workspace, "repo-b");
 
     let store_path = home.join("store.db");
-    let mut store = Store::open(&store_path).unwrap();
+    // 14.2d — V8 drops `vulnerabilities`/`malware_reports`/`sync_log`,
+    // so the legacy fixture must stop at V7 to keep the seed step
+    // alive. Production migration code reads the legacy via raw
+    // `rusqlite` with `SQLITE_OPEN_READ_ONLY`, which never triggers
+    // refinery, so the V7 schema travels through migration unchanged.
+    let mut store = Store::open_legacy_for_tests(&store_path).unwrap();
 
     let pa = sample_project(
         &repo_a,
@@ -303,7 +308,7 @@ fn migrate_falls_back_to_default_for_orphan_repo() {
     std::fs::create_dir_all(&orphan).unwrap();
 
     let store_path = home.join("store.db");
-    let mut store = Store::open(&store_path).unwrap();
+    let mut store = Store::open_legacy_for_tests(&store_path).unwrap();
     let project = sample_project(
         &orphan,
         &[("left-pad", "^1.0.0", "1.3.0", DepKind::Runtime)],
@@ -498,6 +503,110 @@ fn migrate_smoke_against_real_nalo_backup() {
         intel.count_vulnerabilities().unwrap(),
         intel.count_malware_reports().unwrap()
     );
+}
+
+// ---- V8 contract tests ----------------------------------------------------
+
+#[test]
+fn v8_drops_intel_tables_from_project_store_schema() {
+    // A legacy V7 store still carries `vulnerabilities`, `malware_reports`,
+    // and `sync_log`. Re-opening it via [`Store::open`] runs V8, which
+    // must drop all three tables (the per-project store layer never
+    // reads them — IntelStore owns intel since 14.1c-e).
+    let tmp = TempDir::new().unwrap();
+    let store_path = tmp.path().join("legacy.db");
+    {
+        let _v7 = Store::open_legacy_for_tests(&store_path).unwrap();
+    }
+    // Confirm the V7 tables are present before V8 runs.
+    let pre = Connection::open(&store_path).unwrap();
+    for table in ["vulnerabilities", "malware_reports", "sync_log"] {
+        let count: i64 = pre
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                params![table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "V7 fixture missing table {table}");
+    }
+    drop(pre);
+
+    // Re-open via the production path — V8 fires.
+    let _v8 = Store::open(&store_path).unwrap();
+    let post = Connection::open(&store_path).unwrap();
+    for table in ["vulnerabilities", "malware_reports", "sync_log"] {
+        let count: i64 = post
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                params![table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "V8 must DROP {table} from per-project store");
+    }
+    // The supporting indexes are gone too.
+    for idx in [
+        "idx_vulns_pkg",
+        "idx_vulns_advisory",
+        "idx_malware_pkg",
+        "idx_malware_kind",
+    ] {
+        let count: i64 = post
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                params![idx],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "V8 must DROP index {idx}");
+    }
+}
+
+#[test]
+fn v8_is_idempotent_on_already_migrated_store() {
+    // Apply V8 twice (re-open the store) — the IF EXISTS guards in the
+    // migration must keep the second run a no-op rather than erroring.
+    let tmp = TempDir::new().unwrap();
+    let store_path = tmp.path().join("twice.db");
+    let _ = Store::open(&store_path).unwrap(); // V1..V8
+    let _ = Store::open(&store_path).unwrap(); // refinery sees V8 already applied
+    let _ = Store::open(&store_path).unwrap(); // belt + suspenders
+}
+
+#[test]
+fn v8_does_not_apply_to_renamed_legacy_backup() {
+    // The 14.2d boot path renames `<home>/store.db` to
+    // `<home>/store.db.v0.5-backup`. Refinery's path-based runner
+    // never matches the backup file (no `Store::open` is called on
+    // it), so the backup retains its V7 schema indefinitely. The
+    // contract is tested by opening the backup via raw rusqlite +
+    // confirming the intel tables survive intact.
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join(".packguard");
+    std::fs::create_dir_all(&home).unwrap();
+    let legacy = home.join("store.db");
+    {
+        let _v7 = Store::open_legacy_for_tests(&legacy).unwrap();
+    }
+    let backup = home.join("store.db.v0.5-backup");
+    std::fs::rename(&legacy, &backup).unwrap();
+
+    // Tables still there — refinery never touched the backup.
+    let conn = Connection::open(&backup).unwrap();
+    for table in ["vulnerabilities", "malware_reports", "sync_log"] {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                params![table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            ".v0.5-backup must keep {table} (V7 schema frozen)"
+        );
+    }
 }
 
 #[test]

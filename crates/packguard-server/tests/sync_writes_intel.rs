@@ -11,30 +11,26 @@ use packguard_server::services::sync_intel;
 use packguard_store::{IntelStore, ProjectStoreCache, Store};
 use tempfile::TempDir;
 
-/// Even when every upstream fetch fails (no network in the test
-/// environment, GHSA git binary unavailable, etc.), the legacy
-/// `Store` must not be touched. This is the contract guard:
-/// any future regression that re-routes a write to `Store` would
-/// flip a non-zero count in legacy here.
+/// 14.2d follow-up: now that V8 drops `vulnerabilities` and
+/// `malware_reports` from every per-project store schema, the only
+/// way a stray legacy write could land somewhere is into a V7-shaped
+/// fixture — i.e. exactly the file we keep as `.v0.5-backup`. Seed
+/// such a fixture, run sync, and confirm the V7 counts stay at zero.
 #[tokio::test]
 async fn sync_run_never_writes_intel_tables_to_legacy_store() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
-    let store = Store::open(&home.join("store.db")).unwrap();
+    // V7 fixture so the intel tables exist + are queryable; otherwise
+    // the test would be tautologically guaranteed by V8.
+    let store = Store::open_legacy_for_tests(&home.join("store.db")).unwrap();
     let mut intel = IntelStore::open(&home).unwrap();
     let project_stores = ProjectStoreCache::new(home.clone());
 
-    // Snapshot the legacy intel-table counts BEFORE the run. Any
-    // legacy write would bump these — they MUST stay at zero.
     let legacy_v_before = store.count_vulnerabilities().unwrap();
     let legacy_m_before = store.count_malware_reports().unwrap();
     assert_eq!(legacy_v_before, 0);
     assert_eq!(legacy_m_before, 0);
 
-    // Run the sync. With no `watched_packages` and likely no
-    // network, this is best-effort — every fetcher logs and moves
-    // on. We don't care about the SyncReport contents; we care
-    // about WHERE side-effects land.
     let _ = sync_intel::run(&mut intel, &project_stores).await;
 
     let legacy_v_after = store.count_vulnerabilities().unwrap();
@@ -144,7 +140,8 @@ async fn intel_writes_through_intel_store_leave_legacy_at_zero() {
 
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
-    let store = Store::open(&home.join("store.db")).unwrap();
+    // V7 legacy so `count_vulnerabilities` is queryable post-V8.
+    let store = Store::open_legacy_for_tests(&home.join("store.db")).unwrap();
     let mut intel = IntelStore::open(&home).unwrap();
 
     intel

@@ -337,7 +337,11 @@ fn audit_reads_cve_only_from_intel_store() {
             .save_project(&repo, &project, &remotes, "fp-per-project")
             .unwrap();
 
-        let mut store = Store::open(&store_path).unwrap();
+        // 14.2d — V8 dropped `vulnerabilities` from per-project schema.
+        // Use the V7 fixture opener so the seed step can still write to
+        // the legacy intel table — production never opens the legacy
+        // through refinery, so the V7 schema travels untouched.
+        let mut store = Store::open_legacy_for_tests(&store_path).unwrap();
         store
             .save_project(&repo, &project, &remotes, "fp-legacy")
             .unwrap();
