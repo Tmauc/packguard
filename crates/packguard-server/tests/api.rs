@@ -1745,3 +1745,255 @@ async fn unknown_project_query_returns_404_with_known_list() {
         "error should list known workspaces: {msg}",
     );
 }
+
+// ---- Phase 14.1f: GET / POST /api/projects + scope param backcompat -------
+
+/// Spawn a harness with explicit control over ProjectsRegistry. The
+/// `setup` closure receives all three stores plus the temp dir's repo
+/// path so a test can pre-stage rows in either the legacy `Store`,
+/// the IntelStore, or the registry before the server boots.
+async fn spawn_with_registry(
+    setup: impl FnOnce(&mut Store, &mut IntelStore, &mut ProjectsRegistry, &Path),
+) -> Harness {
+    let temp = tempfile::tempdir().unwrap();
+    let store_path = temp.path().join("store.db");
+    let repo_path = temp.path().join("repo");
+    std::fs::create_dir_all(&repo_path).unwrap();
+    let mut store = Store::open(&store_path).unwrap();
+    let mut intel = IntelStore::open(temp.path()).unwrap();
+    let mut registry = ProjectsRegistry::open(temp.path()).unwrap();
+    setup(&mut store, &mut intel, &mut registry, &repo_path);
+    drop(store);
+    drop(registry);
+
+    let store = Store::open(&store_path).unwrap();
+    let projects = ProjectsRegistry::open(temp.path()).unwrap();
+    let app = router(ServerConfig {
+        repo_path: repo_path.clone(),
+        store,
+        intel,
+        projects,
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    Harness {
+        base: format!("http://{addr}"),
+        _temp: temp,
+    }
+}
+
+/// Build a fixture git repo: a directory with a `.git/` child so
+/// `find_project_root` succeeds. Returns the canonical path
+/// `find_project_root` would resolve `path` to.
+fn fixture_git_repo(under: &Path, name: &str) -> std::path::PathBuf {
+    let repo = under.join(name);
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    repo.canonicalize().unwrap()
+}
+
+#[tokio::test]
+async fn projects_list_returns_empty_when_no_project_registered() {
+    let h = spawn(|_, _, _| {}).await;
+    let body = get_json(&h, "/api/projects").await;
+    let arr = body.as_array().unwrap();
+    assert!(arr.is_empty(), "expected empty list, got {body}");
+}
+
+#[tokio::test]
+async fn projects_list_returns_registered_projects_in_last_scan_order() {
+    let h = spawn_with_registry(|_, _, registry, _repo| {
+        // Two projects, second one explicitly bumped so it sorts first.
+        let tmp = tempfile::tempdir().unwrap();
+        let alpha = fixture_git_repo(tmp.path(), "alpha");
+        let beta = fixture_git_repo(tmp.path(), "beta");
+        // We have to lift the temp dir out of the closure before the
+        // registry rows reference its paths — but registry stores the
+        // canonical strings only, so dropping is fine after insert.
+        registry.create_project(&alpha).unwrap();
+        let beta_p = registry.create_project(&beta).unwrap();
+        registry.touch_last_scan(&beta_p.slug).unwrap();
+        std::mem::forget(tmp); // keep the .git dirs alive past closure
+    })
+    .await;
+    let body = get_json(&h, "/api/projects").await;
+    let arr = body.as_array().unwrap();
+    assert_eq!(arr.len(), 2, "expected 2 projects, got {body}");
+    // beta has last_scan set, alpha does not — beta sorts first.
+    assert!(
+        arr[0]["slug"].as_str().unwrap().contains("beta"),
+        "beta must sort first: {body}"
+    );
+    assert!(arr[0]["last_scan"].is_string());
+    assert!(arr[1]["last_scan"].is_null());
+}
+
+#[tokio::test]
+async fn projects_create_with_valid_path_returns_202_and_job_id() {
+    let tmp_for_repo = tempfile::tempdir().unwrap();
+    let repo = fixture_git_repo(tmp_for_repo.path(), "demo");
+    let h = spawn(|_, _, _| {}).await;
+    let url = format!("{}/api/projects", h.base);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({ "path": repo.display().to_string() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["id"].is_string(), "expected job id: {body}");
+}
+
+#[tokio::test]
+async fn projects_create_with_nonexistent_path_returns_400() {
+    let h = spawn(|_, _, _| {}).await;
+    let url = format!("{}/api/projects", h.base);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({ "path": "/this/does/not/exist/anywhere" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let msg = body["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("does not exist") || msg.contains("path"),
+        "error should mention the missing path: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn projects_create_with_file_path_returns_400() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("README.md");
+    std::fs::write(&file, b"hello").unwrap();
+    let h = spawn(|_, _, _| {}).await;
+    let url = format!("{}/api/projects", h.base);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({ "path": file.display().to_string() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not a directory"));
+}
+
+#[tokio::test]
+async fn projects_create_with_path_lacking_git_ancestor_returns_400() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lone_dir = tmp.path().join("loose");
+    std::fs::create_dir_all(&lone_dir).unwrap();
+    let h = spawn(|_, _, _| {}).await;
+    let url = format!("{}/api/projects", h.base);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({ "path": lone_dir.display().to_string() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not inside a git repository"));
+}
+
+#[tokio::test]
+async fn projects_create_with_relative_path_returns_400() {
+    let h = spawn(|_, _, _| {}).await;
+    let url = format!("{}/api/projects", h.base);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({ "path": "relative/path" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("absolute"));
+}
+
+#[tokio::test]
+async fn legacy_path_query_param_emits_deprecation_header() {
+    // The Phase 13 dashboard still passes ?project=<absolute path>;
+    // 14.3 will switch to slugs. Until then the legacy form must keep
+    // working AND surface the deprecation header so the next dashboard
+    // PR can detect it in code review / browser devtools.
+    let h = spawn(seed_lodash_with_high_cve).await;
+    let workspaces = get_json(&h, "/api/workspaces").await;
+    let path = workspaces["workspaces"][0]["path"].as_str().unwrap();
+    let url = format!("{}/api/overview?project={path}", h.base);
+    let resp = reqwest::get(&url).await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let header = resp
+        .headers()
+        .get("x-packguard-deprecated")
+        .expect("deprecation header must be present on legacy path scope");
+    let value = header.to_str().unwrap();
+    assert!(
+        value.contains("?project=<path> is deprecated") && value.contains("?project=<slug>"),
+        "header should explain the migration path: {value}"
+    );
+}
+
+#[tokio::test]
+async fn slug_query_param_resolves_via_registry_without_deprecation_header() {
+    // ?project=<slug> is the new form. For 14.1f the SQL filter still
+    // falls back to aggregate (full project→workspace cascade is 14.2),
+    // but the slug must validate against the registry — and the
+    // response must NOT carry the deprecation header.
+    let h = spawn_with_registry(|_, _, registry, _| {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = fixture_git_repo(tmp.path(), "monorepo");
+        registry.create_project(&repo).unwrap();
+        std::mem::forget(tmp);
+    })
+    .await;
+    let projects = get_json(&h, "/api/projects").await;
+    let slug = projects[0]["slug"].as_str().unwrap();
+    let url = format!("{}/api/overview?project={slug}", h.base);
+    let resp = reqwest::get(&url).await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert!(
+        resp.headers().get("x-packguard-deprecated").is_none(),
+        "slug scope must not emit the deprecation header"
+    );
+}
+
+#[tokio::test]
+async fn unknown_slug_returns_404_with_known_slug_list() {
+    let h = spawn_with_registry(|_, _, registry, _| {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = fixture_git_repo(tmp.path(), "first");
+        let b = fixture_git_repo(tmp.path(), "second");
+        registry.create_project(&a).unwrap();
+        registry.create_project(&b).unwrap();
+        std::mem::forget(tmp);
+    })
+    .await;
+    let url = format!("{}/api/overview?project=does-not-exist", h.base);
+    let resp = reqwest::get(&url).await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let msg = body["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("unknown project slug"), "got: {msg}");
+    // The error body should enumerate the registered slugs so the
+    // dashboard can suggest next steps without a second round-trip.
+    assert!(
+        msg.contains("first") || msg.contains("second"),
+        "expected known slugs in error: {msg}"
+    );
+}

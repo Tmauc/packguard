@@ -21,6 +21,11 @@ use uuid::Uuid;
 pub enum JobSpec {
     Scan(Option<PathBuf>),
     Sync,
+    /// Phase 14.1f — registers the canonical project root in the
+    /// `ProjectsRegistry`, then runs a recursive scan against it. On
+    /// success the registry's `last_scan` is bumped so the dashboard
+    /// sorts the new project first.
+    AddProject(PathBuf),
 }
 
 impl JobSpec {
@@ -28,6 +33,7 @@ impl JobSpec {
         match self {
             JobSpec::Scan(_) => JobKind::Scan,
             JobSpec::Sync => JobKind::Sync,
+            JobSpec::AddProject(_) => JobKind::AddProject,
         }
     }
 }
@@ -60,6 +66,7 @@ async fn run_job(state: AppState, id: String, spec: JobSpec) {
             run_scan_job(&state, repo).await
         }
         JobSpec::Sync => run_sync_job(&state).await,
+        JobSpec::AddProject(path) => run_add_project_job(&state, path).await,
     };
 
     let mut store = state.store.lock().await;
@@ -81,6 +88,32 @@ async fn run_scan_job(state: &AppState, repo: PathBuf) -> Result<serde_json::Val
     Ok(serde_json::to_value(report)?)
 }
 
+/// Phase 14.1f — register the project in the registry, run a scan
+/// against its root, then bump `last_scan`. Failure to register (e.g.
+/// a duplicate slug) propagates as a job error; once registered, a
+/// subsequent scan failure leaves the registry row in place but with
+/// `last_scan = NULL` so the dashboard can show "scan failed, retry".
+///
+/// The scan still writes to the legacy global `Store` for now —
+/// 14.1f's contract is "registry + endpoint exist", not "per-project
+/// stores are populated". The cutover that routes scans into
+/// `~/.packguard/projects/<slug>/store.db` lives in 14.2.
+async fn run_add_project_job(state: &AppState, path: PathBuf) -> Result<serde_json::Value> {
+    let project_dto: crate::dto::ProjectDto = {
+        let mut registry = state.projects.lock().await;
+        registry.create_project(&path)?.into()
+    };
+    let scan_payload = run_scan_job(state, path).await?;
+    {
+        let mut registry = state.projects.lock().await;
+        registry.touch_last_scan(&project_dto.slug)?;
+    }
+    Ok(serde_json::json!({
+        "project": project_dto,
+        "scan": scan_payload,
+    }))
+}
+
 async fn run_sync_job(state: &AppState) -> Result<serde_json::Value> {
     // Phase 14.1e.2 — the sync flow now writes to IntelStore for every
     // intel-wide table (sync_log, vulnerabilities, malware_reports);
@@ -95,6 +128,7 @@ async fn run_sync_job(state: &AppState) -> Result<serde_json::Value> {
 pub fn to_view(stored: packguard_store::StoredJob) -> JobView {
     let kind = match stored.kind.as_str() {
         "scan" => JobKind::Scan,
+        "add_project" => JobKind::AddProject,
         _ => JobKind::Sync,
     };
     let status =

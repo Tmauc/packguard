@@ -3,17 +3,16 @@
 
 use crate::dto::{
     ActionDeferRequest, ActionDeferResponse, ActionDismissRequest, ActionDismissResponse,
-    ActionsQuery, ActionsResponse, CompatResponse, ContaminatedQuery, ContaminationResult,
-    GraphQuery, GraphResponse, GraphVulnerabilityList, JobAccepted, JobView, Overview,
-    PackageDetail, PackagesPage, PackagesQuery, PolicyDocument, PolicyDryRun, PolicyDryRunResult,
-    PolicyWrite, ProjectQuery, WorkspacesResponse,
+    ActionsQuery, ActionsResponse, AddProjectRequest, ContaminatedQuery, GraphQuery, JobAccepted,
+    JobView, PackagesQuery, PolicyDryRun, PolicyWrite, ProjectDto, ProjectQuery,
+    WorkspacesResponse,
 };
 use crate::error::ApiError;
 use crate::jobs;
 use crate::services;
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -60,6 +59,7 @@ pub fn router(cfg: ServerConfig) -> Router {
         .route("/api/sync", post(sync_create))
         .route("/api/jobs/{id}", get(job_get))
         .route("/api/workspaces", get(workspaces_list))
+        .route("/api/projects", get(projects_list).post(projects_create))
         .route("/api/actions", get(actions_list))
         .route("/api/actions/{id}/dismiss", post(actions_dismiss))
         .route("/api/actions/{id}/defer", post(actions_defer))
@@ -89,142 +89,140 @@ async fn health() -> impl IntoResponse {
 async fn overview(
     State(s): State<AppState>,
     Query(q): Query<ProjectQuery>,
-) -> Result<Json<Overview>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let store = s.store.lock().await;
     let intel = s.intel.lock().await;
-    let project = resolve_project_filter(&store, q.project.as_deref())?;
-    Ok(Json(services::overview::build(
-        &store,
-        &intel,
-        project.as_deref(),
-    )?))
+    let registry = s.projects.lock().await;
+    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
+    let body = services::overview::build(&store, &intel, scope.path())?;
+    Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
 async fn packages_list(
     State(s): State<AppState>,
     Query(q): Query<PackagesQuery>,
-) -> Result<Json<PackagesPage>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let store = s.store.lock().await;
     let intel = s.intel.lock().await;
-    let project = resolve_project_filter(&store, q.project.as_deref())?;
-    Ok(Json(services::packages::list(
-        &store,
-        &intel,
-        &q,
-        project.as_deref(),
-    )?))
+    let registry = s.projects.lock().await;
+    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
+    let body = services::packages::list(&store, &intel, &q, scope.path())?;
+    Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
 async fn package_detail(
     State(s): State<AppState>,
     Path((ecosystem, name)): Path<(String, String)>,
     Query(q): Query<ProjectQuery>,
-) -> Result<Json<PackageDetail>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let store = s.store.lock().await;
     let intel = s.intel.lock().await;
-    let project = resolve_project_filter(&store, q.project.as_deref())?;
-    services::packages::detail(&store, &intel, &ecosystem, &name, project.as_deref())?
-        .map(Json)
-        .ok_or_else(|| ApiError::NotFound(format!("{ecosystem}/{name} not in scan cache")))
+    let registry = s.projects.lock().await;
+    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
+    let detail = services::packages::detail(&store, &intel, &ecosystem, &name, scope.path())?
+        .ok_or_else(|| ApiError::NotFound(format!("{ecosystem}/{name} not in scan cache")))?;
+    Ok(with_deprecation_header(detail, scope.is_legacy()))
 }
 
 async fn policy_get(
     State(s): State<AppState>,
     Query(q): Query<ProjectQuery>,
-) -> Result<Json<PolicyDocument>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let store = s.store.lock().await;
-    let project = resolve_project_filter(&store, q.project.as_deref())?;
-    let repo = project.as_deref().unwrap_or(&s.repo_path);
-    Ok(Json(services::policies::read(repo)?))
+    let registry = s.projects.lock().await;
+    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
+    let repo = scope.path().unwrap_or(&s.repo_path);
+    let body = services::policies::read(repo)?;
+    Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
 async fn policy_put(
     State(s): State<AppState>,
     Query(q): Query<ProjectQuery>,
     Json(body): Json<PolicyWrite>,
-) -> Result<Json<PolicyDocument>, ApiError> {
-    let repo = {
+) -> Result<axum::response::Response, ApiError> {
+    let (repo, deprecated) = {
         let store = s.store.lock().await;
-        resolve_project_filter(&store, q.project.as_deref())?.unwrap_or_else(|| s.repo_path.clone())
+        let registry = s.projects.lock().await;
+        let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
+        let path = scope
+            .path()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| s.repo_path.clone());
+        (path, scope.is_legacy())
     };
-    services::policies::write(&repo, &body.yaml)
-        .map(Json)
-        .map_err(policy_error_to_api)
+    let doc = services::policies::write(&repo, &body.yaml).map_err(policy_error_to_api)?;
+    Ok(with_deprecation_header(doc, deprecated))
 }
 
 async fn graph_get(
     State(s): State<AppState>,
     Query(q): Query<GraphQuery>,
-) -> Result<Json<GraphResponse>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let store = s.store.lock().await;
     let intel = s.intel.lock().await;
-    let project = resolve_project_filter(&store, q.project.as_deref())?;
-    Ok(Json(services::graph::build(
+    let registry = s.projects.lock().await;
+    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
+    let body = services::graph::build(
         &store,
         &intel,
-        project.as_deref(),
+        scope.path(),
         q.workspace.as_deref(),
         q.max_depth,
         q.kind.as_deref(),
-    )?))
+    )?;
+    Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
 async fn graph_contaminated(
     State(s): State<AppState>,
     Query(q): Query<ContaminatedQuery>,
-) -> Result<Json<ContaminationResult>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let store = s.store.lock().await;
     let intel = s.intel.lock().await;
-    let project = resolve_project_filter(&store, q.project.as_deref())?;
-    Ok(Json(services::graph::contaminated_chains(
-        &store,
-        &intel,
-        project.as_deref(),
-        &q.vuln_id,
-    )?))
+    let registry = s.projects.lock().await;
+    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
+    let body = services::graph::contaminated_chains(&store, &intel, scope.path(), &q.vuln_id)?;
+    Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
 async fn graph_vulnerabilities(
     State(s): State<AppState>,
     Query(q): Query<ProjectQuery>,
-) -> Result<Json<GraphVulnerabilityList>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let store = s.store.lock().await;
     let intel = s.intel.lock().await;
-    let project = resolve_project_filter(&store, q.project.as_deref())?;
-    Ok(Json(services::graph::vulnerabilities(
-        &store,
-        &intel,
-        project.as_deref(),
-    )?))
+    let registry = s.projects.lock().await;
+    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
+    let body = services::graph::vulnerabilities(&store, &intel, scope.path())?;
+    Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
 async fn package_compat(
     State(s): State<AppState>,
     Path((ecosystem, name)): Path<(String, String)>,
     Query(q): Query<ProjectQuery>,
-) -> Result<Json<CompatResponse>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let store = s.store.lock().await;
-    let project = resolve_project_filter(&store, q.project.as_deref())?;
-    Ok(Json(services::graph::compat(
-        &store,
-        project.as_deref(),
-        &ecosystem,
-        &name,
-    )?))
+    let registry = s.projects.lock().await;
+    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
+    let body = services::graph::compat(&store, scope.path(), &ecosystem, &name)?;
+    Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
 async fn policy_dry_run(
     State(s): State<AppState>,
     Query(q): Query<ProjectQuery>,
     Json(body): Json<PolicyDryRun>,
-) -> Result<Json<PolicyDryRunResult>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let store = s.store.lock().await;
     let intel = s.intel.lock().await;
-    let project = resolve_project_filter(&store, q.project.as_deref())?;
-    let repo = project.as_deref().unwrap_or(&s.repo_path);
-    services::policies::dry_run(&store, &intel, repo, &body.yaml)
-        .map(Json)
-        .map_err(policy_error_to_api)
+    let registry = s.projects.lock().await;
+    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
+    let repo = scope.path().unwrap_or(&s.repo_path);
+    let result = services::policies::dry_run(&store, &intel, repo, &body.yaml)
+        .map_err(policy_error_to_api)?;
+    Ok(with_deprecation_header(result, scope.is_legacy()))
 }
 
 fn policy_error_to_api(err: services::policies::PolicyError) -> ApiError {
@@ -234,46 +232,144 @@ fn policy_error_to_api(err: services::policies::PolicyError) -> ApiError {
     }
 }
 
-/// Phase 7a: validate + canonicalize the `?project=<path>` query param.
+/// Phase 14.1f deprecation header value for legacy `?project=<path>`.
+/// Surfaces on every response that resolved its scope from a path
+/// rather than a slug. Callers in 14.3+ should pass slugs instead.
 ///
-/// - `None` → the caller runs the aggregate path (no workspace filter).
-/// - `Some(raw)` → canonicalize through `normalize_repo_path`, assert
-///   the result lives in `store.distinct_repo_paths()`, and hand back a
-///   `PathBuf` the services can feed into their path-scoped lookups.
+/// Visible-ASCII only — HTTP header values reject everything else, so
+/// no em-dash / Unicode arrow even though they read better in prose.
+const DEPRECATED_PATH_QUERY_HEADER: &str = "?project=<path> is deprecated, \
+    use ?project=<slug> instead. \
+    See https://packguard-docs.vercel.app/changelog/v0.6.0";
+
+/// Phase 14.1f scope outcome. Returned by [`resolve_scope`] so handlers
+/// know both *what* to filter by and *whether* the caller used the
+/// deprecated path-style query param (so the response can carry
+/// `X-PackGuard-Deprecated`).
 ///
-/// Unknown paths surface as 404 with the known-workspace list inline so
-/// the CLI / dashboard can recover without a second round-trip.
-fn resolve_project_filter(
-    store: &packguard_store::Store,
-    raw: Option<&str>,
-) -> Result<Option<PathBuf>, ApiError> {
-    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
-        return Ok(None);
-    };
-    let candidate = PathBuf::from(raw);
-    let canonical = packguard_store::normalize_repo_path(&candidate);
-    let known: Vec<String> = store
-        .distinct_repo_paths()
-        .map_err(ApiError::Internal)?
-        .into_iter()
-        .map(|p| p.display().to_string())
-        .collect();
-    if known.iter().any(|p| p == &canonical) {
-        Ok(Some(PathBuf::from(canonical)))
-    } else {
-        let listed = if known.is_empty() {
-            "(no scans in store — run `packguard scan <path>` first)".to_string()
-        } else {
-            known
-                .iter()
-                .map(|p| format!("  - {p}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        Err(ApiError::NotFound(format!(
-            "unknown workspace '{raw}'. Known workspaces:\n{listed}"
-        )))
+/// The legacy `Option<PathBuf>` accessor is kept via [`Self::path`] so
+/// existing services keep filtering on `repos.path = ?` for now —
+/// project-aware SQL filtering lands in 14.2 alongside the per-project
+/// store cutover.
+#[derive(Debug, Clone)]
+enum ResolvedScope {
+    /// `?project` absent or empty → no filter.
+    Aggregate,
+    /// `?project=<absolute path>` (legacy form). Filter on this path
+    /// and emit `X-PackGuard-Deprecated`.
+    LegacyPath(PathBuf),
+    /// `?project=<slug>` (new form). The slug is validated against the
+    /// registry, but for 14.1f the SQL layer still treats this as
+    /// aggregate — the project→workspace cascade is 14.2's job. The
+    /// resolved [`Project`](packguard_store::projects_registry::Project)
+    /// is kept on the variant so 14.2 has it without re-locking the
+    /// registry.
+    #[allow(dead_code)]
+    Slug(packguard_store::projects_registry::Project),
+}
+
+impl ResolvedScope {
+    /// Path passed to the per-path service-layer filters. Slug scopes
+    /// fall through to `None` (aggregate) for 14.1f.
+    fn path(&self) -> Option<&std::path::Path> {
+        match self {
+            ResolvedScope::Aggregate | ResolvedScope::Slug(_) => None,
+            ResolvedScope::LegacyPath(p) => Some(p.as_path()),
+        }
     }
+
+    fn is_legacy(&self) -> bool {
+        matches!(self, ResolvedScope::LegacyPath(_))
+    }
+}
+
+/// Validate + canonicalize the `?project=<X>` query param. Accepts
+/// either a slug (new form) or an absolute path (legacy form, kept
+/// alive for the Phase 13 dashboard until 14.3 ships its slug-aware
+/// `ProjectSelector`).
+///
+/// - `None` / empty → [`ResolvedScope::Aggregate`].
+/// - Path (`/...`) → canonicalize, assert it lives in
+///   `store.distinct_repo_paths()`, return [`ResolvedScope::LegacyPath`].
+/// - Slug → look up in the registry, return [`ResolvedScope::Slug`].
+///
+/// Unknown paths or slugs surface as 404 so the CLI / dashboard can
+/// recover without a second round-trip.
+fn resolve_scope(
+    store: &packguard_store::Store,
+    registry: &ProjectsRegistry,
+    raw: Option<&str>,
+) -> Result<ResolvedScope, ApiError> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(ResolvedScope::Aggregate);
+    };
+    if raw.starts_with('/') {
+        let candidate = PathBuf::from(raw);
+        let canonical = packguard_store::normalize_repo_path(&candidate);
+        let known: Vec<String> = store
+            .distinct_repo_paths()
+            .map_err(ApiError::Internal)?
+            .into_iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        if known.iter().any(|p| p == &canonical) {
+            Ok(ResolvedScope::LegacyPath(PathBuf::from(canonical)))
+        } else {
+            let listed = if known.is_empty() {
+                "(no scans in store — run `packguard scan <path>` first)".to_string()
+            } else {
+                known
+                    .iter()
+                    .map(|p| format!("  - {p}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            Err(ApiError::NotFound(format!(
+                "unknown workspace '{raw}'. Known workspaces:\n{listed}"
+            )))
+        }
+    } else {
+        let project = registry.get_by_slug(raw).map_err(ApiError::Internal)?;
+        match project {
+            Some(p) => Ok(ResolvedScope::Slug(p)),
+            None => {
+                let known: Vec<String> = registry
+                    .list_projects()
+                    .map_err(ApiError::Internal)?
+                    .into_iter()
+                    .map(|p| p.slug)
+                    .collect();
+                let listed = if known.is_empty() {
+                    "(no projects registered — POST /api/projects first)".to_string()
+                } else {
+                    known
+                        .iter()
+                        .map(|s| format!("  - {s}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                Err(ApiError::NotFound(format!(
+                    "unknown project slug '{raw}'. Known slugs:\n{listed}"
+                )))
+            }
+        }
+    }
+}
+
+/// Wrap a serializable body with `X-PackGuard-Deprecated` when the
+/// caller used a legacy path-style `?project=<path>` scope.
+fn with_deprecation_header<T: serde::Serialize>(
+    body: T,
+    deprecated: bool,
+) -> axum::response::Response {
+    let mut resp = Json(body).into_response();
+    if deprecated {
+        resp.headers_mut().insert(
+            HeaderName::from_static("x-packguard-deprecated"),
+            HeaderValue::from_static(DEPRECATED_PATH_QUERY_HEADER),
+        );
+    }
+    resp
 }
 
 #[derive(serde::Deserialize)]
@@ -354,17 +450,18 @@ async fn workspaces_list(State(s): State<AppState>) -> Result<Json<WorkspacesRes
 async fn actions_list(
     State(s): State<AppState>,
     Query(q): Query<ActionsQuery>,
-) -> Result<Json<ActionsResponse>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let store = s.store.lock().await;
     let intel = s.intel.lock().await;
-    let project = resolve_project_filter(&store, q.project.as_deref())?;
+    let registry = s.projects.lock().await;
+    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
     let now = chrono::Utc::now();
     let include_dismissed = q.include_dismissed.unwrap_or(false);
     let include_deferred = q.include_deferred.unwrap_or(false);
     let mut actions = packguard_actions::collect_all(
         &store,
         &intel,
-        project.as_deref(),
+        scope.path(),
         now,
         include_dismissed,
         include_deferred,
@@ -376,7 +473,10 @@ async fn actions_list(
             packguard_actions::filter_min_severity(&mut actions, threshold);
         }
     }
-    Ok(Json(ActionsResponse { actions, total }))
+    Ok(with_deprecation_header(
+        ActionsResponse { actions, total },
+        scope.is_legacy(),
+    ))
 }
 
 /// Locate an action by its stable id from the global (unfiltered) set.
@@ -438,4 +538,46 @@ async fn actions_restore(
     let mut store = s.store.lock().await;
     packguard_actions::restore(&mut store, &id).map_err(ApiError::Internal)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- Phase 14.1f: /api/projects --------------------------------------------
+
+async fn projects_list(State(s): State<AppState>) -> Result<Json<Vec<ProjectDto>>, ApiError> {
+    let registry = s.projects.lock().await;
+    let projects = registry.list_projects().map_err(ApiError::Internal)?;
+    Ok(Json(projects.into_iter().map(ProjectDto::from).collect()))
+}
+
+async fn projects_create(
+    State(s): State<AppState>,
+    Json(body): Json<AddProjectRequest>,
+) -> Result<(StatusCode, Json<JobAccepted>), ApiError> {
+    let raw = std::path::Path::new(&body.path);
+    if !raw.is_absolute() {
+        return Err(ApiError::BadRequest(format!(
+            "path must be absolute: {}",
+            raw.display()
+        )));
+    }
+    let canonical = raw.canonicalize().map_err(|e| {
+        ApiError::BadRequest(format!("path does not exist: {} ({e})", raw.display()))
+    })?;
+    if !canonical.is_dir() {
+        return Err(ApiError::BadRequest(format!(
+            "path is not a directory: {}",
+            canonical.display()
+        )));
+    }
+    // Walk-up to find the enclosing git root. The job will repeat this
+    // resolution inside `registry.create_project` (so the registry stays
+    // the source of truth on slug derivation), but front-loading the
+    // check here lets us 400 instead of failing the job a second later.
+    let root = packguard_core::find_project_root(&canonical).ok_or_else(|| {
+        ApiError::BadRequest(format!(
+            "{} is not inside a git repository (no .git/ ancestor below $HOME)",
+            canonical.display()
+        ))
+    })?;
+    let id = jobs::spawn(s, jobs::JobSpec::AddProject(root)).await?;
+    Ok((StatusCode::ACCEPTED, Json(JobAccepted { id })))
 }
