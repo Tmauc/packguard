@@ -82,33 +82,18 @@ async fn run_job(state: AppState, id: String, spec: JobSpec) {
     }
 }
 
-/// Phase 14.2b — scans now dual-write: the per-project store under
-/// `<home>/projects/<slug>/store.db` (the runtime source of truth
-/// post-bascule) AND the legacy global `Store` (kept fresh so the
-/// not-yet-bascule'd surfaces — `?project=<path>`, aggregate, the CLI
-/// `report/audit` commands — keep matching the dashboard until 14.2c
-/// migrates them and 14.2d retires the legacy file).
+/// Phase 14.2b.2.3 — per-project store only. The legacy global
+/// `Store` is no longer written to by the scan path; the legacy file
+/// becomes a frozen migration snapshot until 14.2d retires it.
 ///
-/// Slug resolution: walk up from `repo` to find the project root,
-/// look up the registry. If no entry exists, the dual-write skips the
-/// per-project leg (a `packguard scan <path>` from outside any
-/// registered project still works against the legacy store; the user
-/// can `POST /api/projects` later to promote the path).
+/// Slug resolution: walk up from `repo` to find the project root.
+/// On miss, fall back to `_default_` (matches the 14.1d migration's
+/// fallback for paths outside any `.git/` tree). Auto-create
+/// `_default_` if even that's missing so the per-project layer
+/// always has a destination — the dashboard's aggregate read
+/// requires `slug_paths()` to be non-empty, and `packguard scan`
+/// from a fresh install is the canonical way to seed it.
 async fn run_scan_job(state: &AppState, repo: PathBuf) -> Result<serde_json::Value> {
-    // Always write to the legacy store first. After 14.2d this branch
-    // disappears.
-    let report = {
-        let mut store = state.store.lock().await;
-        scan::run(&mut store, &repo).await?
-    };
-
-    // Per-project write. Resolve a slug, falling back to `_default_`
-    // for paths outside any `.git/` tree (matching the 14.1d
-    // migration's partition behaviour). If `_default_` isn't yet
-    // registered (fresh install, no migration has run on this home),
-    // create it so the per-project layer always has somewhere to
-    // land — that's what keeps `slug_paths()` non-empty for the
-    // aggregate fanout reads.
     let slug = {
         let mut registry = state.projects.lock().await;
         let resolved = registry
@@ -125,34 +110,17 @@ async fn run_scan_job(state: &AppState, repo: PathBuf) -> Result<serde_json::Val
             }
         }
     };
-    {
-        let pstore = state.project_stores.get_or_open(&slug).await?;
-        let mut pstore = pstore.lock().await;
-        // Re-run the scan into the per-project store. Idempotent:
-        // both stores get the same `save_project` payload from the
-        // same registry+filesystem state. Best-effort during the
-        // 14.2b transition — if per-project picks a different set of
-        // targets (its own `distinct_repo_paths` differs from the
-        // legacy's), the resulting "no manifest found" is fine to
-        // swallow because the legacy write is still authoritative.
-        // Commit 3 drops the legacy leg + treats per-project errors
-        // as fatal.
-        if let Err(err) = scan::run(&mut pstore, &repo).await {
-            tracing::warn!(
-                slug = %slug,
-                ?err,
-                "per-project scan dual-write skipped — legacy is authoritative until 14.2b.3",
-            );
-        }
-    }
+    let pstore = state.project_stores.get_or_open(&slug).await?;
+    let mut pstore = pstore.lock().await;
+    let report = scan::run(&mut pstore, &repo).await?;
     Ok(serde_json::to_value(report)?)
 }
 
-/// Phase 14.1f / 14.2b — register the project in the registry, run a
-/// scan against its root (dual-write to legacy + per-project store),
-/// then bump `last_scan`. The per-project store is created on first
-/// `get_or_open` inside `run_scan_job` since the registry insert
-/// already commits the slug.
+/// Phase 14.1f / 14.2b.2 — register the project in the registry,
+/// run a scan against its root (writes only to the per-project store
+/// post-bascule), then bump `last_scan`. The per-project store is
+/// created on first `get_or_open` inside `run_scan_job` since the
+/// registry insert already commits the slug.
 async fn run_add_project_job(state: &AppState, path: PathBuf) -> Result<serde_json::Value> {
     let project_dto: crate::dto::ProjectDto = {
         let mut registry = state.projects.lock().await;

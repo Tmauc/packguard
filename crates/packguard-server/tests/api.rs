@@ -626,10 +626,17 @@ async fn scan_walks_every_registered_repo_not_just_server_cwd() {
             .unwrap();
     }
 
+    // 14.2b.2.3 — scan now writes to the per-project store only.
+    // Migrate the legacy seed so `_default_` gets `scanned_repo` in
+    // its `repos` table; otherwise `scan::run` on a fresh per-
+    // project store falls back to the server_cwd repo_root and 404s
+    // on the missing manifest.
+    packguard_store::migration::migrate_legacy_if_present(temp.path()).unwrap();
+
     // Start the server pointed at the *scratch* server_cwd (no manifest).
     let store = Store::open(&store_path).unwrap();
-    let intel = IntelStore::open_in_memory().unwrap();
-    let projects = ProjectsRegistry::open_in_memory().unwrap();
+    let intel = IntelStore::open(temp.path()).unwrap();
+    let projects = ProjectsRegistry::open(temp.path()).unwrap();
     let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: server_cwd.clone(),
@@ -2046,6 +2053,67 @@ async fn slug_query_param_resolves_via_registry_without_deprecation_header() {
     assert!(
         resp.headers().get("x-packguard-deprecated").is_none(),
         "slug scope must not emit the deprecation header"
+    );
+}
+
+// ---- Phase 14.2b.2.3: scan no longer writes to legacy ----------------------
+
+/// Smoke #4 contract — `POST /api/scan` writes only to the per-project
+/// store. The legacy file's md5 must be byte-identical before and
+/// after a successful scan, even when the scan path falls back to
+/// `_default_` (path outside any registered project).
+#[tokio::test]
+async fn scan_does_not_dual_write_to_legacy_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let store_path = temp.path().join("store.db");
+    let alt = tempfile::tempdir().unwrap();
+    std::fs::write(
+        alt.path().join("package.json"),
+        r#"{"name":"smoke","dependencies":{"lodash":"^4.17.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        alt.path().join("package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"":{},"node_modules/lodash":{"version":"4.17.20"}}}"#,
+    )
+    .unwrap();
+
+    let h = spawn(|_, _, _| {}).await;
+    // After spawn, legacy `store.db` exists with refinery migrations
+    // applied but no project rows. Snapshot its bytes for the
+    // post-scan comparison.
+    let _ = (temp, store_path);
+    let legacy_pre = std::fs::read(h._temp.path().join("store.db")).unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/scan", h.base))
+        .query(&[("path", alt.path().to_str().unwrap())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let id = body["id"].as_str().unwrap().to_string();
+    let final_state = poll_job(&h, &id).await;
+    assert_eq!(final_state["status"], "succeeded", "scan must succeed");
+
+    // Per-project store has the workspace.
+    let pdir = h
+        ._temp
+        .path()
+        .join("projects/_default_/store.db");
+    assert!(
+        pdir.is_file(),
+        "scan must create the _default_ per-project store"
+    );
+
+    // Legacy file content unchanged byte-for-byte. SQLite WAL is
+    // committed by `Store::open`'s checkpoint when the connection
+    // is dropped, so a no-op scan path leaves the main file frozen.
+    let legacy_post = std::fs::read(h._temp.path().join("store.db")).unwrap();
+    assert_eq!(
+        legacy_pre, legacy_post,
+        "scan must NOT write to the legacy global store after 14.2b.2.3"
     );
 }
 
