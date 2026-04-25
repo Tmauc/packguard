@@ -13,7 +13,7 @@ use packguard_intel::{match_vulnerabilities, MatchedVuln};
 use packguard_policy::{
     evaluate_dependency_full, Compliance, Dialect, Policy, ReleaseInfo, VulnsByVersion,
 };
-use packguard_store::Store;
+use packguard_store::{IntelStore, ProjectsRegistry, Store};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -251,6 +251,33 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let store_path = resolve_store_path(cli.store)?;
+    let packguard_home = home_from_store_path(&store_path);
+
+    // Run the legacy-store layout migration once before any command
+    // touches the store. Idempotent — a no-op on already-migrated
+    // homes (the common case after first boot) and on fresh installs
+    // (no legacy file). The banner only fires on the actual cutover.
+    let migration_report = packguard_store::migration::migrate_legacy_if_present(&packguard_home)
+        .context("running legacy-layout migration")?;
+    if migration_report.legacy_found && !migration_report.already_migrated {
+        let plural = if migration_report.projects_created == 1 {
+            ""
+        } else {
+            "s"
+        };
+        eprintln!(
+            "{} Migrated to per-project layout: {} project{}, {} workspaces, {} CVEs.",
+            "✓".green(),
+            migration_report.projects_created,
+            plural,
+            migration_report.workspaces_migrated,
+            migration_report.vulnerabilities_migrated,
+        );
+        eprintln!(
+            "  Legacy store at {}/store.db kept intact (read by project layer until v0.6.0 cutover).",
+            packguard_home.display()
+        );
+    }
 
     match cli.command {
         Cmd::Init {
@@ -846,6 +873,14 @@ async fn ui(
 ) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("opening store at {}", store_path.display()))?;
+    // Open the new layout's stores from the same packguard home as
+    // the legacy store. AppState holds them all so the cutover in
+    // 14.1e.2/.3 only swaps the handler bodies.
+    let home = home_from_store_path(store_path);
+    let intel = IntelStore::open(&home)
+        .with_context(|| format!("opening intel store under {}", home.display()))?;
+    let projects = ProjectsRegistry::open(&home)
+        .with_context(|| format!("opening projects registry under {}", home.display()))?;
 
     // Resolve the server's view root:
     //  - explicit path → canonicalize + use as-is.
@@ -890,6 +925,8 @@ async fn ui(
     let app = packguard_server::router(packguard_server::ServerConfig {
         repo_path: repo_path.clone(),
         store,
+        intel,
+        projects,
     });
     let addr: std::net::SocketAddr = format!("{host}:{port}")
         .parse()
@@ -1438,8 +1475,31 @@ fn resolve_store_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(p) = explicit {
         return Ok(p);
     }
-    let home = dirs::home_dir().context("resolving home directory for default store path")?;
-    Ok(home.join(".packguard").join("store.db"))
+    Ok(resolve_packguard_home_default()?.join("store.db"))
+}
+
+/// Default packguard home: `$PACKGUARD_HOME` if set (used by tests +
+/// smoke), else `~/.packguard/`. Callers that already have an
+/// explicit `--store` flag should derive home from
+/// `store_path.parent()` instead so the override applies to every
+/// new file (intel.db, projects.db, projects/<slug>/store.db).
+fn resolve_packguard_home_default() -> Result<PathBuf> {
+    if let Ok(env_home) = std::env::var("PACKGUARD_HOME") {
+        return Ok(PathBuf::from(env_home));
+    }
+    let home = dirs::home_dir().context("resolving home directory for default packguard home")?;
+    Ok(home.join(".packguard"))
+}
+
+/// Derive the packguard home from a fully-resolved store path. The
+/// store always lives at `<home>/store.db`, so `parent()` is the
+/// authoritative source — works for `--store`, `PACKGUARD_HOME`, and
+/// the default path alike.
+fn home_from_store_path(store_path: &Path) -> PathBuf {
+    store_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 #[derive(Debug, Clone)]

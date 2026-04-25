@@ -17,7 +17,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use packguard_store::Store;
+use packguard_store::{IntelStore, ProjectsRegistry, Store};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -26,11 +26,20 @@ use tower_http::trace::TraceLayer;
 pub struct ServerConfig {
     pub repo_path: PathBuf,
     pub store: Store,
+    /// Cross-project intel catalog. Required by 14.1e.1 plumbing —
+    /// even though no handler reads from it yet, AppState owns the
+    /// connection so the cutover in 14.1e.2/.3 is a one-line swap.
+    pub intel: IntelStore,
+    /// Projects registry. Populated by the 14.1d migration; consumed
+    /// by the upcoming `/api/projects` endpoints in 14.1f.
+    pub projects: ProjectsRegistry,
 }
 
 pub fn router(cfg: ServerConfig) -> Router {
     let state = AppState {
         store: Arc::new(Mutex::new(cfg.store)),
+        intel: Arc::new(Mutex::new(cfg.intel)),
+        projects: Arc::new(Mutex::new(cfg.projects)),
         repo_path: cfg.repo_path,
     };
     let api = Router::new()

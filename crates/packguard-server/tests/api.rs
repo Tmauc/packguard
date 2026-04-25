@@ -7,7 +7,7 @@ use packguard_core::{
     DependencyEdge, MalwareKind, MalwareReport, Project, RemotePackage, Severity, Vulnerability,
 };
 use packguard_server::{router, ServerConfig};
-use packguard_store::Store;
+use packguard_store::{IntelStore, ProjectsRegistry, Store};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
@@ -28,9 +28,13 @@ async fn spawn(setup: impl FnOnce(&mut Store, &Path)) -> Harness {
     drop(store);
 
     let store = Store::open(&store_path).unwrap();
+    let intel = IntelStore::open_in_memory().unwrap();
+    let projects = ProjectsRegistry::open_in_memory().unwrap();
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
         store,
+        intel,
+        projects,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -614,9 +618,13 @@ async fn scan_walks_every_registered_repo_not_just_server_cwd() {
 
     // Start the server pointed at the *scratch* server_cwd (no manifest).
     let store = Store::open(&store_path).unwrap();
+    let intel = IntelStore::open_in_memory().unwrap();
+    let projects = ProjectsRegistry::open_in_memory().unwrap();
     let app = router(ServerConfig {
         repo_path: server_cwd.clone(),
         store,
+        intel,
+        projects,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -933,9 +941,13 @@ async fn api_graph_matches_service_output_when_repo_path_is_non_canonical() {
     }
 
     let store = Store::open(&store_path).unwrap();
+    let intel = IntelStore::open_in_memory().unwrap();
+    let projects = ProjectsRegistry::open_in_memory().unwrap();
     let app = router(ServerConfig {
         repo_path: canonical_repo.clone(),
         store,
+        intel,
+        projects,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1212,9 +1224,13 @@ async fn spawn_two_workspaces() -> (Harness, String, String) {
     // points at workspace_alpha so we can also assert that `?project=` is
     // the source of truth, not the server's default.
     let store = Store::open(&store_path).unwrap();
+    let intel = IntelStore::open_in_memory().unwrap();
+    let projects = ProjectsRegistry::open_in_memory().unwrap();
     let app = router(ServerConfig {
         repo_path: repo_a.clone(),
         store,
+        intel,
+        projects,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
