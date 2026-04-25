@@ -16,31 +16,29 @@ use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use packguard_store::{IntelStore, ProjectStoreCache, ProjectsRegistry, Store};
+use packguard_store::{IntelStore, ProjectStoreCache, ProjectsRegistry};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower_http::trace::TraceLayer;
 
 pub struct ServerConfig {
+    /// Aggregate-fallback root — used by `policy_get/put/dry_run` when
+    /// the request omits `?project=…`. The CLI sets this to the cwd
+    /// it booted in.
     pub repo_path: PathBuf,
-    pub store: Store,
-    /// Cross-project intel catalog. 14.1e wired every intel read/write
-    /// through this handle.
+    /// Cross-project intel catalog (advisories + sync state + jobs).
     pub intel: IntelStore,
     /// Projects registry. Populated by the 14.1d migration and the
     /// 14.1f `POST /api/projects` handler.
     pub projects: ProjectsRegistry,
-    /// 14.2a per-slug `Store` cache. 14.2b routes project-layer reads
-    /// (slug scope) and scan / add-project job writes through this
-    /// handle, leaving the legacy `Store` in [`AppState::store`] for
-    /// cross-project state (jobs table) and the not-yet-bascule'd CLI.
+    /// Per-slug `Store` cache. Every project-scoped read/write goes
+    /// through this handle.
     pub project_stores: Arc<ProjectStoreCache>,
 }
 
 pub fn router(cfg: ServerConfig) -> Router {
     let state = AppState {
-        store: Arc::new(Mutex::new(cfg.store)),
         intel: Arc::new(Mutex::new(cfg.intel)),
         projects: Arc::new(Mutex::new(cfg.projects)),
         project_stores: cfg.project_stores,
@@ -798,8 +796,8 @@ async fn job_get(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<JobView>, ApiError> {
-    let store = s.store.lock().await;
-    store
+    let intel = s.intel.lock().await;
+    intel
         .load_job(&id)?
         .map(jobs::to_view)
         .map(Json)

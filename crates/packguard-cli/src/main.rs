@@ -439,7 +439,7 @@ async fn main() -> Result<()> {
                 port,
                 host,
                 no_open,
-                &store_path,
+                &packguard_home,
                 &pstore,
                 project_stores.clone(),
             )
@@ -1085,27 +1085,22 @@ async fn ui(
     port: u16,
     host: String,
     no_open: bool,
-    legacy_store_path: &Path,
+    packguard_home: &Path,
     pstore: &Arc<Mutex<Store>>,
     project_stores: Arc<ProjectStoreCache>,
 ) -> Result<()> {
-    // 14.2c — banner resolution reads from the per-project store the
-    // dispatch already opened. The legacy `Store::open(legacy_store_path)`
-    // call below remains because `ServerConfig` still requires the
-    // field; that wire is removed in 14.2d. The handle is created
-    // read-only for the migrated case (no inserts), and `Store::open`
-    // re-runs migrations idempotently on cold starts.
-    let legacy_store = Store::open(legacy_store_path).with_context(|| {
+    // 14.2d — `ServerConfig` no longer carries a legacy `Store` field;
+    // jobs moved to IntelStore and aggregate reads route exclusively
+    // through `project_stores`. The CLI hands the server only the
+    // intel handle + the per-project cache.
+    let intel = IntelStore::open(packguard_home)
+        .with_context(|| format!("opening intel store under {}", packguard_home.display()))?;
+    let projects = ProjectsRegistry::open(packguard_home).with_context(|| {
         format!(
-            "opening legacy store at {} (kept until 14.2d ServerConfig cleanup)",
-            legacy_store_path.display()
+            "opening projects registry under {}",
+            packguard_home.display()
         )
     })?;
-    let home = home_from_store_path(legacy_store_path);
-    let intel = IntelStore::open(&home)
-        .with_context(|| format!("opening intel store under {}", home.display()))?;
-    let projects = ProjectsRegistry::open(&home)
-        .with_context(|| format!("opening projects registry under {}", home.display()))?;
 
     // Resolve the server's view root from the per-project store:
     //  - explicit path → canonicalize + use as-is.
@@ -1153,7 +1148,6 @@ async fn ui(
 
     let app = packguard_server::router(packguard_server::ServerConfig {
         repo_path: repo_path.clone(),
-        store: legacy_store,
         intel,
         projects,
         project_stores,

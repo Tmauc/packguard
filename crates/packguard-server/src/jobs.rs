@@ -40,11 +40,16 @@ impl JobSpec {
 
 /// Spawn a job and persist it as `pending`. Returns the new id; callers
 /// poll `GET /api/jobs/:id` to track progress.
+///
+/// 14.2d.2 — the `jobs` table moved from the per-project `Store` to
+/// `IntelStore` so the legacy `<home>/store.db` could be retired.
+/// The schema + state machine are unchanged; only the backing handle
+/// shifted.
 pub async fn spawn(state: AppState, spec: JobSpec) -> Result<String> {
     let id = Uuid::new_v4().to_string();
     {
-        let mut store = state.store.lock().await;
-        store.create_job(&id, spec.dto().as_str())?;
+        let mut intel = state.intel.lock().await;
+        intel.create_job(&id, spec.dto().as_str())?;
     }
     let id_clone = id.clone();
     let state_clone = state.clone();
@@ -56,8 +61,8 @@ pub async fn spawn(state: AppState, spec: JobSpec) -> Result<String> {
 
 async fn run_job(state: AppState, id: String, spec: JobSpec) {
     {
-        let mut store = state.store.lock().await;
-        let _ = store.update_job_status(&id, "running", None, None);
+        let mut intel = state.intel.lock().await;
+        let _ = intel.update_job_status(&id, "running", None, None);
     }
 
     let outcome: Result<serde_json::Value> = match spec {
@@ -69,15 +74,15 @@ async fn run_job(state: AppState, id: String, spec: JobSpec) {
         JobSpec::AddProject(path) => run_add_project_job(&state, path).await,
     };
 
-    let mut store = state.store.lock().await;
+    let mut intel = state.intel.lock().await;
     match outcome {
         Ok(payload) => {
             let json = serde_json::to_string(&payload).unwrap_or_else(|_| "null".into());
-            let _ = store.update_job_status(&id, "succeeded", Some(&json), None);
+            let _ = intel.update_job_status(&id, "succeeded", Some(&json), None);
         }
         Err(err) => {
             let msg = format!("{err:#}");
-            let _ = store.update_job_status(&id, "failed", None, Some(&msg));
+            let _ = intel.update_job_status(&id, "failed", None, Some(&msg));
         }
     }
 }

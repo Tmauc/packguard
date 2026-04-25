@@ -16,7 +16,7 @@ use packguard_core::model::{AffectedSpec, MalwareKind, MalwareReport, Severity, 
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
-use crate::{StoredMalware, StoredVulnerability, SyncState};
+use crate::{StoredJob, StoredMalware, StoredVulnerability, SyncState};
 
 mod intel_embedded {
     refinery::embed_migrations!("migrations_intel");
@@ -333,6 +333,93 @@ impl IntelStore {
         }
         Ok(out)
     }
+
+    // --- jobs (Phase 14.2d.2) ------------------------------------------
+    //
+    // The `jobs` table moved here from the per-project store so the
+    // legacy `<home>/store.db` could be retired. Schema mirrors the
+    // original `migrations/V4__jobs.sql` exactly (same columns, same
+    // semantics) so the wire-facing `JobView` payload + the runner
+    // state machine in `packguard-server/src/jobs.rs` stay unchanged.
+
+    /// Insert a fresh job row in `pending` state.
+    pub fn create_job(&mut self, id: &str, kind: &str) -> Result<StoredJob> {
+        let now = Utc::now().to_rfc3339();
+        self.conn
+            .execute(
+                "INSERT INTO jobs (id, kind, status, started_at) VALUES (?1, ?2, 'pending', ?3)",
+                params![id, kind, now],
+            )
+            .context("inserting intel job row")?;
+        Ok(StoredJob {
+            id: id.into(),
+            kind: kind.into(),
+            status: "pending".into(),
+            started_at: now,
+            finished_at: None,
+            result_json: None,
+            error: None,
+        })
+    }
+
+    pub fn update_job_status(
+        &mut self,
+        id: &str,
+        status: &str,
+        result_json: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let finished_at = matches!(status, "succeeded" | "failed").then(|| Utc::now().to_rfc3339());
+        self.conn
+            .execute(
+                "UPDATE jobs SET status = ?1, finished_at = ?2, result_json = ?3, error = ?4 WHERE id = ?5",
+                params![status, finished_at, result_json, error, id],
+            )
+            .context("updating intel job row")?;
+        Ok(())
+    }
+
+    pub fn load_job(&self, id: &str) -> Result<Option<StoredJob>> {
+        self.conn
+            .query_row(
+                "SELECT id, kind, status, started_at, finished_at, result_json, error \
+                 FROM jobs WHERE id = ?1",
+                params![id],
+                read_intel_job,
+            )
+            .optional()
+            .context("loading intel job row")
+    }
+
+    pub fn load_recent_jobs(&self, limit: i64) -> Result<Vec<StoredJob>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, kind, status, started_at, finished_at, result_json, error \
+                 FROM jobs ORDER BY started_at DESC LIMIT ?1",
+            )
+            .context("preparing intel load_recent_jobs")?;
+        let rows = stmt
+            .query_map(params![limit], read_intel_job)
+            .context("querying intel load_recent_jobs")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+}
+
+fn read_intel_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredJob> {
+    Ok(StoredJob {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        status: row.get(2)?,
+        started_at: row.get(3)?,
+        finished_at: row.get(4)?,
+        result_json: row.get(5)?,
+        error: row.get(6)?,
+    })
 }
 
 fn read_intel_vulnerability(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredVulnerability> {

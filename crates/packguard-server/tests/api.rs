@@ -36,12 +36,10 @@ async fn spawn(setup: impl FnOnce(&mut Store, &mut IntelStore, &Path)) -> Harnes
     // Skipped (no-op) when the closure didn't seed anything.
     packguard_store::migration::migrate_legacy_if_present(temp.path()).unwrap();
 
-    let store = Store::open(&store_path).unwrap();
     let projects = ProjectsRegistry::open(temp.path()).unwrap();
     let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
-        store,
         intel,
         projects,
         project_stores,
@@ -634,13 +632,11 @@ async fn scan_walks_every_registered_repo_not_just_server_cwd() {
     packguard_store::migration::migrate_legacy_if_present(temp.path()).unwrap();
 
     // Start the server pointed at the *scratch* server_cwd (no manifest).
-    let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open(temp.path()).unwrap();
     let projects = ProjectsRegistry::open(temp.path()).unwrap();
     let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: server_cwd.clone(),
-        store,
         intel,
         projects,
         project_stores,
@@ -963,13 +959,11 @@ async fn api_graph_matches_service_output_when_repo_path_is_non_canonical() {
     // legacy seed; aggregate fanout reads it back out.
     packguard_store::migration::migrate_legacy_if_present(temp.path()).unwrap();
 
-    let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open(temp.path()).unwrap();
     let projects = ProjectsRegistry::open(temp.path()).unwrap();
     let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: canonical_repo.clone(),
-        store,
         intel,
         projects,
         project_stores,
@@ -1254,13 +1248,11 @@ async fn spawn_two_workspaces() -> (Harness, String, String) {
     // doing the alpha-vs-beta isolation post-fanout.
     packguard_store::migration::migrate_legacy_if_present(temp.path()).unwrap();
 
-    let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open(temp.path()).unwrap();
     let projects = ProjectsRegistry::open(temp.path()).unwrap();
     let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: repo_a.clone(),
-        store,
         intel,
         projects,
         project_stores,
@@ -1537,7 +1529,6 @@ async fn legacy_store_intel_tables_are_no_longer_read() {
         let _ = registry.insert_with_slug("_default_", &repo_path, "_default_");
     }
 
-    let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open(temp.path()).unwrap();
     assert_eq!(
         intel.count_vulnerabilities().unwrap(),
@@ -1547,7 +1538,6 @@ async fn legacy_store_intel_tables_are_no_longer_read() {
     let projects = ProjectsRegistry::open(temp.path()).unwrap();
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
-        store,
         intel,
         projects,
         project_stores,
@@ -1615,7 +1605,6 @@ async fn legacy_store_intel_tables_are_no_longer_read() {
 #[tokio::test]
 async fn actions_generator_reads_cve_from_intel_store() {
     let temp = tempfile::tempdir().unwrap();
-    let store_path = temp.path().join("store.db");
     let repo_path = temp.path().join("repo");
     std::fs::create_dir_all(&repo_path).unwrap();
     let project = Project {
@@ -1691,12 +1680,10 @@ async fn actions_generator_reads_cve_from_intel_store() {
         let _ = registry.insert_with_slug("_default_", &repo_path, "_default_");
     }
 
-    let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open(temp.path()).unwrap();
     let projects = ProjectsRegistry::open(temp.path()).unwrap();
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
-        store,
         intel,
         projects,
         project_stores,
@@ -1783,12 +1770,10 @@ async fn overview_last_sync_at_reads_from_intel_store() {
         let _ = registry.insert_with_slug("_default_", &repo_path, "_default_");
     }
 
-    let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open(temp.path()).unwrap();
     let projects = ProjectsRegistry::open(temp.path()).unwrap();
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
-        store,
         intel,
         projects,
         project_stores,
@@ -1853,12 +1838,10 @@ async fn spawn_with_registry(
     drop(store);
     drop(registry);
 
-    let store = Store::open(&store_path).unwrap();
     let projects = ProjectsRegistry::open(temp.path()).unwrap();
     let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
-        store,
         intel,
         projects,
         project_stores,

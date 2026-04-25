@@ -11,14 +11,12 @@ use tokio::net::TcpListener;
 
 async fn spawn_harness() -> String {
     let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(&temp.path().join("store.db")).unwrap();
     let intel = IntelStore::open_in_memory().unwrap();
     let projects = ProjectsRegistry::open_in_memory().unwrap();
     let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let repo = temp.path().to_path_buf();
     let app = router(ServerConfig {
         repo_path: repo,
-        store,
         intel,
         projects,
         project_stores,

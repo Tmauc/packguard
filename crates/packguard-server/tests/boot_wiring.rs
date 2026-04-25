@@ -1,31 +1,26 @@
-//! Phase 14.1e.1 — verify the boot-time plumbing without exercising
-//! any consumer code path. AppState gains `intel` + `projects`; the
-//! existing handlers are unchanged. These tests confirm:
+//! Phase 14.1e.1 / 14.2d.3 — verify the boot-time plumbing without
+//! exercising any consumer code path. After 14.2d, `AppState` carries
+//! `intel` + `projects` + `project_stores` only; the legacy global
+//! `Store` is gone. These tests confirm:
 //!
-//!   1. AppState carries IntelStore + ProjectsRegistry alongside the
-//!      legacy Store.
-//!   2. Both new fields are independently lockable from handlers (no
-//!      cross-locking, no panics).
-//!   3. The plumbing keeps the existing Store handlers intact.
+//!   1. The router constructs from the post-14.2d `ServerConfig`.
+//!   2. `intel` and `projects` are independently lockable from handlers
+//!      (no cross-locking, no panics).
 
 use packguard_server::{router, AppState, ServerConfig};
-use packguard_store::{IntelStore, ProjectStoreCache, ProjectsRegistry, Store};
+use packguard_store::{IntelStore, ProjectStoreCache, ProjectsRegistry};
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 
 #[tokio::test]
 async fn server_router_accepts_intel_and_projects_in_server_config() {
-    // Smoke test for the new ServerConfig shape — if the wiring
-    // breaks, the router won't construct.
     let temp = TempDir::new().unwrap();
-    let store = Store::open(&temp.path().join("store.db")).unwrap();
     let intel = IntelStore::open_in_memory().unwrap();
     let projects = ProjectsRegistry::open_in_memory().unwrap();
     let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: temp.path().to_path_buf(),
-        store,
         intel,
         projects,
         project_stores,
@@ -35,7 +30,6 @@ async fn server_router_accepts_intel_and_projects_in_server_config() {
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    // Hit /api/health to prove the router booted with the new state.
     let url = format!("http://{addr}/api/health");
     let resp = reqwest::get(&url).await.unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
@@ -44,22 +38,14 @@ async fn server_router_accepts_intel_and_projects_in_server_config() {
 #[tokio::test]
 async fn app_state_intel_and_projects_are_independently_lockable() {
     let temp = TempDir::new().unwrap();
-    let store = Store::open(&temp.path().join("store.db")).unwrap();
     let intel = IntelStore::open_in_memory().unwrap();
     let projects = ProjectsRegistry::open_in_memory().unwrap();
     let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
-    let state = AppState::new(
-        store,
-        intel,
-        projects,
-        project_stores,
-        temp.path().to_path_buf(),
-    );
+    let state = AppState::new(intel, projects, project_stores, temp.path().to_path_buf());
 
-    // Both new fields are Mutex-wrapped and independently lockable —
-    // no deadlock between them, and locking one doesn't observe the
-    // other. The existing Store mutex is unaffected.
-    let _ = state.store.lock().await;
+    // 14.2d — the only handles left in `AppState` are intel + projects
+    // (+ project_stores). Both Mutex-wrapped fields lock independently;
+    // no deadlock between them.
     let intel_guard = state.intel.lock().await;
     let projects_guard = state.projects.lock().await;
     assert_eq!(intel_guard.count_vulnerabilities().unwrap(), 0);
