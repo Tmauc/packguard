@@ -9,6 +9,7 @@ pub mod discovery;
 pub mod ecosystem;
 pub mod model;
 pub mod npm;
+pub mod project_root;
 pub mod pypi;
 pub mod registry;
 
@@ -24,6 +25,7 @@ pub use model::{
     RemotePackage, RemoteVersion, Severity, Vulnerability,
 };
 pub use npm::Npm;
+pub use project_root::{find_project_root, slugify};
 pub use pypi::{classify_pep440, normalize_name, Pypi};
 
 /// Default set of Tier 1 ecosystems enabled in Phase 1.
