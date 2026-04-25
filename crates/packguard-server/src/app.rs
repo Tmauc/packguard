@@ -602,21 +602,35 @@ async fn actions_list(
     ))
 }
 
-/// Locate an action by its stable id from the global (unfiltered) set.
-/// Scoping by project would make the dismiss call coupled to the
-/// dashboard's current filter, which would fail when the UI transitions
-/// scope between the user seeing and clicking the action.
-fn locate_action(
-    store: &packguard_store::Store,
-    intel: &packguard_store::IntelStore,
+/// Phase 14.2b.2 — locate an action across every per-project store
+/// the registry knows about. Returns both the resolved [`Action`] and
+/// the slug that produced it, so dismiss/defer can route their write
+/// to the right per-project store without re-walking the registry.
+///
+/// The action carries `workspace`, but for a `_global` action like
+/// `RefreshSync` the workspace string isn't a real path. Iterating
+/// stores until one emits the id is the simplest correct approach;
+/// it also handles the rare "same id observed in multiple slugs"
+/// case (e.g. RefreshSync, which the generator emits per-store) by
+/// landing the dismissal in the alphabetically-first slug. The
+/// dashboard re-fetches actions after a dismissal, so the user sees
+/// the row disappear from that slug's view immediately.
+async fn locate_action(
+    state: &AppState,
     id: &str,
     now: chrono::DateTime<chrono::Utc>,
-) -> Result<packguard_actions::Action, ApiError> {
-    let all = packguard_actions::collect_all(store, intel, None, now, false, false)
-        .map_err(ApiError::Internal)?;
-    all.into_iter()
-        .find(|a| a.id == id)
-        .ok_or_else(|| ApiError::NotFound(format!("action {id} not found")))
+) -> Result<(packguard_actions::Action, String), ApiError> {
+    for (slug, _) in state.project_stores.slug_paths()? {
+        let pstore = state.project_stores.get_or_open(&slug).await?;
+        let pstore = pstore.lock().await;
+        let intel = state.intel.lock().await;
+        let actions = packguard_actions::collect_all(&pstore, &intel, None, now, true, true)
+            .map_err(ApiError::Internal)?;
+        if let Some(action) = actions.into_iter().find(|a| a.id == id) {
+            return Ok((action, slug));
+        }
+    }
+    Err(ApiError::NotFound(format!("action {id} not found")))
 }
 
 async fn actions_dismiss(
@@ -625,11 +639,11 @@ async fn actions_dismiss(
     body: Option<Json<ActionDismissRequest>>,
 ) -> Result<Json<ActionDismissResponse>, ApiError> {
     let req = body.map(|Json(b)| b).unwrap_or_default();
-    let mut store = s.store.lock().await;
-    let intel = s.intel.lock().await;
     let now = chrono::Utc::now();
-    let action = locate_action(&store, &intel, &id, now)?;
-    packguard_actions::dismiss(&mut store, &action, req.reason.as_deref(), now)
+    let (action, slug) = locate_action(&s, &id, now).await?;
+    let pstore = s.project_stores.get_or_open(&slug).await?;
+    let mut pstore = pstore.lock().await;
+    packguard_actions::dismiss(&mut pstore, &action, req.reason.as_deref(), now)
         .map_err(ApiError::Internal)?;
     Ok(Json(ActionDismissResponse {
         dismissed_at: now.to_rfc3339(),
@@ -643,23 +657,32 @@ async fn actions_defer(
 ) -> Result<Json<ActionDeferResponse>, ApiError> {
     let req = body.map(|Json(b)| b).unwrap_or_default();
     let days = req.days.unwrap_or(7).clamp(1, 365);
-    let mut store = s.store.lock().await;
-    let intel = s.intel.lock().await;
     let now = chrono::Utc::now();
-    let action = locate_action(&store, &intel, &id, now)?;
-    let until = packguard_actions::defer(&mut store, &action, days, req.reason.as_deref(), now)
+    let (action, slug) = locate_action(&s, &id, now).await?;
+    let pstore = s.project_stores.get_or_open(&slug).await?;
+    let mut pstore = pstore.lock().await;
+    let until = packguard_actions::defer(&mut pstore, &action, days, req.reason.as_deref(), now)
         .map_err(ApiError::Internal)?;
     Ok(Json(ActionDeferResponse {
         deferred_until: until.to_rfc3339(),
     }))
 }
 
+/// Restore is id-only — the action's source slug isn't carried on
+/// the URL, and resolving via `collect_all` doesn't help because the
+/// row may have been dismissed long enough ago that the underlying
+/// dependency is gone. So we fan out: call `restore` on every
+/// per-project store. The DELETE is idempotent against missing rows,
+/// so fanout is safe.
 async fn actions_restore(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let mut store = s.store.lock().await;
-    packguard_actions::restore(&mut store, &id).map_err(ApiError::Internal)?;
+    for (slug, _) in s.project_stores.slug_paths()? {
+        let pstore = s.project_stores.get_or_open(&slug).await?;
+        let mut pstore = pstore.lock().await;
+        packguard_actions::restore(&mut pstore, &id).map_err(ApiError::Internal)?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

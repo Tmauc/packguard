@@ -1345,7 +1345,11 @@ async fn actions_list_respects_min_severity_filter() {
 #[tokio::test]
 async fn actions_dismiss_hides_action_until_restored() {
     let h = spawn(seed_lodash_with_high_cve).await;
-    let body = get_json(&h, "/api/actions").await;
+    // 14.2b.2 — dismissals are written to the per-project store the
+    // action came from. We probe via slug scope so the test exercises
+    // the same store on read + write; aggregate fanout (commit 2)
+    // makes the no-scope variant equivalent.
+    let body = get_json(&h, "/api/actions?project=_default_").await;
     let first = body["actions"][0].clone();
     let id = first["id"].as_str().unwrap().to_string();
 
@@ -1361,8 +1365,8 @@ async fn actions_dismiss_hides_action_until_restored() {
     let dismissed: serde_json::Value = resp.json().await.unwrap();
     assert!(dismissed["dismissed_at"].is_string());
 
-    // Re-GET → action should be gone.
-    let after = get_json(&h, "/api/actions").await;
+    // Re-GET (same scope) → action should be gone.
+    let after = get_json(&h, "/api/actions?project=_default_").await;
     assert!(
         after["actions"]
             .as_array()
@@ -1380,7 +1384,7 @@ async fn actions_dismiss_hides_action_until_restored() {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
-    let restored = get_json(&h, "/api/actions").await;
+    let restored = get_json(&h, "/api/actions?project=_default_").await;
     assert!(restored["actions"]
         .as_array()
         .unwrap()
@@ -1391,7 +1395,7 @@ async fn actions_dismiss_hides_action_until_restored() {
 #[tokio::test]
 async fn actions_defer_returns_deferred_until_and_hides_action() {
     let h = spawn(seed_lodash_with_high_cve).await;
-    let body = get_json(&h, "/api/actions").await;
+    let body = get_json(&h, "/api/actions?project=_default_").await;
     let id = body["actions"][0]["id"].as_str().unwrap().to_string();
 
     let url = format!("{}/api/actions/{id}/defer", h.base);
@@ -1405,7 +1409,7 @@ async fn actions_defer_returns_deferred_until_and_hides_action() {
     let defer_body: serde_json::Value = resp.json().await.unwrap();
     assert!(defer_body["deferred_until"].is_string());
 
-    let after = get_json(&h, "/api/actions").await;
+    let after = get_json(&h, "/api/actions?project=_default_").await;
     assert!(after["actions"]
         .as_array()
         .unwrap()
@@ -1994,6 +1998,57 @@ async fn slug_query_param_resolves_via_registry_without_deprecation_header() {
     assert!(
         resp.headers().get("x-packguard-deprecated").is_none(),
         "slug scope must not emit the deprecation header"
+    );
+}
+
+// ---- Phase 14.2b.2: action writes route to per-project store ---------------
+
+/// Phase 14.2b.2 — dismiss writes hit the per-project store, not the
+/// legacy global. We dismiss an action via the API, then probe both
+/// stores' `action_dismissals` tables directly: the per-project copy
+/// must have the row, the legacy copy must not.
+#[tokio::test]
+async fn actions_dismiss_writes_to_per_project_store_not_legacy() {
+    let h = spawn(seed_lodash_with_high_cve).await;
+    let body = get_json(&h, "/api/actions?project=_default_").await;
+    let id = body["actions"][0]["id"].as_str().unwrap().to_string();
+
+    let url = format!("{}/api/actions/{id}/dismiss", h.base);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({ "reason": "isolation probe" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let project_db = h._temp.path().join("projects/_default_/store.db");
+    let legacy_db = h._temp.path().join("store.db");
+
+    let project_count: i64 = rusqlite::Connection::open(&project_db)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM action_dismissals WHERE id = ?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let legacy_count: i64 = rusqlite::Connection::open(&legacy_db)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM action_dismissals WHERE id = ?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(
+        project_count, 1,
+        "dismissal must be persisted in the per-project store"
+    );
+    assert_eq!(
+        legacy_count, 0,
+        "dismissal must NOT touch the legacy global store"
     );
 }
 
