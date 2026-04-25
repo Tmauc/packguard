@@ -18,6 +18,8 @@ mod embedded {
     refinery::embed_migrations!("migrations");
 }
 
+pub mod projects_registry;
+
 /// Normalize a repo path for the `repos.path` column + every lookup that
 /// joins through it. Without this, a scan run from `/path/to/repo` and a
 /// `packguard ui` launched from a different CWD would persist two
