@@ -17,6 +17,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+# Phase 14.2a — `ProjectStoreCache` returns `Arc<tokio::sync::Mutex<Store>>`
+# so `AppState` can keep its existing lock semantics across the upcoming
+# 14.2b cutover without having to re-wrap. tokio is already in every
+# binary that depends on packguard-store; this just propagates the
+# workspace dep into this crate (no new third-party crate added).
+tokio = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

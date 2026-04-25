@@ -20,9 +20,11 @@ mod embedded {
 
 pub mod intel_store;
 pub mod migration;
+pub mod project_store_cache;
 pub mod projects_registry;
 
 pub use intel_store::IntelStore;
+pub use project_store_cache::ProjectStoreCache;
 pub use projects_registry::ProjectsRegistry;
 
 /// Normalize a repo path for the `repos.path` column + every lookup that
