@@ -2464,6 +2464,22 @@ Chaque sous-phase = 1 agent dédié. Bump `0.4.0 → 0.5.0` en fin de cycle (apr
 - [x] `packguard ui` sur store vide peut scanner un nouveau path sans CLI (Phase 13.6)
 - [x] Zéro régression : 393 Rust pass (vs 390 v0.4.0, +3 scan custom path), 128 Vitest pass (vs 89 v0.4.0, +39 polish + new features)
 
+### v0.5.1 hotfix — WorkspaceSelector tree bugs ✅ done (2026-04-25)
+
+Post-release v0.5.0 dogfood par Thomas, **2 bugs UX** remontés sur le tree view :
+
+**Bug A 🔴** — Path à la fois ancestor + leaf workspace (Turborepo pattern). Repro Nalo : store contient à la fois `/.../monorepo/front` (parent pnpm-workspace) ET `/.../monorepo/front/{vesta,mellona,phoebus}`. `workspaceTree.ts` traitait les paths un par un avec `Map.set` → la leaf `front` arrivait après les enfants `front/vesta`, écrasait le folder construit, vesta/mellona/phoebus disparaissaient du tree. Symptôme : Thomas voyait `front` comme leaf cliquable (set scope), pas comme folder. Fuzzy search `vesta` matchait rien (la leaf n'était jamais buildée).
+
+**Bug B 🟡** — Default tout collapsed vs brief disait expanded. `useCollapsedFolders(collectFolderIds(tree))` seedait le Set "collapsed" avec **tous** les folder IDs au mount. L'agent 13.2 avait inversé le default sans le signaler dans le rapport.
+
+Livré : 2 commits (`3f717df` Bug A — promote leaf to `(root)` child of folder + `4975652` Bug B — `useCollapsedFolders([])` + drop seedFrom no-op), 134 Vitest (+6 : 4 workspaceTree edge cases + 2 WorkspaceSelector regression). 393 Rust inchangé. Tous gates verts.
+
+**Pattern Turborepo retenu** : quand un workspace path = ancestor d'autres workspaces, la leaf "self" devient un enfant `(root)` du folder, sorted en premier. Click `(root)` set scope sur le path parent, click sibling set scope sur la sous-app. Standard pattern (Turborepo / NX UI).
+
+**Finding hors scope remonté par l'agent** : `monorepo/services` apparaîtrait 2× dans le store. À investiguer après ship — possible doublon de path (canonical vs symlink ?) introduit par un scan particulier. Si confirmé en UI, créer un follow-up séparé.
+
+---
+
 **Bundle Phase 13 (15 commits, toujours locaux)** :
 - 13.1 : `3782571`, `8ea32d7`, `0ad65a2` (tooltips + tests)
 - 13.3 : `8b7dfec` (favicon SVG)
