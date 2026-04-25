@@ -2500,6 +2500,109 @@ Thomas ship séquence : `./scripts/bump-version.sh 0.5.0` → `git push origin m
 
 ---
 
+## 14.21. v0.6.0 — Plan (thème "Per-project store", validé 2026-04-25)
+
+**Thème produit** : *"Per-project store"*. v0.5.x avait un store unique global `~/.packguard/store.db` qui mélangeait tous les workspaces de tous les repos. Constat dogfood post-v0.5.1 par Thomas : *"je veux que `packguard ui` ouvre directement sur le projet du cwd, et que je puisse switcher entre projets via un sélecteur"*. v0.6.0 introduit un **double-niveau de scoping** :
+
+```
+Project (= un repo git top-level, ex Nalo/monorepo)
+  └── Workspaces (= sub-projects scannables, ex front/vesta)
+```
+
+v0.5.x avait fusionné ces 2 niveaux. v0.6.0 les sépare proprement, avec un store per-project + un sélecteur UI dédié.
+
+### Store layout
+
+```
+~/.packguard/
+├── intel/                                  ← global, shared, refresh par sync
+│   ├── osv-{npm,pypi}.cache
+│   ├── ghsa.git/
+│   ├── typosquat-pypi.json
+│   └── sync_log.db                         ← timestamps de sync, partagés
+├── projects.db                             ← registry global (id, slug, path, name, created_at, last_scan)
+└── projects/
+    ├── Users-mauc-Repo-Nalo-monorepo/
+    │   └── store.db                        ← scans + actions_dismissals + policies de CE projet
+    └── Users-mauc-Repo-AnotherCompany-foo/
+        └── store.db
+```
+
+**Pourquoi split intel vs project** : OSV/GHSA cache ~hundreds of MB. Dupliquer par projet = inacceptable. 2 stores : intel global + scans per-project.
+
+### Boot flow `packguard ui`
+
+1. Walk up depuis cwd → premier `.git/` = root du project
+2. Slugify le path canonical → check si exists dans `projects.db`
+3. **Si project connu** → ouvre dashboard scoped (URL `?project=<slug>`)
+4. **Si project inconnu OU pas de `.git/` trouvé (ex cwd = `~/Documents`)** → ouvre **`ProjectSelector` modal blocking** au boot. L'utilisateur doit choisir / créer un project pour entrer dans le dashboard.
+
+### UI changes
+
+**Nouveau component `ProjectSelector`** (header, au-dessus du `WorkspaceSelector`) :
+- Liste des projects connus (nom + path résumé + last_scan timestamp)
+- Footer `+ Add new project` → ouvre `AddProjectModal` (same pattern que `AddWorkspaceModal` Phase 13.6)
+- Submit input absolute path → `POST /api/projects { path }` → backend crée project + lance scan recursive auto-discovery (Phase 9a) → workspaces apparaissent
+- Auto-switch sur le nouveau project une fois job terminé
+
+**`WorkspaceSelector` (Phase 13.2 tree view)** :
+- Reste tel quel, mais maintenant **scoped au project actif** (au lieu de toute la `repos` table globale)
+- Refresh automatique quand le project change
+
+**URL params (renaming)** :
+- `?project=<slug>` (nouveau, identifie le project)
+- `?workspace=<path>` (renommer l'ancien `?project=` qui était le workspace path)
+- Migration redirect : ancien `?project=/path` → resolve vers `?project=<slug>&workspace=<path>` avec deprecation warning
+
+### Backend changes
+
+- **Migration V7** : nouvelle table `projects (id, slug, path, name, created_at, last_scan)` dans le nouveau registry global `~/.packguard/projects.db`
+- **Refactor `packguard-store`** : multi-store handle (intel + project)
+- **Refactor `packguard-intel`** : sync_log + cache extraits du store project vers le store intel global
+- **Endpoints** :
+  - `GET /api/projects` (nouveau) — liste tous les projects connus
+  - `POST /api/projects { path }` (nouveau, async via `JobKind::AddProject`) — crée + scan
+  - `GET /api/workspaces?project=<slug>` (param renommé)
+  - Migration : ancien `?project=<path>` accepté avec deprecation warning + redirect
+
+### Migration v0.5.x → v0.6.0
+
+Au premier run v0.6.0 sur un store legacy `~/.packguard/store.db` :
+1. Détecter le store legacy
+2. Lire les `repos` rows, partitionner par leur git root (walk-up depuis chaque path)
+3. Créer un project entry par partition + un store per-project avec les rows correspondantes
+4. Renommer l'ancien `store.db` → `store.db.v0.5-backup`
+5. Banner stderr : *"Migrated N projects to per-project layout. Backup at ~/.packguard/store.db.v0.5-backup"*
+
+### Sub-phases proposées
+
+**Phase 14 — Per-project store** (~10-12 commits) :
+
+- **14.1 Backend** — table `projects` + multi-store + migration V7 + endpoints `GET/POST /api/projects` + intel extraction (~4 commits)
+- **14.2 CLI auto-detection** — walk-up `.git/` depuis cwd dans tous les commands (`scan`, `ui`, `report`, `audit`, `actions`, `graph`), `--project <slug>` flag, `PACKGUARD_PROJECT` env var, fallback `_default_` (~2 commits)
+- **14.3 Dashboard** — `ProjectSelector` header component + `AddProjectModal` + boot flow (auto-select cwd / blocking modal si inconnu) + URL params renaming + scope cascade au workspace (~3-4 commits)
+- **14.4 Docs** — README v0.6.0 bullet + nouveau `concepts/project-store.mdx` + `per-project.mdx` ajusté pour distinguer project vs workspace + migration note (~2 commits)
+
+### Critères de sortie v0.6.0
+
+- [ ] Auto-detect project depuis cwd via `.git/` walk-up dans tous les commands
+- [ ] Store per-project + intel global, migration V7 lossless du legacy
+- [ ] `ProjectSelector` UI fonctionnel + `AddProjectModal` empty-state
+- [ ] Boot flow propre (auto-select connu / modal si inconnu / fallback `_default_`)
+- [ ] URL params renaming `?project=<slug>` + `?workspace=<path>` avec backcompat redirect
+- [ ] Zéro régression 393 Rust + 134 Vitest de v0.5.1
+- [ ] Migration testée live sur Nalo : `~/.packguard/store.db` legacy → 1 projet `Users-mauc-Repo-Nalo-monorepo` avec 16+ workspaces préservés
+
+### Reporté v0.7.0+
+
+- Multi-project aggregate view (cross-repo CVE comparison) — pattern v0.5.x rétabli explicitement via flag
+- Apply actions (sortie du read-only v0.4.0)
+- Graph rework complet (WebGL, LOD, pagination)
+- Tier 2 écosystèmes (Cargo, Go)
+- i18n FR/EN + Settings page
+
+---
+
 ## 14.14. Feature requests v0.2.0 (remontées post-release)
 
 Thomas a utilisé l'outil sur son monorepo Nalo dès la post-release et a remonté deux **manques produit substantiels** :
