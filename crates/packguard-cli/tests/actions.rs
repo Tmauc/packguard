@@ -150,8 +150,18 @@ fn seed(store_path: &Path, repo: &Path) {
 }
 
 struct Env {
-    _tmp: tempfile::TempDir,
+    tmp: tempfile::TempDir,
     store: PathBuf,
+}
+
+impl Env {
+    /// Cwd that has no `.git/` ancestor, so the 14.2c slug resolver
+    /// falls through to `_default_` — matching the migrated layout
+    /// where the test repo's path (no `.git/`) lands in the
+    /// `_default_` per-project store.
+    fn cwd(&self) -> &Path {
+        self.tmp.path()
+    }
 }
 
 fn env() -> Env {
@@ -160,7 +170,7 @@ fn env() -> Env {
     let repo = tmp.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     seed(&store, &repo);
-    Env { _tmp: tmp, store }
+    Env { tmp, store }
 }
 
 fn run_actions(env: &Env, args: &[&str]) -> std::process::Output {
@@ -169,6 +179,11 @@ fn run_actions(env: &Env, args: &[&str]) -> std::process::Output {
         .arg(&env.store)
         .arg("actions")
         .args(args)
+        // 14.2c — pin cwd to a non-git dir so the resolver falls
+        // through to `_default_`; clear PACKGUARD_PROJECT in case the
+        // test runner inherited it from the host environment.
+        .current_dir(env.cwd())
+        .env_remove("PACKGUARD_PROJECT")
         .output()
         .unwrap()
 }

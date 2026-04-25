@@ -14,10 +14,16 @@ use packguard_intel::{match_vulnerabilities, MatchedVuln};
 use packguard_policy::{
     evaluate_dependency_full, Compliance, Dialect, Policy, ReleaseInfo, VulnsByVersion,
 };
-use packguard_store::{IntelStore, ProjectsRegistry, Store};
+use packguard_store::{IntelStore, ProjectStoreCache, ProjectsRegistry, Store};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+use crate::cli_scope::{
+    ensure_default_registered, resolve_cli_scope, ResolvedCliScope, ScopeSource,
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -58,13 +64,14 @@ enum Cmd {
     Report {
         /// Path to the repo root whose cached scan should be reported on.
         /// Omitted (and no `--project`) → pick the most recent scan from
-        /// the store (Phase 7a consistency with `packguard ui`).
+        /// the project store (Phase 7a consistency with `packguard ui`).
         path: Option<PathBuf>,
-        /// Phase 7a alias for the positional path. Useful in scripts
-        /// that set `--project` uniformly across `report`, `audit`,
-        /// and `graph`. Mutually-exclusive with the positional arg.
-        #[arg(long, conflicts_with = "path")]
-        project: Option<PathBuf>,
+        /// Project to scope the report to. Accepts a slug
+        /// (`Users-mauc-Repo-Nalo-monorepo`) or, for v0.5.x backcompat,
+        /// an absolute workspace path (deprecated — emits a warning).
+        /// When omitted, the slug is auto-detected via cwd walk-up.
+        #[arg(long)]
+        project: Option<String>,
         /// Output format.
         #[arg(long, value_enum, default_value_t = ReportFormat::Table)]
         format: ReportFormat,
@@ -81,11 +88,13 @@ enum Cmd {
     /// List every matched vulnerability for the cached scan at `path`.
     Audit {
         /// Path to the repo root whose cached scan should be audited.
-        /// Omitted (and no `--project`) → pick the most recent scan.
+        /// Omitted (and no `--project`) → pick the most recent scan in
+        /// the resolved project store.
         path: Option<PathBuf>,
-        /// Phase 7a alias for the positional path.
-        #[arg(long, conflicts_with = "path")]
-        project: Option<PathBuf>,
+        /// Project slug (or legacy workspace path — deprecated). When
+        /// omitted, the slug is auto-detected via cwd walk-up.
+        #[arg(long)]
+        project: Option<String>,
         /// Only show vulns at or above one of these severities (repeatable).
         /// Comma-separated; accepts `critical|high|medium|low`.
         #[arg(long, value_delimiter = ',')]
@@ -132,10 +141,14 @@ enum Cmd {
     /// command serves both API + UI in release.
     Ui {
         /// Path the server uses as the project root for scan operations.
-        /// When omitted, `packguard ui` picks the most recent scan from
-        /// the store (by `last_scan_at`). Empty-store case: server still
+        /// When omitted, `packguard ui` picks the most recent scan in
+        /// the resolved project's store. Empty-store case: server still
         /// boots, the UI shows a "no scans yet" placeholder.
         path: Option<PathBuf>,
+        /// Project slug (or legacy workspace path — deprecated). When
+        /// omitted, the slug is auto-detected via cwd walk-up.
+        #[arg(long)]
+        project: Option<String>,
         /// TCP port to bind. Default 5174 (matches the Vite proxy in
         /// `dashboard/vite.config.ts`).
         #[arg(long, default_value_t = 5174)]
@@ -154,11 +167,13 @@ enum Cmd {
     /// Zero network — reads only the SQLite store (populate with `scan`).
     Graph {
         /// Path to the project root (same shape as `scan`). Omitted (and
-        /// no `--project`) → pick the most recent scan from the store.
+        /// no `--project`) → pick the most recent scan in the resolved
+        /// project store.
         path: Option<PathBuf>,
-        /// Phase 7a alias for the positional path.
-        #[arg(long, conflicts_with = "path")]
-        project: Option<PathBuf>,
+        /// Project slug (or legacy workspace path — deprecated). When
+        /// omitted, the slug is auto-detected via cwd walk-up.
+        #[arg(long)]
+        project: Option<String>,
         /// Manifest path of the workspace to restrict to (e.g.
         /// `/abs/path/package.json`). Omit to include every workspace of the
         /// repo.
@@ -193,6 +208,11 @@ enum Cmd {
         /// Path to the project root. Defaults to the current directory.
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// Project slug to write into. When omitted, the slug is
+        /// derived from `<path>` via `.git/` walk-up (or `_default_`
+        /// for paths outside any git repo).
+        #[arg(long)]
+        project: Option<String>,
         /// Skip network calls. Errors if the cache has never been populated.
         #[arg(long)]
         offline: bool,
@@ -280,6 +300,15 @@ async fn main() -> Result<()> {
         );
     }
 
+    let mut registry = ProjectsRegistry::open(&packguard_home).with_context(|| {
+        format!(
+            "opening projects registry under {}",
+            packguard_home.display()
+        )
+    })?;
+    let project_stores = Arc::new(ProjectStoreCache::new(packguard_home.clone()));
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
     match cli.command {
         Cmd::Init {
             path,
@@ -296,16 +325,28 @@ async fn main() -> Result<()> {
             format,
             no_live_fallback,
         } => {
-            let resolved = resolve_project_for_command(path.or(project), &store_path, "audit")?;
+            let scope = resolve_scope_or_default(
+                project.as_deref(),
+                path.as_deref(),
+                &mut registry,
+                &packguard_home,
+                &cwd,
+            )?;
+            announce_scope(&scope, "audit");
+            let pstore = project_stores.get_or_open(&scope.slug).await?;
+            let workspace =
+                resolve_workspace_in_project(&pstore, scope.workspace_path.clone(), "audit")
+                    .await?;
             audit(
-                resolved,
+                workspace,
                 severity,
                 fail_on,
                 fail_on_malware,
                 focus,
                 format,
                 no_live_fallback,
-                &store_path,
+                &pstore,
+                &packguard_home,
             )
             .await
         }
@@ -316,14 +357,33 @@ async fn main() -> Result<()> {
             fail_on_violation,
             show_policy,
         } => {
-            let resolved = resolve_project_for_command(path.or(project), &store_path, "report")?;
+            let scope = resolve_scope_or_default(
+                project.as_deref(),
+                path.as_deref(),
+                &mut registry,
+                &packguard_home,
+                &cwd,
+            )?;
+            announce_scope(&scope, "report");
+            let pstore = project_stores.get_or_open(&scope.slug).await?;
+            let workspace =
+                resolve_workspace_in_project(&pstore, scope.workspace_path.clone(), "report")
+                    .await?;
             if show_policy {
-                return render_show_policy(&resolved);
+                return render_show_policy(&workspace);
             }
-            report(resolved, format, fail_on_violation, &store_path)
+            report(
+                workspace,
+                format,
+                fail_on_violation,
+                &pstore,
+                &packguard_home,
+            )
+            .await
         }
         Cmd::Scan {
             path,
+            project,
             offline,
             force,
             no_recursive,
@@ -333,6 +393,15 @@ async fn main() -> Result<()> {
             dry_run,
             yes,
         } => {
+            let scope = resolve_scope_or_default(
+                project.as_deref(),
+                Some(&path),
+                &mut registry,
+                &packguard_home,
+                &cwd,
+            )?;
+            announce_scope(&scope, "scan");
+            let pstore = project_stores.get_or_open(&scope.slug).await?;
             scan(
                 path,
                 ScanOptions {
@@ -345,22 +414,43 @@ async fn main() -> Result<()> {
                     dry_run,
                     yes,
                 },
-                &store_path,
+                &pstore,
             )
             .await
         }
         Cmd::Ui {
             path,
+            project,
             port,
             host,
             no_open,
-        } => ui(path, port, host, no_open, &store_path).await,
+        } => {
+            let scope = resolve_scope_or_default(
+                project.as_deref(),
+                path.as_deref(),
+                &mut registry,
+                &packguard_home,
+                &cwd,
+            )?;
+            announce_scope(&scope, "ui");
+            let pstore = project_stores.get_or_open(&scope.slug).await?;
+            ui(
+                scope.workspace_path.clone(),
+                port,
+                host,
+                no_open,
+                &store_path,
+                &pstore,
+                project_stores.clone(),
+            )
+            .await
+        }
         Cmd::Sync {
             skip_osv,
             skip_ghsa,
             ghsa_cache,
             all,
-        } => sync(skip_osv, skip_ghsa, ghsa_cache, all, &store_path).await,
+        } => sync(skip_osv, skip_ghsa, ghsa_cache, all, &packguard_home).await,
         Cmd::Graph {
             path,
             project,
@@ -371,21 +461,118 @@ async fn main() -> Result<()> {
             kind,
             format,
         } => {
-            let resolved = resolve_project_for_command(path.or(project), &store_path, "graph")?;
+            let scope = resolve_scope_or_default(
+                project.as_deref(),
+                path.as_deref(),
+                &mut registry,
+                &packguard_home,
+                &cwd,
+            )?;
+            announce_scope(&scope, "graph");
+            let pstore = project_stores.get_or_open(&scope.slug).await?;
+            let repo_path =
+                resolve_workspace_in_project(&pstore, scope.workspace_path.clone(), "graph")
+                    .await?;
             graph(
-                resolved,
+                repo_path,
                 workspace.as_deref(),
                 focus.as_deref(),
                 contaminated_by.as_deref(),
                 max_depth,
                 kind.as_deref(),
                 format,
-                &store_path,
+                &pstore,
+                &packguard_home,
             )
+            .await
         }
-        Cmd::Scans { json } => scans(json, &store_path),
-        Cmd::Actions(args) => actions_cli::run(args, &store_path),
+        Cmd::Scans { json } => scans(json, project_stores.clone()).await,
+        Cmd::Actions(args) => {
+            actions_cli::run(
+                args,
+                &mut registry,
+                project_stores.clone(),
+                &packguard_home,
+                &cwd,
+            )
+            .await
+        }
     }
+}
+
+/// Wrapper around [`resolve_cli_scope`] that also materializes the
+/// `_default_` registry row when the resolver fell through to it. Keeps
+/// every command's dispatch arm one line lighter.
+fn resolve_scope_or_default(
+    flag: Option<&str>,
+    positional: Option<&Path>,
+    registry: &mut ProjectsRegistry,
+    packguard_home: &Path,
+    cwd: &Path,
+) -> Result<ResolvedCliScope> {
+    let scope = resolve_cli_scope(flag, positional, registry, cwd)?;
+    if matches!(scope.source, ScopeSource::Default) {
+        ensure_default_registered(registry, packguard_home)?;
+    }
+    Ok(scope)
+}
+
+/// One-line stderr banner so the user always knows which project a
+/// command landed on, plus the deprecation warning for the legacy
+/// `--project <path>` form.
+fn announce_scope(scope: &ResolvedCliScope, command: &str) {
+    let suffix = match &scope.source {
+        ScopeSource::ExplicitFlagSlug => "explicit slug",
+        ScopeSource::ExplicitFlagPath(_) => "from --project (deprecated path form)",
+        ScopeSource::EnvVar => "from PACKGUARD_PROJECT",
+        ScopeSource::Cwd(_) => "auto-detected from cwd",
+        ScopeSource::Default => "fallback (no .git/ ancestor)",
+    };
+    eprintln!(
+        "{} {command}: project {} ({})",
+        "ⓘ".dimmed(),
+        scope.slug.cyan(),
+        suffix.dimmed(),
+    );
+    if scope.deprecated() {
+        eprintln!(
+            "{} `--project <path>` is deprecated; use the slug form \
+             (`--project {}`) or rely on cwd auto-detection.",
+            "warn".yellow(),
+            scope.slug,
+        );
+    }
+}
+
+/// Resolve a workspace filter inside an already-opened project store.
+/// Mirrors the v0.5.x `resolve_project_for_command` semantics — pick
+/// the most-recent scan as the default — but scoped to the project
+/// store so a user with multiple projects never accidentally sees
+/// scans from a different repo.
+async fn resolve_workspace_in_project(
+    pstore: &Arc<Mutex<Store>>,
+    explicit: Option<PathBuf>,
+    command_name: &str,
+) -> Result<PathBuf> {
+    if let Some(p) = explicit {
+        return Ok(p);
+    }
+    let store = pstore.lock().await;
+    let scans = store.scans_index().unwrap_or_default();
+    let Some(first) = scans.into_iter().next() else {
+        anyhow::bail!(
+            "no cached scan found for `packguard {command_name}` in this project. \
+             Run `packguard scan <path>` first, then re-try — or pass an explicit \
+             path / --project argument.",
+        );
+    };
+    eprintln!(
+        "{} {command_name}: defaulting to {} {}",
+        "ⓘ".dimmed(),
+        first.path.display().to_string().cyan(),
+        "(most recent scan in this project; pass a path to override)".dimmed()
+    );
+    Ok(first.path)
 }
 
 async fn sync(
@@ -393,12 +580,12 @@ async fn sync(
     skip_ghsa: bool,
     ghsa_cache: Option<PathBuf>,
     include_all: bool,
-    store_path: &Path,
+    packguard_home: &Path,
 ) -> Result<()> {
     // Phase 14.2b.2.4 — sync's project-layer reads (`watched_packages`)
     // fan out across every per-project store. The legacy `Store` is
     // no longer opened by the sync flow.
-    let home = home_from_store_path(store_path);
+    let home = packguard_home.to_path_buf();
     let mut intel = IntelStore::open(&home)
         .with_context(|| format!("opening intel store under {}", home.display()))?;
     let project_stores = packguard_store::ProjectStoreCache::new(home.clone());
@@ -898,30 +1085,42 @@ async fn ui(
     port: u16,
     host: String,
     no_open: bool,
-    store_path: &Path,
+    legacy_store_path: &Path,
+    pstore: &Arc<Mutex<Store>>,
+    project_stores: Arc<ProjectStoreCache>,
 ) -> Result<()> {
-    let store = Store::open(store_path)
-        .with_context(|| format!("opening store at {}", store_path.display()))?;
-    // Open the new layout's stores from the same packguard home as
-    // the legacy store. AppState holds them all so the 14.2b cutover
-    // only swaps the handler bodies.
-    let home = home_from_store_path(store_path);
+    // 14.2c — banner resolution reads from the per-project store the
+    // dispatch already opened. The legacy `Store::open(legacy_store_path)`
+    // call below remains because `ServerConfig` still requires the
+    // field; that wire is removed in 14.2d. The handle is created
+    // read-only for the migrated case (no inserts), and `Store::open`
+    // re-runs migrations idempotently on cold starts.
+    let legacy_store = Store::open(legacy_store_path).with_context(|| {
+        format!(
+            "opening legacy store at {} (kept until 14.2d ServerConfig cleanup)",
+            legacy_store_path.display()
+        )
+    })?;
+    let home = home_from_store_path(legacy_store_path);
     let intel = IntelStore::open(&home)
         .with_context(|| format!("opening intel store under {}", home.display()))?;
     let projects = ProjectsRegistry::open(&home)
         .with_context(|| format!("opening projects registry under {}", home.display()))?;
-    let project_stores = std::sync::Arc::new(packguard_store::ProjectStoreCache::new(home.clone()));
 
-    // Resolve the server's view root:
+    // Resolve the server's view root from the per-project store:
     //  - explicit path → canonicalize + use as-is.
-    //  - no path + store has scans → default to the most recent one (by
-    //    `last_scan_at DESC`). No more silent fallback to CWD that ships
-    //    an empty graph with zero feedback.
-    //  - no path + empty store → keep a PathBuf sentinel for ServerConfig
-    //    (none of the graph/packages/compat queries will match anything
-    //    in the store, which is honest) and banner the user to scan.
-    let scans = store.scans_index().unwrap_or_default();
-    let (repo_path, resolution_note): (PathBuf, String) = match (path, scans.first()) {
+    //  - no path + project store has scans → most recent one.
+    //  - no path + empty project store → CWD sentinel + "no scans" banner.
+    let recent: Option<PathBuf> = {
+        let store = pstore.lock().await;
+        store
+            .scans_index()
+            .unwrap_or_default()
+            .into_iter()
+            .next()
+            .map(|r| r.path)
+    };
+    let (repo_path, resolution_note): (PathBuf, String) = match (path, recent) {
         (Some(p), _) => {
             let canonical = p.canonicalize().unwrap_or_else(|_| p.clone());
             (
@@ -934,12 +1133,12 @@ async fn ui(
             )
         }
         (None, Some(first)) => (
-            first.path.clone(),
+            first.clone(),
             format!(
                 "{} workspace: {} {} (override with `packguard ui <path>`)",
                 "→".dimmed(),
-                first.path.display().to_string().cyan(),
-                "(most recent scan)".dimmed(),
+                first.display().to_string().cyan(),
+                "(most recent scan in this project)".dimmed(),
             ),
         ),
         (None, None) => (
@@ -954,7 +1153,7 @@ async fn ui(
 
     let app = packguard_server::router(packguard_server::ServerConfig {
         repo_path: repo_path.clone(),
-        store,
+        store: legacy_store,
         intel,
         projects,
         project_stores,
@@ -1024,7 +1223,7 @@ async fn shutdown_signal() {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn graph(
+async fn graph(
     path: PathBuf,
     workspace: Option<&str>,
     focus: Option<&str>,
@@ -1032,14 +1231,13 @@ fn graph(
     max_depth: Option<u32>,
     kind: Option<&str>,
     format: GraphFormat,
-    store_path: &Path,
+    pstore: &Arc<Mutex<Store>>,
+    packguard_home: &Path,
 ) -> Result<()> {
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-    let store = Store::open(store_path)
-        .with_context(|| format!("opening store at {}", store_path.display()))?;
-    let intel = IntelStore::open(&home_from_store_path(store_path))
-        .with_context(|| "opening IntelStore")?;
+    let store = pstore.lock().await;
+    let intel = IntelStore::open(packguard_home).with_context(|| "opening IntelStore")?;
     let repo_path = path.canonicalize().unwrap_or(path);
 
     // Honest error when the repo hasn't been scanned. The graph service
@@ -1392,10 +1590,25 @@ fn graph(
 /// Dump every registered scan (path, ecosystem, last scan, dep count) so
 /// the user can see what they've already scanned when report/audit/graph
 /// bail with "no cached scan". `--json` for machine parsing.
-fn scans(as_json: bool, store_path: &Path) -> Result<()> {
-    let store = Store::open(store_path)
-        .with_context(|| format!("opening store at {}", store_path.display()))?;
-    let rows = store.scans_index()?;
+///
+/// 14.2c — fans out across every per-project store via
+/// [`ProjectStoreCache::slug_paths`], so a user with multiple registered
+/// projects sees the union of their scans without ever touching the
+/// legacy `~/.packguard/store.db`.
+async fn scans(as_json: bool, project_stores: Arc<ProjectStoreCache>) -> Result<()> {
+    let mut rows: Vec<packguard_store::ScanIndexRow> = Vec::new();
+    for (slug, _) in project_stores.slug_paths()? {
+        let pstore = project_stores.get_or_open(&slug).await?;
+        let store = pstore.lock().await;
+        rows.extend(store.scans_index()?);
+    }
+    // Same ordering as the legacy single-store impl: most-recent first
+    // (`last_scan_at DESC`), tie-break on path for deterministic output.
+    rows.sort_by(|a, b| {
+        b.last_scan_at
+            .cmp(&a.last_scan_at)
+            .then(a.path.cmp(&b.path))
+    });
     if as_json {
         println!(
             "{}",
@@ -1474,38 +1687,6 @@ fn available_scans_hint(store: &Store) -> String {
     out
 }
 
-/// Phase 7a CLI fallback: if a command's path argument (or its
-/// `--project` alias) is `None`, pick the most recent scan from the
-/// store instead of silently defaulting to the CWD — same rule as
-/// `packguard ui` since Polish-bis-2. Prints a one-line banner so the
-/// user always knows which scan the command acted against.
-fn resolve_project_for_command(
-    explicit: Option<PathBuf>,
-    store_path: &Path,
-    command_name: &str,
-) -> Result<PathBuf> {
-    if let Some(p) = explicit {
-        return Ok(p);
-    }
-    let store = Store::open(store_path)
-        .with_context(|| format!("opening store at {}", store_path.display()))?;
-    let scans = store.scans_index().unwrap_or_default();
-    let Some(first) = scans.into_iter().next() else {
-        anyhow::bail!(
-            "no cached scan found for `packguard {command_name}`. \
-             Run `packguard scan <path>` first, then re-try — or pass an \
-             explicit path / --project argument.",
-        );
-    };
-    eprintln!(
-        "{} {command_name}: defaulting to {} {}",
-        "ⓘ".dimmed(),
-        first.path.display().to_string().cyan(),
-        "(most recent scan; pass --project to override)".dimmed()
-    );
-    Ok(first.path)
-}
-
 fn resolve_store_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(p) = explicit {
         return Ok(p);
@@ -1557,7 +1738,7 @@ struct ScanProjectSummary {
     skipped_unchanged: bool,
 }
 
-async fn scan(path: PathBuf, opts: ScanOptions, store_path: &Path) -> Result<()> {
+async fn scan(path: PathBuf, opts: ScanOptions, pstore: &Arc<Mutex<Store>>) -> Result<()> {
     use packguard_core::DiscoveryOptions;
 
     let discovery_opts = DiscoveryOptions {
@@ -1616,8 +1797,7 @@ async fn scan(path: PathBuf, opts: ScanOptions, store_path: &Path) -> Result<()>
     }
 
     let ecosystems = default_ecosystems()?;
-    let mut store = Store::open(store_path)
-        .with_context(|| format!("opening store at {}", store_path.display()))?;
+    let mut store = pstore.lock().await;
 
     let multi = outcome.projects.len() > 1;
     let mut scanned = 0usize;
@@ -2077,16 +2257,15 @@ struct ReportSummary {
     typosquat_suspects: usize,
 }
 
-fn report(
+async fn report(
     path: PathBuf,
     format: ReportFormat,
     fail_on_violation: bool,
-    store_path: &Path,
+    pstore: &Arc<Mutex<Store>>,
+    packguard_home: &Path,
 ) -> Result<()> {
-    let store = Store::open(store_path)
-        .with_context(|| format!("opening store at {}", store_path.display()))?;
-    let intel = IntelStore::open(&home_from_store_path(store_path))
-        .with_context(|| "opening IntelStore")?;
+    let store = pstore.lock().await;
+    let intel = IntelStore::open(packguard_home).with_context(|| "opening IntelStore")?;
     let dependencies = store.load_repo_dependencies(&path)?;
     if dependencies.is_empty() {
         anyhow::bail!(
@@ -2297,12 +2476,11 @@ async fn audit(
     focus: AuditFocus,
     format: ReportFormat,
     no_live_fallback: bool,
-    store_path: &Path,
+    pstore: &Arc<Mutex<Store>>,
+    packguard_home: &Path,
 ) -> Result<()> {
-    let store = Store::open(store_path)
-        .with_context(|| format!("opening store at {}", store_path.display()))?;
-    let mut intel = IntelStore::open(&home_from_store_path(store_path))
-        .with_context(|| "opening IntelStore")?;
+    let store = pstore.lock().await;
+    let mut intel = IntelStore::open(packguard_home).with_context(|| "opening IntelStore")?;
     let dependencies = store.load_repo_dependencies(&path)?;
     if dependencies.is_empty() {
         let hint = available_scans_hint(&store);

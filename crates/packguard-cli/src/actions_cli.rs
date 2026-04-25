@@ -15,10 +15,16 @@ use packguard_actions::{
     collect_all, dismiss_raw, filter_min_severity, restore, Action, ActionKind, ActionSeverity,
     ActionTarget,
 };
-use packguard_store::{IntelStore, Store};
+use packguard_store::{IntelStore, ProjectStoreCache, ProjectsRegistry, Store};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+use crate::cli_scope::{
+    ensure_default_registered, resolve_cli_scope, ResolvedCliScope, ScopeSource,
+};
 
 #[derive(Args, Debug)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -34,11 +40,15 @@ pub struct ActionsArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct ActionsListArgs {
-    /// Restrict the listing to this workspace (repo root). Defaults to
-    /// "everything in the store". Matches the existing `--project` flag
-    /// across `report` / `audit` / `graph`.
+    /// Restrict the listing to a project slug (or, for v0.5.x backcompat,
+    /// a workspace path — deprecated). When omitted, the slug is
+    /// auto-detected via cwd walk-up.
     #[arg(long)]
-    pub project: Option<PathBuf>,
+    pub project: Option<String>,
+    /// Restrict the listing to one workspace inside the resolved
+    /// project. Defaults to every workspace in the project's store.
+    #[arg(long)]
+    pub workspace: Option<PathBuf>,
     /// Output format.
     #[arg(long, value_enum, default_value_t = ActionsFormat::Table)]
     pub format: ActionsFormat,
@@ -68,6 +78,10 @@ pub enum ActionsSub {
     /// Dismiss an action by id prefix (min 6 hex chars, git-style).
     Dismiss {
         id_prefix: String,
+        /// Project slug (or legacy workspace path — deprecated). When
+        /// omitted, the slug is auto-detected via cwd walk-up.
+        #[arg(long)]
+        project: Option<String>,
         #[arg(long)]
         reason: Option<String>,
     },
@@ -75,13 +89,21 @@ pub enum ActionsSub {
     /// the action resurfaces automatically.
     Defer {
         id_prefix: String,
+        /// Project slug (or legacy workspace path — deprecated).
+        #[arg(long)]
+        project: Option<String>,
         #[arg(long)]
         days: i64,
         #[arg(long)]
         reason: Option<String>,
     },
     /// Restore a previously dismissed / deferred action by id prefix.
-    Restore { id_prefix: String },
+    Restore {
+        id_prefix: String,
+        /// Project slug (or legacy workspace path — deprecated).
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
@@ -91,34 +113,108 @@ pub enum ActionsFormat {
     Sarif,
 }
 
-pub fn run(args: ActionsArgs, store_path: &Path) -> Result<()> {
+pub async fn run(
+    args: ActionsArgs,
+    registry: &mut ProjectsRegistry,
+    project_stores: Arc<ProjectStoreCache>,
+    packguard_home: &Path,
+    cwd: &Path,
+) -> Result<()> {
     match args.subcommand {
-        None => list(args.list, store_path),
-        Some(ActionsSub::List(list_args)) => list(list_args, store_path),
-        Some(ActionsSub::Dismiss { id_prefix, reason }) => {
-            dismiss_cmd(&id_prefix, reason.as_deref(), store_path)
+        None => list(args.list, registry, project_stores, packguard_home, cwd).await,
+        Some(ActionsSub::List(list_args)) => {
+            list(list_args, registry, project_stores, packguard_home, cwd).await
+        }
+        Some(ActionsSub::Dismiss {
+            id_prefix,
+            project,
+            reason,
+        }) => {
+            let scope = resolve_actions_scope(project.as_deref(), registry, packguard_home, cwd)?;
+            announce_actions_scope(&scope, "dismiss");
+            let pstore = project_stores.get_or_open(&scope.slug).await?;
+            dismiss_cmd(&id_prefix, reason.as_deref(), &pstore, packguard_home).await
         }
         Some(ActionsSub::Defer {
             id_prefix,
+            project,
             days,
             reason,
-        }) => defer_cmd(&id_prefix, days, reason.as_deref(), store_path),
-        Some(ActionsSub::Restore { id_prefix }) => restore_cmd(&id_prefix, store_path),
+        }) => {
+            let scope = resolve_actions_scope(project.as_deref(), registry, packguard_home, cwd)?;
+            announce_actions_scope(&scope, "defer");
+            let pstore = project_stores.get_or_open(&scope.slug).await?;
+            defer_cmd(&id_prefix, days, reason.as_deref(), &pstore, packguard_home).await
+        }
+        Some(ActionsSub::Restore { id_prefix, project }) => {
+            let scope = resolve_actions_scope(project.as_deref(), registry, packguard_home, cwd)?;
+            announce_actions_scope(&scope, "restore");
+            let pstore = project_stores.get_or_open(&scope.slug).await?;
+            restore_cmd(&id_prefix, &pstore, packguard_home).await
+        }
+    }
+}
+
+/// Mini-wrapper around [`resolve_cli_scope`] used by the actions
+/// sub-commands — they have no positional path of their own, so the
+/// resolution chain reduces to flag → env → cwd → `_default_`.
+fn resolve_actions_scope(
+    flag: Option<&str>,
+    registry: &mut ProjectsRegistry,
+    packguard_home: &Path,
+    cwd: &Path,
+) -> Result<ResolvedCliScope> {
+    let scope = resolve_cli_scope(flag, None, registry, cwd)?;
+    if matches!(scope.source, ScopeSource::Default) {
+        ensure_default_registered(registry, packguard_home)?;
+    }
+    Ok(scope)
+}
+
+fn announce_actions_scope(scope: &ResolvedCliScope, sub: &str) {
+    let suffix = match &scope.source {
+        ScopeSource::ExplicitFlagSlug => "explicit slug",
+        ScopeSource::ExplicitFlagPath(_) => "from --project (deprecated path form)",
+        ScopeSource::EnvVar => "from PACKGUARD_PROJECT",
+        ScopeSource::Cwd(_) => "auto-detected from cwd",
+        ScopeSource::Default => "fallback (no .git/ ancestor)",
+    };
+    eprintln!(
+        "{} actions {sub}: project {} ({})",
+        "ⓘ".dimmed(),
+        scope.slug.cyan(),
+        suffix.dimmed(),
+    );
+    if scope.deprecated() {
+        eprintln!(
+            "{} `--project <path>` is deprecated; use the slug form \
+             (`--project {}`) or rely on cwd auto-detection.",
+            "warn".yellow(),
+            scope.slug,
+        );
     }
 }
 
 // ---- list -----------------------------------------------------------------
 
-fn list(args: ActionsListArgs, store_path: &Path) -> Result<()> {
-    let store = Store::open(store_path)
-        .with_context(|| format!("opening store at {}", store_path.display()))?;
-    let intel = IntelStore::open(&intel_home(store_path)).with_context(|| "opening IntelStore")?;
+async fn list(
+    args: ActionsListArgs,
+    registry: &mut ProjectsRegistry,
+    project_stores: Arc<ProjectStoreCache>,
+    packguard_home: &Path,
+    cwd: &Path,
+) -> Result<()> {
+    let scope = resolve_actions_scope(args.project.as_deref(), registry, packguard_home, cwd)?;
+    announce_actions_scope(&scope, "list");
+    let pstore = project_stores.get_or_open(&scope.slug).await?;
+    let store = pstore.lock().await;
+    let intel = IntelStore::open(packguard_home).with_context(|| "opening IntelStore")?;
     let now = Utc::now();
 
     let mut actions = collect_all(
         &store,
         &intel,
-        args.project.as_deref(),
+        args.workspace.as_deref(),
         now,
         args.include_dismissed,
         args.include_deferred,
@@ -569,10 +665,14 @@ fn extract_cve_id(text: &str) -> Option<String> {
 
 // ---- dismiss / defer / restore --------------------------------------------
 
-fn dismiss_cmd(id_prefix: &str, reason: Option<&str>, store_path: &Path) -> Result<()> {
-    let mut store = Store::open(store_path)
-        .with_context(|| format!("opening store at {}", store_path.display()))?;
-    let intel = IntelStore::open(&intel_home(store_path)).with_context(|| "opening IntelStore")?;
+async fn dismiss_cmd(
+    id_prefix: &str,
+    reason: Option<&str>,
+    pstore: &Arc<Mutex<Store>>,
+    packguard_home: &Path,
+) -> Result<()> {
+    let mut store = pstore.lock().await;
+    let intel = IntelStore::open(packguard_home).with_context(|| "opening IntelStore")?;
     let action = resolve_prefix(&store, &intel, id_prefix)?;
     let now = Utc::now();
     dismiss_raw(
@@ -595,14 +695,19 @@ fn dismiss_cmd(id_prefix: &str, reason: Option<&str>, store_path: &Path) -> Resu
     Ok(())
 }
 
-fn defer_cmd(id_prefix: &str, days: i64, reason: Option<&str>, store_path: &Path) -> Result<()> {
+async fn defer_cmd(
+    id_prefix: &str,
+    days: i64,
+    reason: Option<&str>,
+    pstore: &Arc<Mutex<Store>>,
+    packguard_home: &Path,
+) -> Result<()> {
     if days <= 0 {
         bail!("--days must be a positive integer");
     }
     let days = days.clamp(1, 365);
-    let mut store = Store::open(store_path)
-        .with_context(|| format!("opening store at {}", store_path.display()))?;
-    let intel = IntelStore::open(&intel_home(store_path)).with_context(|| "opening IntelStore")?;
+    let mut store = pstore.lock().await;
+    let intel = IntelStore::open(packguard_home).with_context(|| "opening IntelStore")?;
     let action = resolve_prefix(&store, &intel, id_prefix)?;
     let now = Utc::now();
     let until = dismiss_raw(
@@ -628,10 +733,13 @@ fn defer_cmd(id_prefix: &str, days: i64, reason: Option<&str>, store_path: &Path
     Ok(())
 }
 
-fn restore_cmd(id_prefix: &str, store_path: &Path) -> Result<()> {
-    let mut store = Store::open(store_path)
-        .with_context(|| format!("opening store at {}", store_path.display()))?;
-    let intel = IntelStore::open(&intel_home(store_path)).with_context(|| "opening IntelStore")?;
+async fn restore_cmd(
+    id_prefix: &str,
+    pstore: &Arc<Mutex<Store>>,
+    packguard_home: &Path,
+) -> Result<()> {
+    let mut store = pstore.lock().await;
+    let intel = IntelStore::open(packguard_home).with_context(|| "opening IntelStore")?;
     let action = resolve_prefix(&store, &intel, id_prefix)?;
     restore(&mut store, &action.id)?;
     println!(
@@ -642,16 +750,6 @@ fn restore_cmd(id_prefix: &str, store_path: &Path) -> Result<()> {
         id_prefix_render(&action.id),
     );
     Ok(())
-}
-
-/// Mirror `home_from_store_path` from `main.rs` — IntelStore lives at
-/// `<store_path parent>/intel/intel.db`, so the parent directory is the
-/// authoritative packguard home for both `--store` and `PACKGUARD_HOME`.
-fn intel_home(store_path: &Path) -> PathBuf {
-    store_path
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn id_prefix_render(id: &str) -> String {

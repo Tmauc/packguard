@@ -203,6 +203,10 @@ fn scan_forces_rescan_when_schema_drifted_after_last_scan() {
     .unwrap();
 
     // Prime the store + seed a normal scan so we have a repos row.
+    // 14.2c — the per-project store the CLI writes to lives under
+    // `<home>/projects/<slug>/store.db`. With cwd pinned to a non-git
+    // dir and the `repo` path also outside any git repo, the resolver
+    // falls through to the `_default_` slug.
     {
         let _ = Command::new(bin())
             .args([
@@ -211,6 +215,8 @@ fn scan_forces_rescan_when_schema_drifted_after_last_scan() {
                 "scan",
                 repo.to_str().unwrap(),
             ])
+            .current_dir(tmp.path())
+            .env_remove("PACKGUARD_PROJECT")
             .output()
             .unwrap();
     }
@@ -218,8 +224,9 @@ fn scan_forces_rescan_when_schema_drifted_after_last_scan() {
     // Backdate the repo's last_scan_at + backdate the manifest file so the
     // fingerprint round-trips unchanged. The migration history stays at
     // its original time (newer) so `latest_migration_at > last_scan_at`.
+    let project_db = tmp.path().join("projects/_default_/store.db");
     {
-        let conn = rusqlite::Connection::open(&store_path).unwrap();
+        let conn = rusqlite::Connection::open(&project_db).unwrap();
         conn.execute(
             "UPDATE repos SET last_scan_at = '2020-01-01T00:00:00+00:00'",
             [],
@@ -234,6 +241,8 @@ fn scan_forces_rescan_when_schema_drifted_after_last_scan() {
             "scan",
             repo.to_str().unwrap(),
         ])
+        .current_dir(tmp.path())
+        .env_remove("PACKGUARD_PROJECT")
         .output()
         .unwrap();
     assert!(out.status.success(), "{:?}", out);
@@ -248,13 +257,16 @@ fn scan_forces_rescan_when_schema_drifted_after_last_scan() {
 /// arrive, give it up to `deadline_ms` to emit the full banner, kill the
 /// child. `child.kill()` is SIGKILL on macOS which drops buffered
 /// output — reading incrementally lets us capture the banner before we
-/// shut the server down.
-fn run_ui_collect_banner(args: &[&str], deadline_ms: u64) -> String {
+/// shut the server down. Pin `cwd` to a non-git dir so the 14.2c slug
+/// auto-detection lands on `_default_` instead of the host repo's slug.
+fn run_ui_collect_banner_in(cwd: &Path, args: &[&str], deadline_ms: u64) -> String {
     use std::io::{BufRead, BufReader};
     use std::sync::mpsc;
 
     let mut child = Command::new(bin())
         .args(args)
+        .current_dir(cwd)
+        .env_remove("PACKGUARD_PROJECT")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -329,9 +341,11 @@ fn report_without_arg_falls_back_to_most_recent_scan_with_banner() {
     // project-scoped command with no argument should default to the
     // most recent scan and surface a stderr banner so the user never
     // confuses "most-recent" fallback with a silent CWD default.
-    let (_tmp, store, repo) = tmp_with_store();
+    let (tmp, store, repo) = tmp_with_store();
     let out = Command::new(bin())
         .args(["--store", store.to_str().unwrap(), "report"])
+        .current_dir(tmp.path())
+        .env_remove("PACKGUARD_PROJECT")
         .output()
         .unwrap();
     assert!(out.status.success(), "{:?}", out);
@@ -369,7 +383,8 @@ fn ui_without_path_on_empty_store_prints_no_scans_yet_banner() {
     // that tells the user to run `packguard scan` first.
     let tmp = tempfile::tempdir().unwrap();
     let store = tmp.path().join("store.db");
-    let stdout = run_ui_collect_banner(
+    let stdout = run_ui_collect_banner_in(
+        tmp.path(),
         &[
             "--store",
             store.to_str().unwrap(),
@@ -393,8 +408,9 @@ fn ui_without_path_on_populated_store_picks_most_recent_scan() {
     // Polish-bis-2 happy path: when the store has at least one scan,
     // `packguard ui` with no arg falls back to the most-recent
     // `last_scan_at` entry and calls that out in the banner.
-    let (_tmp, store, repo) = tmp_with_store();
-    let stdout = run_ui_collect_banner(
+    let (tmp, store, repo) = tmp_with_store();
+    let stdout = run_ui_collect_banner_in(
+        tmp.path(),
         &[
             "--store",
             store.to_str().unwrap(),

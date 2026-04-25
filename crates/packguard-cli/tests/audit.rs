@@ -297,7 +297,6 @@ fn audit_reads_cve_only_from_intel_store() {
             .insert_with_slug("_default_", tmp.path(), "_default_")
             .unwrap();
 
-        let mut store = Store::open(&store_path).unwrap();
         let project = Project {
             ecosystem: "npm",
             root: repo.clone(),
@@ -324,6 +323,21 @@ fn audit_reads_cve_only_from_intel_store() {
                 versions: vec![],
             },
         );
+
+        // 14.2c — the CLI now reads from `<home>/projects/<slug>/store.db`,
+        // so the project deps must land there for `packguard audit` to
+        // walk them. The legacy `<home>/store.db` is still seeded below
+        // (with an extra HIGH advisory) so the negative contract — that
+        // CVE rows from the legacy intel tables never surface — stays
+        // testable.
+        let project_db = tmp.path().join("projects/_default_/store.db");
+        std::fs::create_dir_all(project_db.parent().unwrap()).unwrap();
+        let mut pstore = Store::open(&project_db).unwrap();
+        pstore
+            .save_project(&repo, &project, &remotes, "fp-per-project")
+            .unwrap();
+
+        let mut store = Store::open(&store_path).unwrap();
         store
             .save_project(&repo, &project, &remotes, "fp-legacy")
             .unwrap();
@@ -362,6 +376,8 @@ fn audit_reads_cve_only_from_intel_store() {
         .arg(&store_path)
         .args(["audit", "--no-live-fallback", "--format", "json"])
         .arg(&repo)
+        .current_dir(tmp.path())
+        .env_remove("PACKGUARD_PROJECT")
         .output()
         .unwrap();
     assert!(out.status.success(), "audit must exit 0 with no findings");

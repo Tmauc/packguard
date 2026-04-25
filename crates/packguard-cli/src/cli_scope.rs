@@ -226,10 +226,12 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         let registry = ProjectsRegistry::open_in_memory().unwrap();
         let resolved =
-            resolve_cli_scope(Some(nested.to_str().unwrap()), None, &registry, tmp.path())
-                .unwrap();
+            resolve_cli_scope(Some(nested.to_str().unwrap()), None, &registry, tmp.path()).unwrap();
         assert!(resolved.slug.contains("demo"));
-        assert!(resolved.deprecated(), "legacy path form must mark deprecated");
+        assert!(
+            resolved.deprecated(),
+            "legacy path form must mark deprecated"
+        );
         match &resolved.source {
             ScopeSource::ExplicitFlagPath(p) => assert_eq!(p, &nested),
             other => panic!("expected ExplicitFlagPath, got {other:?}"),
