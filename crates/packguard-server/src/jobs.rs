@@ -82,22 +82,49 @@ async fn run_job(state: AppState, id: String, spec: JobSpec) {
     }
 }
 
+/// Phase 14.2b — scans now dual-write: the per-project store under
+/// `<home>/projects/<slug>/store.db` (the runtime source of truth
+/// post-bascule) AND the legacy global `Store` (kept fresh so the
+/// not-yet-bascule'd surfaces — `?project=<path>`, aggregate, the CLI
+/// `report/audit` commands — keep matching the dashboard until 14.2c
+/// migrates them and 14.2d retires the legacy file).
+///
+/// Slug resolution: walk up from `repo` to find the project root,
+/// look up the registry. If no entry exists, the dual-write skips the
+/// per-project leg (a `packguard scan <path>` from outside any
+/// registered project still works against the legacy store; the user
+/// can `POST /api/projects` later to promote the path).
 async fn run_scan_job(state: &AppState, repo: PathBuf) -> Result<serde_json::Value> {
-    let mut store = state.store.lock().await;
-    let report = scan::run(&mut store, &repo).await?;
+    // Always write to the legacy store first. After 14.2d this branch
+    // disappears.
+    let report = {
+        let mut store = state.store.lock().await;
+        scan::run(&mut store, &repo).await?
+    };
+
+    // Best-effort per-project write. Resolve a slug; skip silently on
+    // miss so a path outside any registered project doesn't fail the
+    // job — the legacy write is still authoritative.
+    let registered: Option<String> = {
+        let registry = state.projects.lock().await;
+        registry.get_by_path(&repo).ok().flatten().map(|p| p.slug)
+    };
+    if let Some(slug) = registered {
+        let pstore = state.project_stores.get_or_open(&slug).await?;
+        let mut pstore = pstore.lock().await;
+        // Re-run the scan into the per-project store. Idempotent:
+        // both stores get the same `save_project` payload from the
+        // same registry+filesystem state.
+        let _ = scan::run(&mut pstore, &repo).await?;
+    }
     Ok(serde_json::to_value(report)?)
 }
 
-/// Phase 14.1f — register the project in the registry, run a scan
-/// against its root, then bump `last_scan`. Failure to register (e.g.
-/// a duplicate slug) propagates as a job error; once registered, a
-/// subsequent scan failure leaves the registry row in place but with
-/// `last_scan = NULL` so the dashboard can show "scan failed, retry".
-///
-/// The scan still writes to the legacy global `Store` for now —
-/// 14.1f's contract is "registry + endpoint exist", not "per-project
-/// stores are populated". The cutover that routes scans into
-/// `~/.packguard/projects/<slug>/store.db` lives in 14.2.
+/// Phase 14.1f / 14.2b — register the project in the registry, run a
+/// scan against its root (dual-write to legacy + per-project store),
+/// then bump `last_scan`. The per-project store is created on first
+/// `get_or_open` inside `run_scan_job` since the registry insert
+/// already commits the slug.
 async fn run_add_project_job(state: &AppState, path: PathBuf) -> Result<serde_json::Value> {
     let project_dto: crate::dto::ProjectDto = {
         let mut registry = state.projects.lock().await;

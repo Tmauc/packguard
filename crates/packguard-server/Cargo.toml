@@ -44,3 +44,7 @@ anyhow = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 reqwest = { workspace = true }
+# Phase 14.2b — direct sqlite mutation in `tests/api.rs::slug_scope_reads…`
+# proves the slug-scope handler reads from `<home>/projects/<slug>/store.db`
+# rather than the legacy file. rusqlite is already a workspace dep.
+rusqlite = { workspace = true }

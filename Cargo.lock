@@ -1541,6 +1541,7 @@ dependencies = [
  "packguard-policy",
  "packguard-store",
  "reqwest",
+ "rusqlite",
  "rust-embed",
  "serde",
  "serde_json",

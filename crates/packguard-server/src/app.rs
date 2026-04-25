@@ -16,7 +16,7 @@ use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use packguard_store::{IntelStore, ProjectsRegistry, Store};
+use packguard_store::{IntelStore, ProjectStoreCache, ProjectsRegistry, Store};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -25,13 +25,17 @@ use tower_http::trace::TraceLayer;
 pub struct ServerConfig {
     pub repo_path: PathBuf,
     pub store: Store,
-    /// Cross-project intel catalog. Required by 14.1e.1 plumbing —
-    /// even though no handler reads from it yet, AppState owns the
-    /// connection so the cutover in 14.1e.2/.3 is a one-line swap.
+    /// Cross-project intel catalog. 14.1e wired every intel read/write
+    /// through this handle.
     pub intel: IntelStore,
-    /// Projects registry. Populated by the 14.1d migration; consumed
-    /// by the upcoming `/api/projects` endpoints in 14.1f.
+    /// Projects registry. Populated by the 14.1d migration and the
+    /// 14.1f `POST /api/projects` handler.
     pub projects: ProjectsRegistry,
+    /// 14.2a per-slug `Store` cache. 14.2b routes project-layer reads
+    /// (slug scope) and scan / add-project job writes through this
+    /// handle, leaving the legacy `Store` in [`AppState::store`] for
+    /// cross-project state (jobs table) and the not-yet-bascule'd CLI.
+    pub project_stores: Arc<ProjectStoreCache>,
 }
 
 pub fn router(cfg: ServerConfig) -> Router {
@@ -39,6 +43,7 @@ pub fn router(cfg: ServerConfig) -> Router {
         store: Arc::new(Mutex::new(cfg.store)),
         intel: Arc::new(Mutex::new(cfg.intel)),
         projects: Arc::new(Mutex::new(cfg.projects)),
+        project_stores: cfg.project_stores,
         repo_path: cfg.repo_path,
     };
     let api = Router::new()
@@ -90,11 +95,19 @@ async fn overview(
     State(s): State<AppState>,
     Query(q): Query<ProjectQuery>,
 ) -> Result<axum::response::Response, ApiError> {
-    let store = s.store.lock().await;
+    let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let registry = s.projects.lock().await;
-    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
-    let body = services::overview::build(&store, &intel, scope.path())?;
+    let body = match &scope {
+        ResolvedScope::Slug(project) => {
+            let pstore = s.project_stores.get_or_open(&project.slug).await?;
+            let pstore = pstore.lock().await;
+            services::overview::build(&pstore, &intel, None)?
+        }
+        _ => {
+            let store = s.store.lock().await;
+            services::overview::build(&store, &intel, scope.workspace_path())?
+        }
+    };
     Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
@@ -102,11 +115,19 @@ async fn packages_list(
     State(s): State<AppState>,
     Query(q): Query<PackagesQuery>,
 ) -> Result<axum::response::Response, ApiError> {
-    let store = s.store.lock().await;
+    let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let registry = s.projects.lock().await;
-    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
-    let body = services::packages::list(&store, &intel, &q, scope.path())?;
+    let body = match &scope {
+        ResolvedScope::Slug(project) => {
+            let pstore = s.project_stores.get_or_open(&project.slug).await?;
+            let pstore = pstore.lock().await;
+            services::packages::list(&pstore, &intel, &q, None)?
+        }
+        _ => {
+            let store = s.store.lock().await;
+            services::packages::list(&store, &intel, &q, scope.workspace_path())?
+        }
+    };
     Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
@@ -115,12 +136,20 @@ async fn package_detail(
     Path((ecosystem, name)): Path<(String, String)>,
     Query(q): Query<ProjectQuery>,
 ) -> Result<axum::response::Response, ApiError> {
-    let store = s.store.lock().await;
+    let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let registry = s.projects.lock().await;
-    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
-    let detail = services::packages::detail(&store, &intel, &ecosystem, &name, scope.path())?
-        .ok_or_else(|| ApiError::NotFound(format!("{ecosystem}/{name} not in scan cache")))?;
+    let detail = match &scope {
+        ResolvedScope::Slug(project) => {
+            let pstore = s.project_stores.get_or_open(&project.slug).await?;
+            let pstore = pstore.lock().await;
+            services::packages::detail(&pstore, &intel, &ecosystem, &name, None)?
+        }
+        _ => {
+            let store = s.store.lock().await;
+            services::packages::detail(&store, &intel, &ecosystem, &name, scope.workspace_path())?
+        }
+    }
+    .ok_or_else(|| ApiError::NotFound(format!("{ecosystem}/{name} not in scan cache")))?;
     Ok(with_deprecation_header(detail, scope.is_legacy()))
 }
 
@@ -128,11 +157,16 @@ async fn policy_get(
     State(s): State<AppState>,
     Query(q): Query<ProjectQuery>,
 ) -> Result<axum::response::Response, ApiError> {
-    let store = s.store.lock().await;
-    let registry = s.projects.lock().await;
-    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
-    let repo = scope.path().unwrap_or(&s.repo_path);
-    let body = services::policies::read(repo)?;
+    let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
+    // Slug scope reads `<project_root>/.packguard.yml`. Path scope keeps
+    // its 14.1f behaviour (the original workspace path). Aggregate falls
+    // back to the server's repo_path.
+    let repo: PathBuf = match &scope {
+        ResolvedScope::Slug(project) => project.path.clone(),
+        ResolvedScope::LegacyPath(p) => p.clone(),
+        ResolvedScope::Aggregate => s.repo_path.clone(),
+    };
+    let body = services::policies::read(&repo)?;
     Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
@@ -141,36 +175,47 @@ async fn policy_put(
     Query(q): Query<ProjectQuery>,
     Json(body): Json<PolicyWrite>,
 ) -> Result<axum::response::Response, ApiError> {
-    let (repo, deprecated) = {
-        let store = s.store.lock().await;
-        let registry = s.projects.lock().await;
-        let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
-        let path = scope
-            .path()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| s.repo_path.clone());
-        (path, scope.is_legacy())
+    let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
+    let repo: PathBuf = match &scope {
+        ResolvedScope::Slug(project) => project.path.clone(),
+        ResolvedScope::LegacyPath(p) => p.clone(),
+        ResolvedScope::Aggregate => s.repo_path.clone(),
     };
     let doc = services::policies::write(&repo, &body.yaml).map_err(policy_error_to_api)?;
-    Ok(with_deprecation_header(doc, deprecated))
+    Ok(with_deprecation_header(doc, scope.is_legacy()))
 }
 
 async fn graph_get(
     State(s): State<AppState>,
     Query(q): Query<GraphQuery>,
 ) -> Result<axum::response::Response, ApiError> {
-    let store = s.store.lock().await;
+    let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let registry = s.projects.lock().await;
-    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
-    let body = services::graph::build(
-        &store,
-        &intel,
-        scope.path(),
-        q.workspace.as_deref(),
-        q.max_depth,
-        q.kind.as_deref(),
-    )?;
+    let body = match &scope {
+        ResolvedScope::Slug(project) => {
+            let pstore = s.project_stores.get_or_open(&project.slug).await?;
+            let pstore = pstore.lock().await;
+            services::graph::build(
+                &pstore,
+                &intel,
+                None,
+                q.workspace.as_deref(),
+                q.max_depth,
+                q.kind.as_deref(),
+            )?
+        }
+        _ => {
+            let store = s.store.lock().await;
+            services::graph::build(
+                &store,
+                &intel,
+                scope.workspace_path(),
+                q.workspace.as_deref(),
+                q.max_depth,
+                q.kind.as_deref(),
+            )?
+        }
+    };
     Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
@@ -178,11 +223,24 @@ async fn graph_contaminated(
     State(s): State<AppState>,
     Query(q): Query<ContaminatedQuery>,
 ) -> Result<axum::response::Response, ApiError> {
-    let store = s.store.lock().await;
+    let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let registry = s.projects.lock().await;
-    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
-    let body = services::graph::contaminated_chains(&store, &intel, scope.path(), &q.vuln_id)?;
+    let body = match &scope {
+        ResolvedScope::Slug(project) => {
+            let pstore = s.project_stores.get_or_open(&project.slug).await?;
+            let pstore = pstore.lock().await;
+            services::graph::contaminated_chains(&pstore, &intel, None, &q.vuln_id)?
+        }
+        _ => {
+            let store = s.store.lock().await;
+            services::graph::contaminated_chains(
+                &store,
+                &intel,
+                scope.workspace_path(),
+                &q.vuln_id,
+            )?
+        }
+    };
     Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
@@ -190,11 +248,19 @@ async fn graph_vulnerabilities(
     State(s): State<AppState>,
     Query(q): Query<ProjectQuery>,
 ) -> Result<axum::response::Response, ApiError> {
-    let store = s.store.lock().await;
+    let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let registry = s.projects.lock().await;
-    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
-    let body = services::graph::vulnerabilities(&store, &intel, scope.path())?;
+    let body = match &scope {
+        ResolvedScope::Slug(project) => {
+            let pstore = s.project_stores.get_or_open(&project.slug).await?;
+            let pstore = pstore.lock().await;
+            services::graph::vulnerabilities(&pstore, &intel, None)?
+        }
+        _ => {
+            let store = s.store.lock().await;
+            services::graph::vulnerabilities(&store, &intel, scope.workspace_path())?
+        }
+    };
     Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
@@ -203,10 +269,18 @@ async fn package_compat(
     Path((ecosystem, name)): Path<(String, String)>,
     Query(q): Query<ProjectQuery>,
 ) -> Result<axum::response::Response, ApiError> {
-    let store = s.store.lock().await;
-    let registry = s.projects.lock().await;
-    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
-    let body = services::graph::compat(&store, scope.path(), &ecosystem, &name)?;
+    let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
+    let body = match &scope {
+        ResolvedScope::Slug(project) => {
+            let pstore = s.project_stores.get_or_open(&project.slug).await?;
+            let pstore = pstore.lock().await;
+            services::graph::compat(&pstore, None, &ecosystem, &name)?
+        }
+        _ => {
+            let store = s.store.lock().await;
+            services::graph::compat(&store, scope.workspace_path(), &ecosystem, &name)?
+        }
+    };
     Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
@@ -215,13 +289,24 @@ async fn policy_dry_run(
     Query(q): Query<ProjectQuery>,
     Json(body): Json<PolicyDryRun>,
 ) -> Result<axum::response::Response, ApiError> {
-    let store = s.store.lock().await;
+    let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let registry = s.projects.lock().await;
-    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
-    let repo = scope.path().unwrap_or(&s.repo_path);
-    let result = services::policies::dry_run(&store, &intel, repo, &body.yaml)
-        .map_err(policy_error_to_api)?;
+    let result = match &scope {
+        ResolvedScope::Slug(project) => {
+            let pstore = s.project_stores.get_or_open(&project.slug).await?;
+            let pstore = pstore.lock().await;
+            services::policies::dry_run(&pstore, &intel, &project.path, &body.yaml)
+        }
+        ResolvedScope::LegacyPath(p) => {
+            let store = s.store.lock().await;
+            services::policies::dry_run(&store, &intel, p, &body.yaml)
+        }
+        ResolvedScope::Aggregate => {
+            let store = s.store.lock().await;
+            services::policies::dry_run(&store, &intel, &s.repo_path, &body.yaml)
+        }
+    }
+    .map_err(policy_error_to_api)?;
     Ok(with_deprecation_header(result, scope.is_legacy()))
 }
 
@@ -251,27 +336,39 @@ const DEPRECATED_PATH_QUERY_HEADER: &str = "?project=<path> is deprecated, \
 /// existing services keep filtering on `repos.path = ?` for now —
 /// project-aware SQL filtering lands in 14.2 alongside the per-project
 /// store cutover.
+/// Phase 14.2b — outcome of resolving `?project=<X>`.
+///
+/// 14.2b.1 routes only the *slug* form through the per-project store
+/// cache. The legacy *path* form keeps its 14.1f behavior (reads from
+/// the legacy global `Store`, just with the deprecation header) so
+/// the Phase 13 dashboard's `?project=<path>` calls continue to work
+/// while 14.2c migrates the CLI and 14.2d retires the legacy file.
+///
+/// Aggregate (`?project` absent) also stays on legacy: scans dual-
+/// write to both stores during the transition (see 14.2b's commit
+/// note), so aggregate reads stay byte-identical to the pre-bascule
+/// behavior.
 #[derive(Debug, Clone)]
 enum ResolvedScope {
-    /// `?project` absent or empty → no filter.
+    /// `?project` absent or empty → no filter. Reads route to the
+    /// legacy `Store` for 14.2b; aggregate-via-fanout across every
+    /// per-project store is 14.2b.2's job.
     Aggregate,
-    /// `?project=<absolute path>` (legacy form). Filter on this path
-    /// and emit `X-PackGuard-Deprecated`.
-    LegacyPath(PathBuf),
-    /// `?project=<slug>` (new form). The slug is validated against the
-    /// registry, but for 14.1f the SQL layer still treats this as
-    /// aggregate — the project→workspace cascade is 14.2's job. The
-    /// resolved [`Project`](packguard_store::projects_registry::Project)
-    /// is kept on the variant so 14.2 has it without re-locking the
-    /// registry.
-    #[allow(dead_code)]
+    /// `?project=<slug>` (new form). The handler opens
+    /// `<home>/projects/<slug>/store.db` via `ProjectStoreCache` and
+    /// reads from that handle exclusively.
     Slug(packguard_store::projects_registry::Project),
+    /// `?project=<absolute path>` (legacy form). 14.2b keeps this on
+    /// the legacy store + deprecation header. The 14.2b.2 fanout
+    /// alongside slug routing is deferred so this commit stays
+    /// scoped to read-side bascule for the slug form.
+    LegacyPath(PathBuf),
 }
 
 impl ResolvedScope {
-    /// Path passed to the per-path service-layer filters. Slug scopes
-    /// fall through to `None` (aggregate) for 14.1f.
-    fn path(&self) -> Option<&std::path::Path> {
+    /// Workspace-path filter passed to per-path services. Slug scopes
+    /// fall through to `None` — handlers route by slug instead.
+    fn workspace_path(&self) -> Option<&std::path::Path> {
         match self {
             ResolvedScope::Aggregate | ResolvedScope::Slug(_) => None,
             ResolvedScope::LegacyPath(p) => Some(p.as_path()),
@@ -283,18 +380,18 @@ impl ResolvedScope {
     }
 }
 
-/// Validate + canonicalize the `?project=<X>` query param. Accepts
-/// either a slug (new form) or an absolute path (legacy form, kept
-/// alive for the Phase 13 dashboard until 14.3 ships its slug-aware
+/// Validate + canonicalize the `?project=<X>` query param. Accepts a
+/// slug (new form) or an absolute path (legacy form, kept alive for
+/// the Phase 13 dashboard until 14.3 ships its slug-aware
 /// `ProjectSelector`).
 ///
 /// - `None` / empty → [`ResolvedScope::Aggregate`].
 /// - Path (`/...`) → canonicalize, assert it lives in
 ///   `store.distinct_repo_paths()`, return [`ResolvedScope::LegacyPath`].
-/// - Slug → look up in the registry, return [`ResolvedScope::Slug`].
-///
-/// Unknown paths or slugs surface as 404 so the CLI / dashboard can
-/// recover without a second round-trip.
+///   The legacy store is still the source of truth for path scopes
+///   in 14.2b.
+/// - Slug → registry lookup. The handler then routes through
+///   [`ProjectStoreCache`] for every read.
 fn resolve_scope(
     store: &packguard_store::Store,
     registry: &ProjectsRegistry,
@@ -354,6 +451,17 @@ fn resolve_scope(
             }
         }
     }
+}
+
+/// Lock-then-resolve helper. Acquires the legacy `Store` and the
+/// projects registry locks, runs [`resolve_scope`], drops both locks
+/// before returning. Handlers then re-lock whichever store the scope
+/// dictates (per-project for `Slug`, legacy for `Aggregate` /
+/// `LegacyPath`) without keeping a stale registry guard alive.
+async fn resolve_scope_locked(s: &AppState, raw: Option<&str>) -> Result<ResolvedScope, ApiError> {
+    let store = s.store.lock().await;
+    let registry = s.projects.lock().await;
+    resolve_scope(&store, &registry, raw)
 }
 
 /// Wrap a serializable body with `X-PackGuard-Deprecated` when the
@@ -451,21 +559,36 @@ async fn actions_list(
     State(s): State<AppState>,
     Query(q): Query<ActionsQuery>,
 ) -> Result<axum::response::Response, ApiError> {
-    let store = s.store.lock().await;
+    let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
     let intel = s.intel.lock().await;
-    let registry = s.projects.lock().await;
-    let scope = resolve_scope(&store, &registry, q.project.as_deref())?;
     let now = chrono::Utc::now();
     let include_dismissed = q.include_dismissed.unwrap_or(false);
     let include_deferred = q.include_deferred.unwrap_or(false);
-    let mut actions = packguard_actions::collect_all(
-        &store,
-        &intel,
-        scope.path(),
-        now,
-        include_dismissed,
-        include_deferred,
-    )
+    let mut actions = match &scope {
+        ResolvedScope::Slug(project) => {
+            let pstore = s.project_stores.get_or_open(&project.slug).await?;
+            let pstore = pstore.lock().await;
+            packguard_actions::collect_all(
+                &pstore,
+                &intel,
+                None,
+                now,
+                include_dismissed,
+                include_deferred,
+            )
+        }
+        _ => {
+            let store = s.store.lock().await;
+            packguard_actions::collect_all(
+                &store,
+                &intel,
+                scope.workspace_path(),
+                now,
+                include_dismissed,
+                include_deferred,
+            )
+        }
+    }
     .map_err(ApiError::Internal)?;
     let total = actions.len() as u32;
     if let Some(raw) = q.min_severity.as_deref() {

@@ -7,9 +7,10 @@ use packguard_core::{
     DependencyEdge, MalwareKind, MalwareReport, Project, RemotePackage, Severity, Vulnerability,
 };
 use packguard_server::{router, ServerConfig};
-use packguard_store::{IntelStore, ProjectsRegistry, Store};
+use packguard_store::{IntelStore, ProjectStoreCache, ProjectsRegistry, Store};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 
@@ -28,13 +29,22 @@ async fn spawn(setup: impl FnOnce(&mut Store, &mut IntelStore, &Path)) -> Harnes
     setup(&mut store, &mut intel, &repo_path);
     drop(store);
 
+    // Phase 14.2b — run the 14.1d migration so the per-project store
+    // gets the same data the closure just seeded into the legacy
+    // store. Slug ends up as `_default_` for fixtures without a
+    // `.git/` ancestor, which is what the smoke surface expects.
+    // Skipped (no-op) when the closure didn't seed anything.
+    packguard_store::migration::migrate_legacy_if_present(temp.path()).unwrap();
+
     let store = Store::open(&store_path).unwrap();
-    let projects = ProjectsRegistry::open_in_memory().unwrap();
+    let projects = ProjectsRegistry::open(temp.path()).unwrap();
+    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
         store,
         intel,
         projects,
+        project_stores,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -620,11 +630,13 @@ async fn scan_walks_every_registered_repo_not_just_server_cwd() {
     let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open_in_memory().unwrap();
     let projects = ProjectsRegistry::open_in_memory().unwrap();
+    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: server_cwd.clone(),
         store,
         intel,
         projects,
+        project_stores,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -944,11 +956,13 @@ async fn api_graph_matches_service_output_when_repo_path_is_non_canonical() {
     let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open(temp.path()).unwrap();
     let projects = ProjectsRegistry::open_in_memory().unwrap();
+    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: canonical_repo.clone(),
         store,
         intel,
         projects,
+        project_stores,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1229,11 +1243,13 @@ async fn spawn_two_workspaces() -> (Harness, String, String) {
     let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open_in_memory().unwrap();
     let projects = ProjectsRegistry::open_in_memory().unwrap();
+    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: repo_a.clone(),
         store,
         intel,
         projects,
+        project_stores,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1488,11 +1504,13 @@ async fn legacy_store_intel_tables_are_no_longer_read() {
         "intel store must start empty for this contract"
     );
     let projects = ProjectsRegistry::open_in_memory().unwrap();
+    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
         store,
         intel,
         projects,
+        project_stores,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1628,11 +1646,13 @@ async fn actions_generator_reads_cve_from_intel_store() {
     let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open(temp.path()).unwrap();
     let projects = ProjectsRegistry::open_in_memory().unwrap();
+    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
         store,
         intel,
         projects,
+        project_stores,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1705,11 +1725,13 @@ async fn overview_last_sync_at_reads_from_intel_store() {
     let store = Store::open(&store_path).unwrap();
     let intel = IntelStore::open(temp.path()).unwrap();
     let projects = ProjectsRegistry::open_in_memory().unwrap();
+    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
         store,
         intel,
         projects,
+        project_stores,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1768,11 +1790,13 @@ async fn spawn_with_registry(
 
     let store = Store::open(&store_path).unwrap();
     let projects = ProjectsRegistry::open(temp.path()).unwrap();
+    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: repo_path.clone(),
         store,
         intel,
         projects,
+        project_stores,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1970,6 +1994,51 @@ async fn slug_query_param_resolves_via_registry_without_deprecation_header() {
     assert!(
         resp.headers().get("x-packguard-deprecated").is_none(),
         "slug scope must not emit the deprecation header"
+    );
+}
+
+// ---- Phase 14.2b: read handlers route slug-scope to per-project store ----
+
+/// Phase 14.2b read-side contract: when the request scopes by slug,
+/// the handler reads from `<home>/projects/<slug>/store.db` exclusively.
+/// We prove that by spawning the harness (which runs the 14.1d
+/// migration so per-project gets a copy of legacy), then mutating the
+/// per-project store directly to a state the legacy store no longer
+/// matches. A subsequent slug-scoped request must see the per-project
+/// state, not the legacy one.
+#[tokio::test]
+async fn slug_scope_reads_from_per_project_store_not_legacy() {
+    let h = spawn(seed_lodash_with_high_cve).await;
+
+    // Spy in the per-project store: deleting every package row breaks
+    // the read end-to-end. The legacy store still has the data, so if
+    // any handler regressed to legacy reads we'd see it.
+    let intel_db = h._temp.path().join("projects/_default_/store.db");
+    assert!(
+        intel_db.is_file(),
+        "harness must have created the per-project store at {}",
+        intel_db.display()
+    );
+    let conn = rusqlite::Connection::open(&intel_db).unwrap();
+    // FK chain — drop the child rows before the parent. Replicates
+    // what 14.1d migration would do during a project wipe.
+    conn.execute("DELETE FROM dependencies", []).unwrap();
+    conn.execute("DELETE FROM package_versions", []).unwrap();
+    conn.execute("DELETE FROM packages", []).unwrap();
+    drop(conn);
+
+    let body = get_json(&h, "/api/packages?project=_default_").await;
+    assert_eq!(
+        body["total"], 0,
+        "slug-scoped read must observe the per-project wipe — got {body}",
+    );
+
+    // Aggregate stays on legacy for 14.2b (full fanout in 14.2b.2),
+    // so the same query without `?project=` still returns the row.
+    let body_aggregate = get_json(&h, "/api/packages").await;
+    assert!(
+        body_aggregate["total"].as_u64().unwrap() > 0,
+        "aggregate scope still reads legacy in 14.2b.1: {body_aggregate}",
     );
 }
 
