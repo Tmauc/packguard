@@ -1,4 +1,5 @@
 mod actions_cli;
+mod cli_scope;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
