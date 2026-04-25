@@ -94,13 +94,10 @@ export function WorkspaceSelector() {
   }, [jobs, pendingScan, setScope]);
   // Collapse state hydrates from localStorage once on mount (see
   // useCollapsedFolders) and persists any user toggle on the way out.
-  // Newly scanned folders default to collapsed via seedFrom().
-  const { collapsed, toggle: toggleFolder, seedFrom } = useCollapsedFolders(
-    collectFolderIds(tree),
-  );
-  useEffect(() => {
-    seedFrom(collectFolderIds(tree));
-  }, [tree, seedFrom]);
+  // The set holds only folders the user explicitly collapsed — newly
+  // scanned folders render expanded so users see the whole tree on
+  // first load.
+  const { collapsed, toggle: toggleFolder } = useCollapsedFolders();
 
   const popoverRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -297,18 +294,6 @@ export function WorkspaceSelector() {
 
 function keyOf(node: TreeNode): string {
   return node.kind === "leaf" ? `leaf:${node.path}` : `folder:${node.id}`;
-}
-
-function collectFolderIds(nodes: TreeNode[]): string[] {
-  const out: string[] = [];
-  function walk(n: TreeNode) {
-    if (n.kind === "folder") {
-      out.push(n.id);
-      for (const c of n.children) walk(c);
-    }
-  }
-  for (const n of nodes) walk(n);
-  return out;
 }
 
 function AggregateRow({

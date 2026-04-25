@@ -6,6 +6,7 @@ import { vi } from "vitest";
 import type { WorkspacesResponse } from "@/api/types/WorkspacesResponse";
 import { WorkspaceSelector } from "@/components/layout/WorkspaceSelector";
 import { WORKSPACE_SCOPE_STORAGE_KEY } from "@/components/layout/workspace-scope";
+import { COLLAPSED_FOLDERS_STORAGE_KEY } from "@/lib/useCollapsedFolders";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -210,11 +211,47 @@ describe("WorkspaceSelector", () => {
     // folder (backend + accounting).
     expect(screen.getByTestId("workspace-folder-front")).toBeInTheDocument();
     expect(screen.getByTestId("workspace-folder-services")).toBeInTheDocument();
-    // Folders start collapsed: the leaves aren't in the DOM until the
-    // chevron is clicked.
+  });
+
+  it("defaults all folders to expanded on first mount", async () => {
+    (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue(NALO_LIKE);
+    wrap();
+    await openPicker();
+    // No prior collapse state in localStorage → every folder is open
+    // and every leaf is reachable without clicking a chevron.
+    expect(
+      screen.getByTestId("workspace-folder-front").getAttribute("data-expanded"),
+    ).toBe("true");
+    expect(
+      screen.getByTestId("workspace-folder-services").getAttribute("data-expanded"),
+    ).toBe("true");
+    expect(
+      screen.getByTestId("workspace-leaf-/Users/mauc/Repo/Nalo/monorepo/front/vesta"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("workspace-leaf-/Users/mauc/Repo/Nalo/monorepo/services/backend"),
+    ).toBeInTheDocument();
+  });
+
+  it("preserves a folder's collapsed state from localStorage across mounts", async () => {
+    window.localStorage.setItem(
+      COLLAPSED_FOLDERS_STORAGE_KEY,
+      JSON.stringify(["front"]),
+    );
+    (api.workspaces as ReturnType<typeof vi.fn>).mockResolvedValue(NALO_LIKE);
+    wrap();
+    await openPicker();
+    // The user collapsed `front` in a previous session — the choice
+    // sticks. The unrelated `services` folder still defaults to open.
+    expect(
+      screen.getByTestId("workspace-folder-front").getAttribute("data-expanded"),
+    ).toBe("false");
     expect(
       screen.queryByTestId("workspace-leaf-/Users/mauc/Repo/Nalo/monorepo/front/vesta"),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("workspace-folder-services").getAttribute("data-expanded"),
+    ).toBe("true");
   });
 
   it("auto-expands folders that contain a fuzzy-search match and highlights the match", async () => {
@@ -311,12 +348,19 @@ describe("WorkspaceSelector", () => {
     wrap();
     const user = await openPicker();
     const frontFolder = screen.getByTestId("workspace-folder-front");
-    expect(frontFolder.getAttribute("data-expanded")).toBe("false");
+    // Default-expanded: the first click collapses, the second re-opens.
+    expect(frontFolder.getAttribute("data-expanded")).toBe("true");
     await user.click(frontFolder);
+    expect(screen.getByTestId("workspace-folder-front").getAttribute("data-expanded")).toBe(
+      "false",
+    );
+    expect(
+      screen.queryByTestId("workspace-leaf-/Users/mauc/Repo/Nalo/monorepo/front/vesta"),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("workspace-folder-front"));
     expect(screen.getByTestId("workspace-folder-front").getAttribute("data-expanded")).toBe(
       "true",
     );
-    // Children now visible.
     expect(
       screen.getByTestId("workspace-leaf-/Users/mauc/Repo/Nalo/monorepo/front/vesta"),
     ).toBeInTheDocument();
