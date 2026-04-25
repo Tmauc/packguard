@@ -17,6 +17,8 @@ import type { WorkspacesResponse } from "@/api/types/WorkspacesResponse";
 import type { ActionsResponse } from "@/api/types/ActionsResponse";
 import type { ActionDismissResponse } from "@/api/types/ActionDismissResponse";
 import type { ActionDeferResponse } from "@/api/types/ActionDeferResponse";
+import type { ProjectDto } from "@/api/types/ProjectDto";
+import type { AddProjectRequest } from "@/api/types/AddProjectRequest";
 
 /**
  * Phase 7b scope hint. `undefined` (or empty) = aggregate view across
@@ -165,7 +167,31 @@ export const api = {
     ).then(handle<CompatResponse>);
   },
 
-  workspaces: () => fetch("/api/workspaces").then(handle<WorkspacesResponse>),
+  /// Phase 14.3: forward `?project=<slug>` so the workspace list can be
+  /// scoped to a single project. The backend currently aggregates across
+  /// every project regardless, but the slug is harmless to pass and
+  /// future-proofs the call site once the handler learns to filter.
+  workspaces: (project?: ProjectScope) => {
+    const qs = withProject(new URLSearchParams(), project).toString();
+    return fetch(`/api/workspaces${qs ? `?${qs}` : ""}`).then(handle<WorkspacesResponse>);
+  },
+
+  /// Phase 14.1f: enumerate every project the registry knows about.
+  /// The dashboard reads this once at boot to populate the
+  /// `<ProjectSelector>` (14.3b) and the legacy URL redirect.
+  projects: () => fetch("/api/projects").then(handle<ProjectDto[]>),
+
+  /// Phase 14.1f: queue an `AddProject` job that registers a new git
+  /// repo. Mirrors `startScan`'s pattern — accepted = job spawned, the
+  /// caller polls `/api/jobs/:id` for completion.
+  startAddProject: (path: string) => {
+    const body: AddProjectRequest = { path };
+    return fetch("/api/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(handle<JobAccepted>);
+  },
 
   actions: (
     q: { min_severity?: string } = {},

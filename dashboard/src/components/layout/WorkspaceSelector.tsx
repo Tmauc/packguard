@@ -49,7 +49,7 @@ export function WorkspaceSelector() {
   const setScope = useSetScope();
   const query = useQuery({
     queryKey: ["workspaces"],
-    queryFn: api.workspaces,
+    queryFn: () => api.workspaces(),
     refetchInterval: 10_000,
   });
 
