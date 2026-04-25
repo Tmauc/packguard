@@ -19,7 +19,11 @@ mod embedded {
 }
 
 pub mod intel_store;
+pub mod migration;
 pub mod projects_registry;
+
+pub use intel_store::IntelStore;
+pub use projects_registry::ProjectsRegistry;
 
 /// Normalize a repo path for the `repos.path` column + every lookup that
 /// joins through it. Without this, a scan run from `/path/to/repo` and a
@@ -212,6 +216,15 @@ impl Store {
             .run(&mut conn)
             .context("running migrations")?;
         Ok(Self { conn })
+    }
+
+    /// Hand the raw connection to crate-internal callers that need to
+    /// mix multi-table transactions outside the canned helpers (the
+    /// 14.1d migration is the sole consumer today). NOT exposed in
+    /// the public API — external callers go through the high-level
+    /// `save_project` / `persist_*` / `load_*` surface.
+    pub(crate) fn raw_conn_mut(&mut self) -> &mut Connection {
+        &mut self.conn
     }
 
     /// Open an in-memory store (tests). Migrations run at open time.

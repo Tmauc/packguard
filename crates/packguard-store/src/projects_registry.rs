@@ -117,6 +117,32 @@ impl ProjectsRegistry {
         })
     }
 
+    /// Low-level insert that bypasses `find_project_root`/`slugify`.
+    /// Used by the 14.1d migration to register pre-computed slugs
+    /// (e.g. the `_default_` fallback for repos outside any git tree).
+    /// Regular consumers should use [`create_project`](Self::create_project).
+    pub fn insert_with_slug(&mut self, slug: &str, path: &Path, name: &str) -> Result<Project> {
+        let path_str = path.display().to_string();
+        let now_ts = Utc::now().timestamp();
+        let id: i64 = self
+            .conn
+            .query_row(
+                "INSERT INTO projects (slug, path, name, created_at, last_scan) \
+                 VALUES (?1, ?2, ?3, ?4, NULL) RETURNING id",
+                params![slug, path_str, name, now_ts],
+                |row| row.get(0),
+            )
+            .with_context(|| format!("inserting project {} into registry", slug))?;
+        Ok(Project {
+            id,
+            slug: slug.into(),
+            path: path.to_path_buf(),
+            name: name.into(),
+            created_at: Utc.timestamp_opt(now_ts, 0).single().unwrap_or_default(),
+            last_scan: None,
+        })
+    }
+
     /// All registered projects, ordered by most-recently-scanned first.
     /// Projects that have never been scanned (NULL last_scan) sort
     /// after every scanned project; ties break by `created_at DESC`.
@@ -160,9 +186,21 @@ impl ProjectsRegistry {
     /// Bumps `last_scan` to now (UTC). Errors if no row matches `slug`.
     pub fn touch_last_scan(&mut self, slug: &str) -> Result<()> {
         let now_ts = Utc::now().timestamp();
+        self.write_last_scan(slug, now_ts)
+    }
+
+    /// Sets `last_scan` to a specific timestamp (unix seconds, UTC).
+    /// Used by 14.1d migration so the registry preserves the legacy
+    /// store's most-recent scan_history timestamp instead of clobbering
+    /// it with the migration's wall clock.
+    pub fn set_last_scan(&mut self, slug: &str, ts: DateTime<Utc>) -> Result<()> {
+        self.write_last_scan(slug, ts.timestamp())
+    }
+
+    fn write_last_scan(&mut self, slug: &str, ts: i64) -> Result<()> {
         let n = self.conn.execute(
             "UPDATE projects SET last_scan = ?1 WHERE slug = ?2",
-            params![now_ts, slug],
+            params![ts, slug],
         )?;
         if n == 0 {
             return Err(anyhow!("no project registered with slug {}", slug));
