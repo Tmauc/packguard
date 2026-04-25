@@ -13,7 +13,7 @@ use packguard_core::{
     AffectedEvent, AffectedRange, AffectedRangeKind, AffectedSpec, DepKind, Dependency,
     MalwareKind, MalwareReport, Project, RemotePackage, Severity, Vulnerability,
 };
-use packguard_store::{normalize_repo_path, Store, SyncState};
+use packguard_store::{normalize_repo_path, IntelStore, Store, SyncState};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -42,7 +42,7 @@ fn now_anchor() -> DateTime<Utc> {
         .to_utc()
 }
 
-fn seed_nalo_like(store: &mut Store, repo: &Path) {
+fn seed_nalo_like(store: &mut Store, intel: &mut IntelStore, repo: &Path) {
     // Drop the permissive policy at the repo root so `collect_all`'s
     // policy cascade picks it up. Without it the `offset.minor: -1`
     // default rejects every published version and the recommended
@@ -199,7 +199,7 @@ fn seed_nalo_like(store: &mut Store, repo: &Path) {
         published_at: None,
         modified_at: None,
     };
-    store.persist_vulnerabilities(&[cve, cve_crit]).unwrap();
+    intel.persist_vulnerabilities(&[cve, cve_crit]).unwrap();
 
     let malware = MalwareReport {
         source: "osv-mal".into(),
@@ -213,11 +213,11 @@ fn seed_nalo_like(store: &mut Store, repo: &Path) {
         evidence: serde_json::json!({}),
         reported_at: None,
     };
-    store.persist_malware_reports(&[malware]).unwrap();
+    intel.persist_malware_reports(&[malware]).unwrap();
 
     // Stale sync_log: osv-npm synced 10 days ago → triggers RefreshSync.
     let stale = (now_anchor() - Duration::days(10)).to_rfc3339();
-    store
+    intel
         .put_sync_state(
             "osv-npm",
             &SyncState {
@@ -257,10 +257,11 @@ fn collect_all_produces_expected_actions_on_nalo_like_fixture() {
     std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
 
     let mut store = Store::open_in_memory().unwrap();
-    seed_nalo_like(&mut store, &repo);
+    let mut intel = IntelStore::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &mut intel, &repo);
 
     let now = now_anchor();
-    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let actions = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
 
     // 1 malware + 1 critical CVE + 1 high CVE + 1 insufficient + 1 refresh.
     // RescanStale only fires if last_scan_at < now - 3d; the save just
@@ -291,9 +292,10 @@ fn collect_all_emits_suggested_command_matching_detected_pm() {
     std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
 
     let mut store = Store::open_in_memory().unwrap();
-    seed_nalo_like(&mut store, &repo);
+    let mut intel = IntelStore::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &mut intel, &repo);
     let now = now_anchor();
-    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let actions = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
 
     let cve_high = find_for(&actions, ActionKind::FixCveHigh, "lodash").unwrap();
     // Policy recommends 4.17.21 (the fixed version) via pnpm, surfaced
@@ -312,11 +314,12 @@ fn collect_all_leaves_recommended_version_none_for_workspace_actions() {
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
     let mut store = Store::open_in_memory().unwrap();
-    seed_nalo_like(&mut store, &repo);
+    let mut intel = IntelStore::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &mut intel, &repo);
 
     // Advance past the rescan threshold so RescanStale fires.
     let later = now_anchor() + Duration::days(5);
-    let actions = collect_all(&store, Some(&repo), later, false, false).unwrap();
+    let actions = collect_all(&store, &intel, Some(&repo), later, false, false).unwrap();
 
     for a in &actions {
         match a.kind {
@@ -341,9 +344,10 @@ fn collect_all_refresh_sync_triggers_when_sync_log_stale_beyond_7_days() {
     std::fs::create_dir_all(&repo).unwrap();
 
     let mut store = Store::open_in_memory().unwrap();
-    seed_nalo_like(&mut store, &repo);
+    let mut intel = IntelStore::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &mut intel, &repo);
     let now = now_anchor();
-    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let actions = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
     let refresh = actions
         .iter()
         .find(|a| a.kind == ActionKind::RefreshSync)
@@ -364,11 +368,12 @@ fn refresh_sync_generator_renders_unrecognized_for_non_iso_synced_at() {
     let repo = tmp.path().join("nalo");
     std::fs::create_dir_all(&repo).unwrap();
     let mut store = Store::open_in_memory().unwrap();
-    seed_nalo_like(&mut store, &repo);
+    let mut intel = IntelStore::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &mut intel, &repo);
     // Overwrite osv-npm with a non-ISO synced_at. osv-pypi stays at
     // the stale-but-parseable value from seed_nalo_like so we can
     // confirm the two labels coexist in one action.
-    store
+    intel
         .put_sync_state(
             "osv-npm",
             &SyncState {
@@ -382,7 +387,7 @@ fn refresh_sync_generator_renders_unrecognized_for_non_iso_synced_at() {
         .unwrap();
 
     let now = now_anchor();
-    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let actions = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
     let refresh = actions
         .iter()
         .find(|a| a.kind == ActionKind::RefreshSync)
@@ -406,10 +411,11 @@ fn collect_all_refresh_sync_silent_when_fresh() {
     std::fs::create_dir_all(&repo).unwrap();
 
     let mut store = Store::open_in_memory().unwrap();
-    seed_nalo_like(&mut store, &repo);
+    let mut intel = IntelStore::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &mut intel, &repo);
     // Overwrite sync_log so osv-npm is fresh.
     let now = now_anchor();
-    store
+    intel
         .put_sync_state(
             "osv-npm",
             &SyncState {
@@ -421,7 +427,7 @@ fn collect_all_refresh_sync_silent_when_fresh() {
             },
         )
         .unwrap();
-    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let actions = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
     assert_eq!(count(&actions, ActionKind::RefreshSync), 0);
 }
 
@@ -432,11 +438,12 @@ fn collect_all_emits_rescan_stale_when_last_scan_beyond_3_days() {
     std::fs::create_dir_all(&repo).unwrap();
 
     let mut store = Store::open_in_memory().unwrap();
-    seed_nalo_like(&mut store, &repo);
+    let mut intel = IntelStore::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &mut intel, &repo);
     // Time-travel 5 days forward: the scan saved by `seed_nalo_like` is
     // now 5d old; `collect_all` should emit a RescanStale action.
     let later = now_anchor() + Duration::days(5);
-    let actions = collect_all(&store, Some(&repo), later, false, false).unwrap();
+    let actions = collect_all(&store, &intel, Some(&repo), later, false, false).unwrap();
     let rescan = actions
         .iter()
         .find(|a| a.kind == ActionKind::RescanStale)
@@ -452,14 +459,15 @@ fn dismiss_then_collect_all_excludes_action() {
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
     let mut store = Store::open_in_memory().unwrap();
-    seed_nalo_like(&mut store, &repo);
+    let mut intel = IntelStore::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &mut intel, &repo);
 
     let now = now_anchor();
-    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let actions = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
     let cve_high = find_for(&actions, ActionKind::FixCveHigh, "lodash").unwrap();
 
     dismiss(&mut store, &cve_high, Some("accepted risk"), now).unwrap();
-    let after = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let after = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
     assert!(
         !after.iter().any(|a| a.id == cve_high.id),
         "dismissed action must not resurface"
@@ -467,7 +475,7 @@ fn dismiss_then_collect_all_excludes_action() {
 
     // Undismiss → action returns.
     restore(&mut store, &cve_high.id).unwrap();
-    let restored = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let restored = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
     assert!(restored.iter().any(|a| a.id == cve_high.id));
 }
 
@@ -478,20 +486,36 @@ fn defer_expires_after_days_and_action_reappears() {
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
     let mut store = Store::open_in_memory().unwrap();
-    seed_nalo_like(&mut store, &repo);
+    let mut intel = IntelStore::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &mut intel, &repo);
 
     let now = now_anchor();
-    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let actions = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
     let target = find_for(&actions, ActionKind::FixCveCritical, "lodash").unwrap();
 
     defer(&mut store, &target, 7, Some("sprint busy"), now).unwrap();
     // Within the defer window → hidden.
-    let hidden = collect_all(&store, Some(&repo), now + Duration::days(3), false, false).unwrap();
+    let hidden = collect_all(
+        &store,
+        &intel,
+        Some(&repo),
+        now + Duration::days(3),
+        false,
+        false,
+    )
+    .unwrap();
     assert!(!hidden.iter().any(|a| a.id == target.id));
 
     // Past the defer window → resurfaces with the same id (stable).
-    let resurfaced =
-        collect_all(&store, Some(&repo), now + Duration::days(8), false, false).unwrap();
+    let resurfaced = collect_all(
+        &store,
+        &intel,
+        Some(&repo),
+        now + Duration::days(8),
+        false,
+        false,
+    )
+    .unwrap();
     let back = resurfaced
         .iter()
         .find(|a| a.id == target.id)
@@ -506,8 +530,9 @@ fn filter_min_severity_drops_lower_rows() {
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
     let mut store = Store::open_in_memory().unwrap();
-    seed_nalo_like(&mut store, &repo);
-    let mut actions = collect_all(&store, Some(&repo), now_anchor(), false, false).unwrap();
+    let mut intel = IntelStore::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &mut intel, &repo);
+    let mut actions = collect_all(&store, &intel, Some(&repo), now_anchor(), false, false).unwrap();
     let before = actions.len();
     filter_min_severity(&mut actions, ActionSeverity::High);
     assert!(actions.len() < before);
@@ -521,19 +546,20 @@ fn collect_all_include_dismissed_returns_archived_actions_with_timestamp() {
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
     let mut store = Store::open_in_memory().unwrap();
-    seed_nalo_like(&mut store, &repo);
+    let mut intel = IntelStore::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &mut intel, &repo);
 
     let now = now_anchor();
-    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let actions = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
     let target = find_for(&actions, ActionKind::FixCveHigh, "lodash").unwrap();
     dismiss(&mut store, &target, Some("accepted"), now).unwrap();
 
     // Default call hides it…
-    let hidden = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let hidden = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
     assert!(!hidden.iter().any(|a| a.id == target.id));
 
     // …but include_dismissed=true surfaces it with dismissed_at populated.
-    let archived = collect_all(&store, Some(&repo), now, true, false).unwrap();
+    let archived = collect_all(&store, &intel, Some(&repo), now, true, false).unwrap();
     let row = archived
         .iter()
         .find(|a| a.id == target.id)
@@ -552,20 +578,36 @@ fn collect_all_include_deferred_surfaces_deferred_until() {
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
     let mut store = Store::open_in_memory().unwrap();
-    seed_nalo_like(&mut store, &repo);
+    let mut intel = IntelStore::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &mut intel, &repo);
 
     let now = now_anchor();
-    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let actions = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
     let target = find_for(&actions, ActionKind::FixCveCritical, "lodash").unwrap();
     defer(&mut store, &target, 7, None, now).unwrap();
 
     // Within the defer window, default filter hides the row.
-    let hidden = collect_all(&store, Some(&repo), now + Duration::days(3), false, false).unwrap();
+    let hidden = collect_all(
+        &store,
+        &intel,
+        Some(&repo),
+        now + Duration::days(3),
+        false,
+        false,
+    )
+    .unwrap();
     assert!(!hidden.iter().any(|a| a.id == target.id));
 
     // include_deferred=true brings it back with both timestamps.
-    let with_deferred =
-        collect_all(&store, Some(&repo), now + Duration::days(3), false, true).unwrap();
+    let with_deferred = collect_all(
+        &store,
+        &intel,
+        Some(&repo),
+        now + Duration::days(3),
+        false,
+        true,
+    )
+    .unwrap();
     let row = with_deferred
         .iter()
         .find(|a| a.id == target.id)
@@ -578,8 +620,15 @@ fn collect_all_include_deferred_surfaces_deferred_until() {
 
     // include_dismissed alone does NOT bring a deferred row back — the
     // two flags address different buckets.
-    let dismissed_only =
-        collect_all(&store, Some(&repo), now + Duration::days(3), true, false).unwrap();
+    let dismissed_only = collect_all(
+        &store,
+        &intel,
+        Some(&repo),
+        now + Duration::days(3),
+        true,
+        false,
+    )
+    .unwrap();
     assert!(!dismissed_only.iter().any(|a| a.id == target.id));
 }
 
@@ -593,10 +642,11 @@ fn collect_all_include_flags_default_false_matches_pre_12c_behaviour() {
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
     let mut store = Store::open_in_memory().unwrap();
-    seed_nalo_like(&mut store, &repo);
+    let mut intel = IntelStore::open_in_memory().unwrap();
+    seed_nalo_like(&mut store, &mut intel, &repo);
 
     let now = now_anchor();
-    let actions = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let actions = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
     let baseline_ids: std::collections::BTreeSet<String> =
         actions.iter().map(|a| a.id.clone()).collect();
 
@@ -607,7 +657,7 @@ fn collect_all_include_flags_default_false_matches_pre_12c_behaviour() {
     dismiss(&mut store, &cve_high, None, now).unwrap();
     defer(&mut store, &cve_crit, 3, None, now).unwrap();
 
-    let after = collect_all(&store, Some(&repo), now, false, false).unwrap();
+    let after = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
     let after_ids: std::collections::BTreeSet<String> =
         after.iter().map(|a| a.id.clone()).collect();
     assert!(!after_ids.contains(&cve_high.id));
@@ -617,4 +667,130 @@ fn collect_all_include_flags_default_false_matches_pre_12c_behaviour() {
     for id in &after_ids {
         assert!(baseline_ids.contains(id));
     }
+}
+
+#[test]
+fn collect_all_does_not_read_legacy_store_intel_tables() {
+    // Phase 14.1e.3 negative contract: even if the legacy `Store`
+    // carries CVE / malware rows (it still does after migration V7,
+    // until 14.2 drops the columns), the action generator must source
+    // intel data exclusively from IntelStore. An empty IntelStore
+    // means zero CVE / malware actions.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("nalo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("pnpm-lock.yaml"), b"").unwrap();
+    std::fs::write(repo.join(".packguard.yml"), PERMISSIVE_POLICY_YAML).unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    let intel = IntelStore::open_in_memory().unwrap();
+
+    // Seed a real scan with a vulnerable lodash + a flagged posthog-js
+    // — but plant the CVE + malware rows into the LEGACY store.
+    let project = Project {
+        ecosystem: "npm",
+        root: repo.to_path_buf(),
+        manifest_path: repo.join("package.json"),
+        name: Some("nalo".into()),
+        workspace: None,
+        dependencies: vec![
+            Dependency {
+                name: "lodash".into(),
+                declared_range: "^4.17.0".into(),
+                installed: Some("4.17.20".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("pnpm-lock.yaml".into()),
+            },
+            Dependency {
+                name: "posthog-js".into(),
+                declared_range: "^1.82.0".into(),
+                installed: Some("1.82.0".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("pnpm-lock.yaml".into()),
+            },
+        ],
+        edges: Vec::new(),
+        compatibility: Vec::new(),
+    };
+    let mut remotes = BTreeMap::new();
+    remotes.insert(
+        "lodash".into(),
+        RemotePackage {
+            name: "lodash".into(),
+            latest: Some("4.17.21".into()),
+            latest_published_at: Some("2024-06-01T00:00:00Z".into()),
+            versions: vec![packguard_core::RemoteVersion {
+                version: "4.17.21".into(),
+                published_at: Some("2024-06-01T00:00:00Z".into()),
+                deprecated: false,
+                yanked: false,
+            }],
+        },
+    );
+    remotes.insert(
+        "posthog-js".into(),
+        RemotePackage {
+            name: "posthog-js".into(),
+            latest: Some("1.83.1".into()),
+            latest_published_at: Some("2024-01-01T00:00:00Z".into()),
+            versions: vec![],
+        },
+    );
+    store.save_project(&repo, &project, &remotes, "fp").unwrap();
+
+    let cve = Vulnerability {
+        source: "osv".into(),
+        advisory_id: "GHSA-legacy-only".into(),
+        ecosystem: "npm".into(),
+        package_name: "lodash".into(),
+        severity: Severity::High,
+        cve_id: Some("CVE-2021-23337".into()),
+        aliases: vec![],
+        summary: Some("Should be invisible".into()),
+        url: None,
+        affected: AffectedSpec {
+            ranges: vec![AffectedRange {
+                kind: AffectedRangeKind::Semver,
+                events: vec![
+                    AffectedEvent::Introduced("0.0.0".into()),
+                    AffectedEvent::Fixed("4.17.21".into()),
+                ],
+            }],
+            versions: vec![],
+        },
+        fixed_versions: vec!["4.17.21".into()],
+        published_at: None,
+        modified_at: None,
+    };
+    store.persist_vulnerabilities(&[cve]).unwrap();
+    let malware = MalwareReport {
+        source: "osv-mal".into(),
+        ref_id: "MAL-legacy-only".into(),
+        ecosystem: "npm".into(),
+        package_name: "posthog-js".into(),
+        version: "1.82.0".into(),
+        kind: MalwareKind::Malware,
+        summary: Some("Should be invisible".into()),
+        url: None,
+        evidence: serde_json::json!({}),
+        reported_at: None,
+    };
+    store.persist_malware_reports(&[malware]).unwrap();
+
+    // IntelStore stays empty — no rows for the generator to find.
+    assert_eq!(intel.count_vulnerabilities().unwrap(), 0);
+    assert_eq!(intel.count_malware_reports().unwrap(), 0);
+
+    let now = now_anchor();
+    let actions = collect_all(&store, &intel, Some(&repo), now, false, false).unwrap();
+    assert_eq!(
+        count(&actions, ActionKind::FixCveHigh),
+        0,
+        "FixCveHigh must not be emitted from a legacy-only CVE: {actions:?}"
+    );
+    assert_eq!(
+        count(&actions, ActionKind::FixMalware),
+        0,
+        "FixMalware must not be emitted from a legacy-only report: {actions:?}"
+    );
 }

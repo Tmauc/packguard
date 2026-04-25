@@ -1017,6 +1017,8 @@ fn graph(
 
     let store = Store::open(store_path)
         .with_context(|| format!("opening store at {}", store_path.display()))?;
+    let intel = IntelStore::open(&home_from_store_path(store_path))
+        .with_context(|| "opening IntelStore")?;
     let repo_path = path.canonicalize().unwrap_or(path);
 
     // Honest error when the repo hasn't been scanned. The graph service
@@ -1035,6 +1037,7 @@ fn graph(
     if let Some(advisory) = contaminated_by {
         let result = packguard_server::services::graph::contaminated_chains(
             &store,
+            &intel,
             Some(&repo_path),
             advisory,
         )?;
@@ -1056,6 +1059,7 @@ fn graph(
 
     let response = packguard_server::services::graph::build(
         &store,
+        &intel,
         Some(&repo_path),
         workspace,
         max_depth,
@@ -2060,6 +2064,8 @@ fn report(
 ) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("opening store at {}", store_path.display()))?;
+    let intel = IntelStore::open(&home_from_store_path(store_path))
+        .with_context(|| "opening IntelStore")?;
     let dependencies = store.load_repo_dependencies(&path)?;
     if dependencies.is_empty() {
         anyhow::bail!(
@@ -2101,14 +2107,14 @@ fn report(
             let dialect = Dialect::for_ecosystem(&dep.ecosystem);
             let resolved = policy.resolve(&dep.name);
             let vulns_by_version = build_vulns_by_version(
-                &store,
+                &intel,
                 &dep.ecosystem,
                 &dep.name,
                 dep.installed.as_deref(),
                 &releases,
             );
-            let malware = store
-                .load_malware_reports(&dep.ecosystem, &dep.name)
+            let malware = intel
+                .load_malware_reports_for(&dep.ecosystem, &dep.name)
                 .unwrap_or_default();
             let malware_core: Vec<packguard_core::MalwareReport> = malware
                 .iter()
@@ -2194,13 +2200,13 @@ fn report(
 }
 
 fn build_vulns_by_version(
-    store: &Store,
+    intel: &IntelStore,
     ecosystem: &str,
     name: &str,
     installed: Option<&str>,
     releases: &[ReleaseInfo],
 ) -> VulnsByVersion {
-    let stored = match store.load_vulnerabilities(ecosystem, name) {
+    let stored = match intel.load_vulnerabilities_for(ecosystem, name) {
         Ok(rows) => rows,
         Err(err) => {
             tracing::warn!(%ecosystem, %name, ?err, "failed to load vulnerabilities");
@@ -2272,8 +2278,10 @@ async fn audit(
     no_live_fallback: bool,
     store_path: &Path,
 ) -> Result<()> {
-    let mut store = Store::open(store_path)
+    let store = Store::open(store_path)
         .with_context(|| format!("opening store at {}", store_path.display()))?;
+    let mut intel = IntelStore::open(&home_from_store_path(store_path))
+        .with_context(|| "opening IntelStore")?;
     let dependencies = store.load_repo_dependencies(&path)?;
     if dependencies.is_empty() {
         let hint = available_scans_hint(&store);
@@ -2287,7 +2295,7 @@ async fn audit(
     // Phase 10c — pre-run guidance when the store has no advisory data.
     // The audit will run correctly (possibly with live OSV fallback) but
     // the user should know the local cache is empty so they can `sync`.
-    let cached_advisories = store.count_vulnerabilities()?;
+    let cached_advisories = intel.count_vulnerabilities()?;
     if cached_advisories == 0 {
         eprintln!(
             "{} Store has 0 advisories — nothing local to match against your scans.\n  \
@@ -2356,13 +2364,13 @@ async fn audit(
         let Some(installed) = dep.installed.as_deref() else {
             continue;
         };
-        let stored = store.load_vulnerabilities(&dep.ecosystem, &dep.name)?;
+        let stored = intel.load_vulnerabilities_for(&dep.ecosystem, &dep.name)?;
 
         // Socket scanner enrichment: persist its alerts as MalwareReports.
         // 24h TTL via sync_log key `socket:{eco}:{name}@{version}`.
         if let Some(client) = &socket_client {
             let key = format!("socket:{}:{}@{}", dep.ecosystem, dep.name, installed);
-            let stale = store
+            let stale = intel
                 .get_sync_state(&key)?
                 .and_then(|s| s.synced_at)
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
@@ -2372,14 +2380,14 @@ async fn audit(
                 match client.query(&dep.ecosystem, &dep.name, installed).await {
                     Ok(reports) => {
                         if !reports.is_empty() {
-                            store.persist_malware_reports(&reports)?;
+                            intel.persist_malware_reports(&reports)?;
                         }
                         let state = packguard_store::SyncState {
                             synced_at: Some(Utc::now().to_rfc3339()),
                             record_count: reports.len() as i64,
                             ..Default::default()
                         };
-                        store.put_sync_state(&key, &state)?;
+                        intel.put_sync_state(&key, &state)?;
                     }
                     Err(err) => {
                         eprintln!(
@@ -2399,7 +2407,7 @@ async fn audit(
         // keyed `osv-api:{eco}:{name}` tracks the last successful query time.
         let stored = if let Some(client) = &live_client {
             let key = format!("osv-api:{}:{}", dep.ecosystem, dep.name);
-            let stale = store
+            let stale = intel
                 .get_sync_state(&key)?
                 .and_then(|s| s.synced_at)
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
@@ -2410,7 +2418,7 @@ async fn audit(
                     match client.query(ecosystem_osv, &dep.name, installed).await {
                         Ok(vulns) => {
                             if !vulns.is_empty() {
-                                let n = store.persist_vulnerabilities(&vulns)?;
+                                let n = intel.persist_vulnerabilities(&vulns)?;
                                 tracing::info!(
                                     %dep.ecosystem, %dep.name, %installed, added = n,
                                     "live OSV fallback returned advisories"
@@ -2422,12 +2430,12 @@ async fn audit(
                                 ..Default::default()
                             };
                             // Preserve any prior record_count / commit.
-                            if let Some(prior) = store.get_sync_state(&key)? {
+                            if let Some(prior) = intel.get_sync_state(&key)? {
                                 state.record_count = prior.record_count + vulns.len() as i64;
                             }
-                            store.put_sync_state(&key, &state)?;
+                            intel.put_sync_state(&key, &state)?;
                             // Re-read combined (cached + live) set for the matcher.
-                            store.load_vulnerabilities(&dep.ecosystem, &dep.name)?
+                            intel.load_vulnerabilities_for(&dep.ecosystem, &dep.name)?
                         }
                         Err(err) => {
                             eprintln!(
@@ -2500,7 +2508,7 @@ async fn audit(
     let mut malware_rows: Vec<MalwareAuditRow> = Vec::new();
     let mut typosquat_rows: Vec<MalwareAuditRow> = Vec::new();
     for (eco, name, installed) in dep_keys_for_audit(&store, &path)? {
-        for r in store.load_malware_reports(&eco, &name)? {
+        for r in intel.load_malware_reports_for(&eco, &name)? {
             // Match malware records by version (or whole-package empty).
             let version_matches = r.version.is_none()
                 || r.version.as_deref() == Some(installed.as_deref().unwrap_or(""));

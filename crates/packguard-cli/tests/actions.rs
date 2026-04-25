@@ -10,7 +10,7 @@ use packguard_core::model::{
     AffectedEvent, AffectedRange, AffectedRangeKind, AffectedSpec, DepKind, Dependency,
     MalwareKind, MalwareReport, Project, RemotePackage, Severity, Vulnerability,
 };
-use packguard_store::Store;
+use packguard_store::{IntelStore, Store};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -127,7 +127,12 @@ fn seed(store_path: &Path, repo: &Path) {
         published_at: Some("2021-02-15T00:00:00Z".into()),
         modified_at: None,
     };
-    store.persist_vulnerabilities(&[vuln]).unwrap();
+    let intel_home = store_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .expect("store_path must have a parent");
+    let mut intel = IntelStore::open(&intel_home).unwrap();
+    intel.persist_vulnerabilities(&[vuln]).unwrap();
 
     let malware = MalwareReport {
         source: "osv-mal".into(),
@@ -141,7 +146,7 @@ fn seed(store_path: &Path, repo: &Path) {
         evidence: serde_json::json!({}),
         reported_at: None,
     };
-    store.persist_malware_reports(&[malware]).unwrap();
+    intel.persist_malware_reports(&[malware]).unwrap();
 }
 
 struct Env {

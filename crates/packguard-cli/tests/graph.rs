@@ -6,7 +6,7 @@ use packguard_core::model::{DepKind, Dependency, DependencyEdge, Project, Remote
 use packguard_core::{
     AffectedEvent, AffectedRange, AffectedRangeKind, AffectedSpec, Severity, Vulnerability,
 };
-use packguard_store::Store;
+use packguard_store::{IntelStore, Store};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -95,7 +95,12 @@ fn seed(store_path: &Path, repo: &Path) {
         published_at: None,
         modified_at: None,
     };
-    store
+    let intel_home = store_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .expect("store_path must have a parent");
+    let mut intel = IntelStore::open(&intel_home).unwrap();
+    intel
         .persist_vulnerabilities(std::slice::from_ref(&vuln))
         .unwrap();
 }

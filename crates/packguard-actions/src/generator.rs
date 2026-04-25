@@ -18,7 +18,7 @@ use packguard_policy::{
     compute_recommended_version_full, evaluate_dependency_full, Compliance, Dialect, Policy,
 };
 use packguard_store::{
-    normalize_repo_path, Store, StoredActionDismissal, StoredDependency, StoredMalware,
+    normalize_repo_path, IntelStore, Store, StoredActionDismissal, StoredDependency, StoredMalware,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -48,6 +48,7 @@ const GLOBAL_WORKSPACE: &str = "_global";
 /// the pre-12c behaviour the dashboard/CLI rely on.
 pub fn collect_all(
     store: &Store,
+    intel: &IntelStore,
     workspace_filter: Option<&Path>,
     now: DateTime<Utc>,
     include_dismissed: bool,
@@ -81,12 +82,12 @@ pub fn collect_all(
         };
 
         actions.extend(generate_for_workspace(
-            store, ws, &ws_str, pm, &policy, now,
+            store, intel, ws, &ws_str, pm, &policy, now,
         )?);
         actions.extend(generate_rescan_stale(store, ws, &ws_str, now)?);
     }
 
-    actions.extend(generate_refresh_sync(store, now)?);
+    actions.extend(generate_refresh_sync(intel, now)?);
 
     // Apply dismissal filter + annotation. A row in `dismissals` is
     // either a permanent dismissal (`deferred_until is None`) or a
@@ -147,6 +148,7 @@ fn guess_ecosystem(store: &Store, workspace: &Path) -> Option<String> {
 
 fn generate_for_workspace(
     store: &Store,
+    intel: &IntelStore,
     workspace: &Path,
     ws_str: &str,
     pm: PackageManager,
@@ -168,8 +170,8 @@ fn generate_for_workspace(
             continue; // no installed version → no actionable target
         };
 
-        let stored_vulns = store.load_vulnerabilities(&dep.ecosystem, &dep.name)?;
-        let stored_malware = store.load_malware_reports(&dep.ecosystem, &dep.name)?;
+        let stored_vulns = intel.load_vulnerabilities_for(&dep.ecosystem, &dep.name)?;
+        let stored_malware = intel.load_malware_reports_for(&dep.ecosystem, &dep.name)?;
         let releases: Vec<packguard_policy::ReleaseInfo> = store
             .load_package_versions(&dep.ecosystem, &dep.name)?
             .into_iter()
@@ -429,13 +431,13 @@ fn generate_rescan_stale(
     }])
 }
 
-fn generate_refresh_sync(store: &Store, now: DateTime<Utc>) -> Result<Vec<Action>> {
+fn generate_refresh_sync(intel: &IntelStore, now: DateTime<Utc>) -> Result<Vec<Action>> {
     let threshold = now - Duration::days(SYNC_STALE_DAYS);
     let sources = ["osv-npm", "osv-pypi", "ghsa"];
     let mut stale: Vec<(String, i64)> = Vec::new();
     let mut saw_any = false;
     for src in sources {
-        if let Some(state) = store.get_sync_state(src)? {
+        if let Some(state) = intel.get_sync_state(src)? {
             saw_any = true;
             // Three buckets: parseable (days), absent (MAX → "never"),
             // non-ISO garbage (MIN → "unrecognized timestamp"). The

@@ -15,7 +15,7 @@ use packguard_actions::{
     collect_all, dismiss_raw, filter_min_severity, restore, Action, ActionKind, ActionSeverity,
     ActionTarget,
 };
-use packguard_store::Store;
+use packguard_store::{IntelStore, Store};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -112,10 +112,12 @@ pub fn run(args: ActionsArgs, store_path: &Path) -> Result<()> {
 fn list(args: ActionsListArgs, store_path: &Path) -> Result<()> {
     let store = Store::open(store_path)
         .with_context(|| format!("opening store at {}", store_path.display()))?;
+    let intel = IntelStore::open(&intel_home(store_path)).with_context(|| "opening IntelStore")?;
     let now = Utc::now();
 
     let mut actions = collect_all(
         &store,
+        &intel,
         args.project.as_deref(),
         now,
         args.include_dismissed,
@@ -570,7 +572,8 @@ fn extract_cve_id(text: &str) -> Option<String> {
 fn dismiss_cmd(id_prefix: &str, reason: Option<&str>, store_path: &Path) -> Result<()> {
     let mut store = Store::open(store_path)
         .with_context(|| format!("opening store at {}", store_path.display()))?;
-    let action = resolve_prefix(&store, id_prefix)?;
+    let intel = IntelStore::open(&intel_home(store_path)).with_context(|| "opening IntelStore")?;
+    let action = resolve_prefix(&store, &intel, id_prefix)?;
     let now = Utc::now();
     dismiss_raw(
         &mut store,
@@ -599,7 +602,8 @@ fn defer_cmd(id_prefix: &str, days: i64, reason: Option<&str>, store_path: &Path
     let days = days.clamp(1, 365);
     let mut store = Store::open(store_path)
         .with_context(|| format!("opening store at {}", store_path.display()))?;
-    let action = resolve_prefix(&store, id_prefix)?;
+    let intel = IntelStore::open(&intel_home(store_path)).with_context(|| "opening IntelStore")?;
+    let action = resolve_prefix(&store, &intel, id_prefix)?;
     let now = Utc::now();
     let until = dismiss_raw(
         &mut store,
@@ -627,7 +631,8 @@ fn defer_cmd(id_prefix: &str, days: i64, reason: Option<&str>, store_path: &Path
 fn restore_cmd(id_prefix: &str, store_path: &Path) -> Result<()> {
     let mut store = Store::open(store_path)
         .with_context(|| format!("opening store at {}", store_path.display()))?;
-    let action = resolve_prefix(&store, id_prefix)?;
+    let intel = IntelStore::open(&intel_home(store_path)).with_context(|| "opening IntelStore")?;
+    let action = resolve_prefix(&store, &intel, id_prefix)?;
     restore(&mut store, &action.id)?;
     println!(
         "{} restored {} ({}) — id {}",
@@ -637,6 +642,16 @@ fn restore_cmd(id_prefix: &str, store_path: &Path) -> Result<()> {
         id_prefix_render(&action.id),
     );
     Ok(())
+}
+
+/// Mirror `home_from_store_path` from `main.rs` — IntelStore lives at
+/// `<store_path parent>/intel/intel.db`, so the parent directory is the
+/// authoritative packguard home for both `--store` and `PACKGUARD_HOME`.
+fn intel_home(store_path: &Path) -> PathBuf {
+    store_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn id_prefix_render(id: &str) -> String {
@@ -679,9 +694,9 @@ fn match_prefix(actions: &[Action], id_prefix: &str) -> PrefixMatch {
 /// 2+ → exit 2 and print the full ids. Pulls the full set (active +
 /// dismissed + deferred) so a user can restore a dismissed action by
 /// prefix without juggling flags.
-fn resolve_prefix(store: &Store, id_prefix: &str) -> Result<Action> {
+fn resolve_prefix(store: &Store, intel: &IntelStore, id_prefix: &str) -> Result<Action> {
     let now = Utc::now();
-    let all = collect_all(store, None, now, true, true)?;
+    let all = collect_all(store, intel, None, now, true, true)?;
     match match_prefix(&all, id_prefix) {
         PrefixMatch::TooShort(n) => {
             bail!("id prefix must be at least 6 hex characters (got {})", n);

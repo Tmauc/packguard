@@ -5,7 +5,7 @@ use packguard_core::model::{
     AffectedEvent, AffectedRange, AffectedRangeKind, AffectedSpec, DepKind, Dependency, Project,
     RemotePackage, Severity, Vulnerability,
 };
-use packguard_store::Store;
+use packguard_store::{IntelStore, ProjectsRegistry, Store};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -71,7 +71,12 @@ fn seed(store_path: &Path, repo: &Path) {
         published_at: Some("2021-02-15T00:00:00Z".into()),
         modified_at: None,
     };
-    store
+    let intel_home = store_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .expect("store_path must have a parent");
+    let mut intel = IntelStore::open(&intel_home).unwrap();
+    intel
         .persist_vulnerabilities(std::slice::from_ref(&vuln))
         .unwrap();
 }
@@ -267,6 +272,113 @@ fn audit_warns_when_store_has_no_advisories_cached() {
     assert!(
         stderr.contains("packguard sync"),
         "missing sync pointer: {stderr}"
+    );
+}
+
+#[test]
+fn audit_reads_cve_only_from_intel_store() {
+    // Phase 14.1e.3 negative contract: a vulnerability written into the
+    // legacy `Store` intel tables (still on disk after migration V7)
+    // must NOT surface in `packguard audit`. The CLI now reads CVE rows
+    // exclusively from IntelStore.
+    let tmp = tempfile::tempdir().unwrap();
+    let store_path = tmp.path().join("store.db");
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    {
+        // Pre-seed IntelStore + ProjectsRegistry so the boot-time
+        // 14.1d migration in `main()` skips this home as
+        // already-migrated. Without this, the migration would copy
+        // every legacy CVE into IntelStore the first time the binary
+        // runs, defeating the contract this test asserts.
+        let _intel = IntelStore::open(tmp.path()).unwrap();
+        let mut registry = ProjectsRegistry::open(tmp.path()).unwrap();
+        registry
+            .insert_with_slug("_default_", tmp.path(), "_default_")
+            .unwrap();
+
+        let mut store = Store::open(&store_path).unwrap();
+        let project = Project {
+            ecosystem: "npm",
+            root: repo.clone(),
+            manifest_path: repo.join("package.json"),
+            name: Some("demo".into()),
+            workspace: None,
+            dependencies: vec![Dependency {
+                name: "lodash".into(),
+                declared_range: "^4.17.0".into(),
+                installed: Some("4.17.20".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("package-lock.json".into()),
+            }],
+            edges: Vec::new(),
+            compatibility: Vec::new(),
+        };
+        let mut remotes = BTreeMap::new();
+        remotes.insert(
+            "lodash".into(),
+            RemotePackage {
+                name: "lodash".into(),
+                latest: Some("4.17.21".into()),
+                latest_published_at: Some("2024-06-01T00:00:00Z".into()),
+                versions: vec![],
+            },
+        );
+        store
+            .save_project(&repo, &project, &remotes, "fp-legacy")
+            .unwrap();
+        // Seed a HIGH advisory in the LEGACY store only.
+        let vuln = Vulnerability {
+            source: "osv".into(),
+            advisory_id: "GHSA-legacy-only-cli".into(),
+            ecosystem: "npm".into(),
+            package_name: "lodash".into(),
+            severity: Severity::High,
+            cve_id: Some("CVE-2021-23337".into()),
+            aliases: vec!["CVE-2021-23337".into()],
+            summary: Some("Should never appear in the audit output".into()),
+            url: None,
+            affected: AffectedSpec {
+                ranges: vec![AffectedRange {
+                    kind: AffectedRangeKind::Semver,
+                    events: vec![
+                        AffectedEvent::Introduced("0.0.0".into()),
+                        AffectedEvent::Fixed("4.17.21".into()),
+                    ],
+                }],
+                versions: vec![],
+            },
+            fixed_versions: vec!["4.17.21".into()],
+            published_at: None,
+            modified_at: None,
+        };
+        store.persist_vulnerabilities(&[vuln]).unwrap();
+        let intel = IntelStore::open(tmp.path()).unwrap();
+        assert_eq!(intel.count_vulnerabilities().unwrap(), 0);
+    }
+
+    let out = Command::new(bin())
+        .arg("--store")
+        .arg(&store_path)
+        .args(["audit", "--no-live-fallback", "--format", "json"])
+        .arg(&repo)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "audit must exit 0 with no findings");
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let matches = parsed["cve"]["matches"].as_array().unwrap();
+    assert!(
+        matches.is_empty(),
+        "audit must not surface vulns from the legacy Store intel \
+         tables — got {matches:?}"
+    );
+    // The pre-run staleness banner should fire because IntelStore is
+    // empty (count_vulnerabilities = 0). If audit fell back to the
+    // legacy store's count, the warning would be silent.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Store has 0 advisories"),
+        "audit must read the empty count from IntelStore (legacy has 1): {stderr}"
     );
 }
 
