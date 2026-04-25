@@ -206,6 +206,31 @@ impl IntelStore {
             .context("count intel vulnerabilities")
     }
 
+    /// Dump every advisory in the catalog ordered by `(ecosystem,
+    /// package_name, advisory_id)`. Used by `packguard audit` and the
+    /// `/api/audit` endpoint to stream the full vulnerability set
+    /// without per-package round-trips.
+    pub fn load_all_vulnerabilities(&self) -> Result<Vec<StoredVulnerability>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT source, advisory_id, ecosystem, package_name, severity, \
+                        cve_id, aliases_json, summary, url, affected_json, \
+                        fixed_versions_json, published_at, modified_at, fetched_at \
+                 FROM vulnerabilities \
+                 ORDER BY ecosystem, package_name, advisory_id",
+            )
+            .context("prepare load_all_vulnerabilities")?;
+        let rows = stmt
+            .query_map([], read_intel_vulnerability)
+            .context("query all intel vulnerabilities")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     // --- malware_reports -----------------------------------------------
 
     /// Bulk-upsert malware/typosquat findings. Idempotent on
@@ -284,6 +309,29 @@ impl IntelStore {
         self.conn
             .query_row("SELECT COUNT(*) FROM malware_reports", [], |row| row.get(0))
             .context("count intel malware_reports")
+    }
+
+    /// Dump every malware report in the catalog ordered by `(ecosystem,
+    /// package_name, id)`. Used by `audit --focus malware|typosquat`
+    /// and the `/api/audit` malware view.
+    pub fn load_all_malware_reports(&self) -> Result<Vec<StoredMalware>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT source, ref_id, ecosystem, package_name, version, kind, \
+                        summary, url, evidence_json, reported_at, fetched_at \
+                 FROM malware_reports \
+                 ORDER BY ecosystem, package_name, id",
+            )
+            .context("prepare load_all_malware_reports")?;
+        let rows = stmt
+            .query_map([], read_intel_malware)
+            .context("query all intel malware_reports")?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 }
 
@@ -436,6 +484,73 @@ mod tests {
         let n2 = intel.persist_vulnerabilities(&vulns).unwrap();
         assert_eq!(n2, 3);
         assert_eq!(intel.count_vulnerabilities().unwrap(), 3);
+    }
+
+    #[test]
+    fn load_all_vulnerabilities_orders_by_eco_name_advisory() {
+        let mut intel = IntelStore::open_in_memory().unwrap();
+        intel
+            .persist_vulnerabilities(&[
+                sample_vuln("pypi", "django", "PYSEC-bbb"),
+                sample_vuln("npm", "react", "GHSA-aaa"),
+                sample_vuln("npm", "lodash", "GHSA-zzz"),
+                sample_vuln("npm", "lodash", "GHSA-aaa"),
+            ])
+            .unwrap();
+        let all = intel.load_all_vulnerabilities().unwrap();
+        let keys: Vec<(String, String, String)> = all
+            .iter()
+            .map(|v| {
+                (
+                    v.ecosystem.clone(),
+                    v.package_name.clone(),
+                    v.advisory_id.clone(),
+                )
+            })
+            .collect();
+        // Stable ordering: ecosystem then package_name then advisory_id.
+        assert_eq!(
+            keys,
+            vec![
+                ("npm".into(), "lodash".into(), "GHSA-aaa".into()),
+                ("npm".into(), "lodash".into(), "GHSA-zzz".into()),
+                ("npm".into(), "react".into(), "GHSA-aaa".into()),
+                ("pypi".into(), "django".into(), "PYSEC-bbb".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn load_all_malware_reports_orders_by_eco_name_id() {
+        let mut intel = IntelStore::open_in_memory().unwrap();
+        intel
+            .persist_malware_reports(&[
+                sample_malware("pypi", "evilpkg", "MAL-0001"),
+                sample_malware("npm", "another", "MAL-0003"),
+                sample_malware("pypi", "evilpkg", "MAL-0002"),
+            ])
+            .unwrap();
+        let all = intel.load_all_malware_reports().unwrap();
+        // Sorted by (ecosystem, package_name, id). Insertion order
+        // breaks ties because `id` is autoincrement.
+        let pairs: Vec<(String, String, String)> = all
+            .iter()
+            .map(|r| {
+                (
+                    r.ecosystem.clone(),
+                    r.package_name.clone(),
+                    r.ref_id.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("npm".into(), "another".into(), "MAL-0003".into()),
+                ("pypi".into(), "evilpkg".into(), "MAL-0001".into()),
+                ("pypi".into(), "evilpkg".into(), "MAL-0002".into()),
+            ]
+        );
     }
 
     #[test]
