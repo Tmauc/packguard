@@ -18,6 +18,7 @@ mod embedded {
     refinery::embed_migrations!("migrations");
 }
 
+pub mod intel_store;
 pub mod projects_registry;
 
 /// Normalize a repo path for the `repos.path` column + every lookup that
