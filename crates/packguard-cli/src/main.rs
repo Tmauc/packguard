@@ -394,20 +394,18 @@ async fn sync(
     include_all: bool,
     store_path: &Path,
 ) -> Result<()> {
-    let mut store = Store::open(store_path)
-        .with_context(|| format!("opening store at {}", store_path.display()))?;
-    // Phase 14.1e.2 — every intel-wide write (sync_log, vulnerabilities,
-    // malware_reports) goes to IntelStore now. Store is still opened
-    // because `watched_packages()` reads from project-wide tables that
-    // migrate with the project layer in 14.2.
+    // Phase 14.2b.2.4 — sync's project-layer reads (`watched_packages`)
+    // fan out across every per-project store. The legacy `Store` is
+    // no longer opened by the sync flow.
     let home = home_from_store_path(store_path);
     let mut intel = IntelStore::open(&home)
         .with_context(|| format!("opening intel store under {}", home.display()))?;
+    let project_stores = packguard_store::ProjectStoreCache::new(home.clone());
 
     let watched: packguard_intel::WatchedPackages = if include_all {
         None
     } else {
-        let pairs = store.watched_packages()?;
+        let pairs = collect_watched_across_projects(&project_stores).await?;
         if pairs.is_empty() {
             eprintln!(
                 "{} no packages tracked yet — run `packguard scan` first, or use `--all`",
@@ -510,7 +508,8 @@ async fn sync(
     let total = intel.count_vulnerabilities()?;
     // ---- typosquat refresh + scoring ----
     refresh_typosquat_lists(&mut intel).await;
-    let typosquat_persisted = score_typosquat_against_watched(&mut intel, &mut store)?;
+    let watched_pairs = collect_watched_across_projects(&project_stores).await?;
+    let typosquat_persisted = score_typosquat_against_watched(&mut intel, &watched_pairs)?;
     if typosquat_persisted > 0 {
         println!(
             "{} typosquat — {} suspect package(s) flagged",
@@ -590,11 +589,13 @@ async fn refresh_typosquat_lists(intel: &mut IntelStore) {
 }
 
 /// Score every watched package and persist the suspects to IntelStore.
-/// `watched_packages()` still reads from the legacy [`Store`] because
-/// it joins project-wide tables (`packages`, `dependencies`); that
-/// move waits for the project-layer cutover in 14.2.
-fn score_typosquat_against_watched(intel: &mut IntelStore, store: &mut Store) -> Result<usize> {
-    let watched = store.watched_packages()?;
+/// 14.2b.2.4 — `watched` is now collected across every per-project
+/// store via [`ProjectStoreCache::slug_paths`]; the legacy `Store`
+/// is no longer the source of truth.
+fn score_typosquat_against_watched(
+    intel: &mut IntelStore,
+    watched: &[(String, String)],
+) -> Result<usize> {
     if watched.is_empty() {
         return Ok(0);
     }
@@ -603,7 +604,7 @@ fn score_typosquat_against_watched(intel: &mut IntelStore, store: &mut Store) ->
     let scorer_npm = packguard_intel::typosquat::Scorer::new(npm);
     let scorer_pypi = packguard_intel::typosquat::Scorer::new(pypi);
     let mut reports: Vec<packguard_core::MalwareReport> = Vec::new();
-    for (eco, name) in &watched {
+    for (eco, name) in watched {
         let hit = match eco.as_str() {
             "npm" => scorer_npm.score(name),
             "pypi" => scorer_pypi.score(name),
@@ -618,6 +619,23 @@ fn score_typosquat_against_watched(intel: &mut IntelStore, store: &mut Store) ->
     }
     intel.persist_malware_reports(&reports)?;
     Ok(reports.len())
+}
+
+/// Phase 14.2b.2.4 — union of every `(ecosystem, name)` pair tracked
+/// across every per-project store under `<home>/projects/<slug>/`.
+/// Empty when the registry has no projects yet.
+async fn collect_watched_across_projects(
+    project_stores: &packguard_store::ProjectStoreCache,
+) -> Result<Vec<(String, String)>> {
+    let mut acc: std::collections::BTreeSet<(String, String)> = std::collections::BTreeSet::new();
+    for (slug, _) in project_stores.slug_paths()? {
+        let pstore = project_stores.get_or_open(&slug).await?;
+        let pstore = pstore.lock().await;
+        for pair in pstore.watched_packages()? {
+            acc.insert(pair);
+        }
+    }
+    Ok(acc.into_iter().collect())
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]

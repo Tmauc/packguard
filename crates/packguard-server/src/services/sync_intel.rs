@@ -3,22 +3,23 @@
 //! refresh. Returns a `SyncReport` for the dashboard to display.
 //!
 //! Phase 14.1e.2 — intel-wide writes (sync_log, vulnerabilities,
-//! malware_reports) now flow into [`IntelStore`] instead of [`Store`].
-//! The legacy [`Store`] is still passed in because `watched_packages()`
-//! reads from project-wide tables (`packages`, `dependencies`) — those
-//! migrate in 14.2.
+//! malware_reports) flow into [`IntelStore`] instead of [`Store`].
+//! Phase 14.2b.2.4 — `watched_packages` reads now fan out across
+//! per-project stores via [`ProjectStoreCache`], replacing the
+//! legacy `Store::watched_packages()` call. The legacy `Store` is
+//! no longer touched by sync.
 
 use crate::dto::SyncReport;
 use anyhow::Result;
 use packguard_intel::WatchedPackages;
-use packguard_store::{IntelStore, Store};
-use std::collections::HashSet;
+use packguard_store::{IntelStore, ProjectStoreCache};
+use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
 
-pub async fn run(intel: &mut IntelStore, store: &mut Store) -> Result<SyncReport> {
+pub async fn run(intel: &mut IntelStore, project_stores: &ProjectStoreCache) -> Result<SyncReport> {
     let mut report = SyncReport::default();
-    let watched_pairs = store.watched_packages()?;
-    let watched: WatchedPackages = Some(watched_pairs.into_iter().collect());
+    let watched_pairs = collect_watched(project_stores).await?;
+    let watched: WatchedPackages = Some(watched_pairs.iter().cloned().collect());
 
     for dump in [&packguard_intel::osv::NPM, &packguard_intel::osv::PYPI] {
         let prior_state = intel.get_sync_state(dump.id)?;
@@ -69,9 +70,24 @@ pub async fn run(intel: &mut IntelStore, store: &mut Store) -> Result<SyncReport
 
     // Typosquat list refresh + scoring.
     refresh_typosquat(intel).await;
-    report.typosquat_suspects = score_typosquat(intel, store)?;
+    report.typosquat_suspects = score_typosquat(intel, &watched_pairs)?;
 
     Ok(report)
+}
+
+/// Union of every `(ecosystem, name)` pair tracked across every
+/// per-project store. Empty when the registry has no projects yet
+/// (a fresh install with no scans).
+async fn collect_watched(project_stores: &ProjectStoreCache) -> Result<Vec<(String, String)>> {
+    let mut acc: BTreeSet<(String, String)> = BTreeSet::new();
+    for (slug, _) in project_stores.slug_paths()? {
+        let pstore = project_stores.get_or_open(&slug).await?;
+        let pstore = pstore.lock().await;
+        for pair in pstore.watched_packages()? {
+            acc.insert(pair);
+        }
+    }
+    Ok(acc.into_iter().collect())
 }
 
 async fn refresh_typosquat(intel: &mut IntelStore) {
@@ -93,10 +109,7 @@ async fn refresh_typosquat(intel: &mut IntelStore) {
     }
 }
 
-fn score_typosquat(intel: &mut IntelStore, store: &mut Store) -> Result<u32> {
-    // `watched_packages` is project-wide (packages + dependencies tables)
-    // and stays on Store until the project-layer cutover in 14.2.
-    let watched = store.watched_packages()?;
+fn score_typosquat(intel: &mut IntelStore, watched: &[(String, String)]) -> Result<u32> {
     if watched.is_empty() {
         return Ok(0);
     }
@@ -105,7 +118,7 @@ fn score_typosquat(intel: &mut IntelStore, store: &mut Store) -> Result<u32> {
     let scorer_npm = packguard_intel::typosquat::Scorer::new(npm);
     let scorer_pypi = packguard_intel::typosquat::Scorer::new(pypi);
     let mut reports = Vec::new();
-    for (eco, name) in &watched {
+    for (eco, name) in watched {
         let hit = match eco.as_str() {
             "npm" => scorer_npm.score(name),
             "pypi" => scorer_pypi.score(name),

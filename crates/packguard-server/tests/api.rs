@@ -2098,10 +2098,7 @@ async fn scan_does_not_dual_write_to_legacy_store() {
     assert_eq!(final_state["status"], "succeeded", "scan must succeed");
 
     // Per-project store has the workspace.
-    let pdir = h
-        ._temp
-        .path()
-        .join("projects/_default_/store.db");
+    let pdir = h._temp.path().join("projects/_default_/store.db");
     assert!(
         pdir.is_file(),
         "scan must create the _default_ per-project store"

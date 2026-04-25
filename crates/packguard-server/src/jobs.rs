@@ -138,13 +138,12 @@ async fn run_add_project_job(state: &AppState, path: PathBuf) -> Result<serde_js
 }
 
 async fn run_sync_job(state: &AppState) -> Result<serde_json::Value> {
-    // Phase 14.1e.2 — the sync flow now writes to IntelStore for every
-    // intel-wide table (sync_log, vulnerabilities, malware_reports);
-    // Store stays in the call only for `watched_packages()`, a
-    // project-wide read that migrates with the project layer in 14.2.
+    // Phase 14.2b.2.4 — sync no longer locks the legacy `Store`.
+    // `watched_packages` reads union across every per-project store
+    // via `ProjectStoreCache::slug_paths`; intel writes still flow
+    // into [`IntelStore`].
     let mut intel = state.intel.lock().await;
-    let mut store = state.store.lock().await;
-    let report = sync_intel::run(&mut intel, &mut store).await?;
+    let report = sync_intel::run(&mut intel, &state.project_stores).await?;
     Ok(serde_json::to_value(report)?)
 }
 

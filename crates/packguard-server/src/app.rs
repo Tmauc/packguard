@@ -370,7 +370,11 @@ fn scope_repo_path(scope: &ResolvedScope, fallback: &std::path::Path) -> PathBuf
 fn merge_overview(a: crate::dto::Overview, b: crate::dto::Overview) -> crate::dto::Overview {
     use std::collections::BTreeMap;
     let mut by_eco: BTreeMap<String, u32> = BTreeMap::new();
-    for row in a.packages_by_ecosystem.into_iter().chain(b.packages_by_ecosystem) {
+    for row in a
+        .packages_by_ecosystem
+        .into_iter()
+        .chain(b.packages_by_ecosystem)
+    {
         *by_eco.entry(row.ecosystem).or_default() += row.count;
     }
     let packages_by_ecosystem = by_eco
