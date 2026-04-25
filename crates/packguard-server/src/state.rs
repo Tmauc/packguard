@@ -7,28 +7,39 @@
 //! Defaults to the cwd at server start; the CLI override flows through
 //! `ServerConfig`.
 
-use packguard_store::{IntelStore, ProjectsRegistry, Store};
+use packguard_store::{IntelStore, ProjectStoreCache, ProjectsRegistry, Store};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct AppState {
-    /// Per-project store (legacy `~/.packguard/store.db` for now). Holds
-    /// repos / workspaces / packages / dependencies / scan_history /
-    /// action_dismissals — everything keyed to a specific project.
+    /// Legacy global `~/.packguard/store.db`. After the 14.2b bascule
+    /// the runtime still falls back here for the `?project=<path>` and
+    /// aggregate reads (the slug form alone routes through
+    /// [`Self::project_stores`]). The legacy handle stays in
+    /// `AppState` for three reasons:
+    /// 1. The global `jobs` table still lives here (cross-project
+    ///    state) — `jobs.rs` keeps using it for `create_job` and
+    ///    `update_job_status`.
+    /// 2. Path scope + aggregate reads still hit it; the smoke
+    ///    contract requires aggregate parity through the transition.
+    /// 3. The CLI's project-layer commands haven't been bascule'd
+    ///    yet (14.2c). The legacy file remains the source of truth
+    ///    for `packguard report/audit/scan` until that lands.
+    ///
+    /// 14.2d retires this field once both consumers are migrated.
     pub store: Arc<Mutex<Store>>,
     /// Cross-project intel catalog (`~/.packguard/intel/intel.db`).
-    /// Phase 14.1e.1 wires it into AppState but no handler reads from
-    /// it yet — sync still writes to `Store`, audit still reads from
-    /// `Store`. The cutover lands in 14.1e.2 (producers) and 14.1e.3
-    /// (consumers).
+    /// 14.1e detached every intel-wide read/write here.
     pub intel: Arc<Mutex<IntelStore>>,
     /// Projects registry (`~/.packguard/projects.db`). Populated by
-    /// the 14.1d migration; consumed by the upcoming `/api/projects`
-    /// endpoints in 14.1f. Held in AppState now so the boot path is
-    /// identical to its eventual production shape.
+    /// the 14.1d migration and the 14.1f `POST /api/projects` handler.
     pub projects: Arc<Mutex<ProjectsRegistry>>,
+    /// Per-project SQLite handles, keyed by slug. 14.2a scaffolded
+    /// the cache; 14.2b is the runtime bascule that wires it into the
+    /// HTTP read handlers + scan/add-project job runners.
+    pub project_stores: Arc<ProjectStoreCache>,
     pub repo_path: PathBuf,
 }
 
@@ -37,12 +48,14 @@ impl AppState {
         store: Store,
         intel: IntelStore,
         projects: ProjectsRegistry,
+        project_stores: Arc<ProjectStoreCache>,
         repo_path: PathBuf,
     ) -> Self {
         Self {
             store: Arc::new(Mutex::new(store)),
             intel: Arc::new(Mutex::new(intel)),
             projects: Arc::new(Mutex::new(projects)),
+            project_stores,
             repo_path,
         }
     }

@@ -884,13 +884,14 @@ async fn ui(
     let store = Store::open(store_path)
         .with_context(|| format!("opening store at {}", store_path.display()))?;
     // Open the new layout's stores from the same packguard home as
-    // the legacy store. AppState holds them all so the cutover in
-    // 14.1e.2/.3 only swaps the handler bodies.
+    // the legacy store. AppState holds them all so the 14.2b cutover
+    // only swaps the handler bodies.
     let home = home_from_store_path(store_path);
     let intel = IntelStore::open(&home)
         .with_context(|| format!("opening intel store under {}", home.display()))?;
     let projects = ProjectsRegistry::open(&home)
         .with_context(|| format!("opening projects registry under {}", home.display()))?;
+    let project_stores = std::sync::Arc::new(packguard_store::ProjectStoreCache::new(home.clone()));
 
     // Resolve the server's view root:
     //  - explicit path → canonicalize + use as-is.
@@ -937,6 +938,7 @@ async fn ui(
         store,
         intel,
         projects,
+        project_stores,
     });
     let addr: std::net::SocketAddr = format!("{host}:{port}")
         .parse()

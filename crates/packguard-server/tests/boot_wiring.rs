@@ -9,7 +9,8 @@
 //!   3. The plumbing keeps the existing Store handlers intact.
 
 use packguard_server::{router, AppState, ServerConfig};
-use packguard_store::{IntelStore, ProjectsRegistry, Store};
+use packguard_store::{IntelStore, ProjectStoreCache, ProjectsRegistry, Store};
+use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 
@@ -21,11 +22,13 @@ async fn server_router_accepts_intel_and_projects_in_server_config() {
     let store = Store::open(&temp.path().join("store.db")).unwrap();
     let intel = IntelStore::open_in_memory().unwrap();
     let projects = ProjectsRegistry::open_in_memory().unwrap();
+    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
     let app = router(ServerConfig {
         repo_path: temp.path().to_path_buf(),
         store,
         intel,
         projects,
+        project_stores,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -44,7 +47,14 @@ async fn app_state_intel_and_projects_are_independently_lockable() {
     let store = Store::open(&temp.path().join("store.db")).unwrap();
     let intel = IntelStore::open_in_memory().unwrap();
     let projects = ProjectsRegistry::open_in_memory().unwrap();
-    let state = AppState::new(store, intel, projects, temp.path().to_path_buf());
+    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
+    let state = AppState::new(
+        store,
+        intel,
+        projects,
+        project_stores,
+        temp.path().to_path_buf(),
+    );
 
     // Both new fields are Mutex-wrapped and independently lockable —
     // no deadlock between them, and locking one doesn't observe the
