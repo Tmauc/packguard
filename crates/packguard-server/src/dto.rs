@@ -375,10 +375,14 @@ impl JobStatus {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export_to = "JobKind.ts")]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum JobKind {
     Scan,
     Sync,
+    /// Phase 14.1f — kicks off `registry.create_project(path)` followed
+    /// by a recursive scan, then bumps `last_scan` on success. Surfaced
+    /// to the dashboard as the polling target for `POST /api/projects`.
+    AddProject,
 }
 
 impl JobKind {
@@ -386,6 +390,7 @@ impl JobKind {
         match self {
             JobKind::Scan => "scan",
             JobKind::Sync => "sync",
+            JobKind::AddProject => "add_project",
         }
     }
 }
@@ -516,6 +521,52 @@ pub struct ContaminatedQuery {
 #[ts(export_to = "ProjectQuery.ts")]
 pub struct ProjectQuery {
     pub project: Option<String>,
+}
+
+/// Phase 14.1f — wire shape returned by `GET /api/projects` and the
+/// `succeeded` payload of an `AddProject` job. Mirrors
+/// [`packguard_store::projects_registry::Project`] but flattens
+/// `created_at` / `last_scan` to RFC 3339 strings so the dashboard
+/// doesn't have to learn about chrono.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "ProjectDto.ts")]
+pub struct ProjectDto {
+    pub id: i64,
+    /// Filesystem-safe identifier derived from the canonical project
+    /// root path (see `packguard_core::slugify`). Stable across
+    /// restarts and the only handle the dashboard needs to scope
+    /// requests in 14.3+.
+    pub slug: String,
+    /// Canonical absolute path of the project root (the directory that
+    /// contains the `.git/` ancestor). Surfaced for the UI's tooltip
+    /// only — internally always identify projects by `slug`.
+    pub path: String,
+    /// Human-friendly label, defaults to the project root's
+    /// `file_name()`.
+    pub name: String,
+    pub created_at: String,
+    pub last_scan: Option<String>,
+}
+
+impl From<packguard_store::projects_registry::Project> for ProjectDto {
+    fn from(p: packguard_store::projects_registry::Project) -> Self {
+        Self {
+            id: p.id,
+            slug: p.slug,
+            path: p.path.display().to_string(),
+            name: p.name,
+            created_at: p.created_at.to_rfc3339(),
+            last_scan: p.last_scan.map(|t| t.to_rfc3339()),
+        }
+    }
+}
+
+/// `POST /api/projects` body. The `path` field is taken at face value
+/// (no env-var expansion); validation happens in the handler.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "AddProjectRequest.ts")]
+pub struct AddProjectRequest {
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

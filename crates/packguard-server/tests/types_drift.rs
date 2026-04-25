@@ -86,6 +86,8 @@ fn export_all(target: &Path) {
         dto::WorkspaceInfo,
         dto::WorkspacesResponse,
         dto::ProjectQuery,
+        dto::ProjectDto,
+        dto::AddProjectRequest,
         dto::ActionsQuery,
         dto::ActionsResponse,
         dto::ActionDismissRequest,
