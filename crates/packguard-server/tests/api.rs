@@ -2341,11 +2341,12 @@ async fn workspaces_list_aggregate_when_no_project_param() {
 
     let body = get_json(&h, "/api/workspaces").await;
     let rows = body["workspaces"].as_array().unwrap();
-    assert_eq!(rows.len(), 2, "aggregate should fan out across both projects: {body}");
-    let paths: Vec<&str> = rows
-        .iter()
-        .map(|r| r["path"].as_str().unwrap())
-        .collect();
+    assert_eq!(
+        rows.len(),
+        2,
+        "aggregate should fan out across both projects: {body}"
+    );
+    let paths: Vec<&str> = rows.iter().map(|r| r["path"].as_str().unwrap()).collect();
     assert!(paths.iter().any(|p| p.contains("alpha")));
     assert!(paths.iter().any(|p| p.contains("beta")));
 }
