@@ -2613,6 +2613,48 @@ Au premier run v0.6.0 sur un store legacy `~/.packguard/store.db` :
 
 **Reste avant ship v0.6.0** : Phase 14.3 (Dashboard ProjectSelector + AddProjectModal + boot flow + URL renaming) + Phase 14.4 (docs) + bump 0.5.1 → 0.6.0.
 
+### v0.6.0 — Récap journées 2026-04-25/26 (Phase 14.3 + 14.4 + 14.5 done)
+
+**Phase 14.3 — Dashboard UX (3 sub-phases, 10 commits + chore fmt = 11)** :
+- 14.3a ✅ `78e973d` + `d944d79` + `e304c73` — `api.projects()` + `api.startAddProject()` + scope hooks split (`useProjectScope` + `useWorkspaceScope` + `useLegacyProjectRedirect`). 10 call sites migrés. Vitest 134 → 143.
+- 14.3b ✅ `bb287b1` + `d829b37` + `aea090d` + `210ab42` — backend `workspaces_list` scoping par slug + `ProjectSelector` header + `EmptyProjectGate` + boot flow auto-select + `relativeTime` helper. Rust 478 → 484, Vitest 143 → 168.
+- 14.3c ✅ `78bd9c4` + `6200eff` + `18c39b9` — `AddProjectModal` mirror `AddWorkspaceModal` + ref-guard auto-select + Scan button scoped à `activeProject.path`. Vitest 168 → 179. **Constat important** : `add_project` job outcome shape = `{ "project": <ProjectDto>, "scan": <ScanReport> }` ; modal decode `result.project.slug` directement. `POST /api/projects` sur path doublon = job failed avec UNIQUE constraint.
+
+**Phase 14.4 — Docs alignment (3 commits)** :
+- ✅ `2788f3c` — nouveau `concepts/project-store.mdx` (architecture project vs workspace, store layout, migration v0.5 → v0.6, backend contract recap)
+- ✅ `0154d8a` — refresh `concepts/per-project.mdx` (dual selectors + `AddProjectModal` mention + URL contract `?project=<slug>&workspace=<path>` + cross-workspace operations corrigé)
+- ✅ `14140d7` — README `Phase 14 — Per-project store` bullet + dashboard pages preface réécrit pour mentionner le scoping URL contract + Commands preface gagne `~/.packguard/` layout note + `--project <slug>` overview
+- 4 TODO screenshots noté en commentaires MDX (Thomas les prendra avant tag) : `v0.6-header-selectors`, `v0.6-dual-selector-popover`, `v0.6-add-project-modal`, `v0.6-empty-project-gate`. `docs-site/app/page.tsx` footer hardcoded `v0.5.0` → édité manuellement par Thomas au moment du bump 0.6.0.
+
+**Phase 14.5 — Fix-pack pré-ship (3 sub-phases, 9 commits = 3+2+4)** déclenchée par dogfood Thomas 2026-04-26 qui a remonté 4 bugs bloqueurs :
+- **Bug A** : `services/scan.rs::run` non-recursive — utilisait `eco.detect(target)` direct, fail sur monorepos avec manifest en sous-dir (90% des projets modernes).
+- **Bug B** : CLI `scan` n'auto-register pas dans `projects.db` — data dans le per-project store mais dashboard `EmptyProjectGate` car registry vide.
+- **Bug C** : ghost project si scan fail dans `run_add_project_job` — registry insert + scan = 2 transactions, pas de rollback sur échec scan.
+- **Bug D** : `useRestoreProjectScopeFromStorage` ne clear pas le param URL `?project=<slug>` quand le slug est inconnu, user coincé sur "No project".
+
+Plus 1 demande UX : *"je ne veux pas saisir un path pour ajouter un projet, je veux pouvoir explorer et selectionner"*. Implémentation = endpoint backend filesystem browser + modal refonte.
+
+- **14.5a** ✅ `4ab331b` + `9577936` + `7457ad8` — Bug A : `scan::run` utilise `discover()` Phase 9a (`crates/packguard-core/src/discovery.rs:132`, depth 4 + `BUILTIN_EXCLUDES` 15 dirs + `.gitignore` via `ignore` crate). Bug C : `run_add_project_job` rollback registry + filesystem cleanup + `evict` du `ProjectStoreCache` si scan fail. Bug B : `resolve_cli_scope` (chokepoint partagé scan/audit/report/ui) appelle `registry.create_project()` au premier scan d'un slug nouveau hors `_default_` + banner stderr `"✓ Registered project: <slug> (<path>)"`. Drive-by : `AppState::home() -> &Path` getter pour rollback. Rust 484 → 492 (+8). **Side effect désirable** : `packguard ui` lui-même auto-register le cwd via le même chokepoint (cohérent avec l'intent v0.6).
+- **14.5b** ✅ `fd19ea4` + `5261eeb` — `GET /api/fs/roots` + `GET /api/fs/browse?path=<abs>` avec sandbox strict `$HOME` (canonical path doit `starts_with($HOME)`, sinon 403). 4 DTOs ts-rs auto-générés : `FsBrowseResponse`, `FsEntry`, `FsRootsResponse`, `FsRootEntry`. Service `crates/packguard-server/src/services/fs_browse.rs` ~250 LoC : list_roots probe 7 candidats (`Repo`, `Repos`, `Projects`, `Workspace`, `Code`, `src`, `Documents`), browse skippe les fichiers + dotfiles sauf `.git/` (surface comme flag `has_git` sur l'entry parent), shallow read pour `has_manifest` (8 manifests supportés + `requirements*.txt` variant), truncation à 500 entries. Zéro nouvelle dep (`std::env::var_os("HOME")` + `PathBuf::canonicalize`). `ApiError::Forbidden` ajouté à l'enum d'erreur. Rust 492 → 512 (+20).
+- **14.5c** ✅ `2e0577a` + `926b323` + `4c198da` + `b6094c5` (chore clippy) — `api.fsRoots()` + `api.fsBrowse(path?)` côté client. `AddProjectModal` refonte : 2 modes via toggle `Browse | Type path` (default browse), breadcrumb path navigable, quick-roots cliquables, liste subdirs avec badges `git`/`manifest`/`✓ Registered`. Bouton primary devient "Switch to existing project" (no POST) si current dir est déjà registered (lookup via `Map<path, slug>` du `["projects"]` cache partagé). Bug D fix : `useRestoreProjectScopeFromStorage` clear `?project=` URL param quand slug unknown post-projects-load (avant : seulement localStorage). Vitest 179 → 188 (+9). **Known issue documenté hors-cycle** : npm parser legacy ne supporte pas `package-lock.json` v1 — un user qui browse vers un repo lockfile-v1 verra un job failed avec parser error ; le rollback fonctionne (Bug C). Punt v0.6.1.
+
+**Stats cycle v0.6.0 final** :
+- Total commits : **48** (14.1=11, 14.2=13, 14.3=11, 14.4=3, 14.5=9, dont 1 chore each pour 14.3 et 14.5)
+- Rust tests : 393 → 512 (+119, 0 régressions)
+- Vitest tests : 134 → 188 (+54, 0 régressions)
+- Nouvelles deps : 0 (tokio promu workspace dep en 14.2a, légitime ; rien d'autre)
+- md5 legacy `~/.packguard/store.db` strictement byte-identical avec `.v0.5-backup` final
+- Working tree clean, 48 commits ahead of origin, ready for bump
+
+**Pattern méthodo verrouillé sur le cycle complet** : split aggressif phases-mère → sub-phases additives → migration data → bascule code path → cleanup. Investigation préalable obligatoire (grep call sites + propose split si >5h estimé). Smoke prod-like obligatoire à chaque sub-phase (md5 invariance, end-to-end via curl + jq, fixtures synthétiques pour les error paths). Drive-by fixes acceptés en commits séparés (`chore(fmt)`, `chore(test)`). Validé sur **23 sub-phases en 2 jours** (2026-04-25 et 2026-04-26) sans régression bissectable.
+
+**Reste avant tag** :
+1. Manuel : éditer `docs-site/app/page.tsx` footer `v0.5.0` → `v0.6.0` (cf. open question 14.4 — `bump-version.sh` ne touche pas les MDX/TSX)
+2. `./scripts/bump-version.sh 0.6.0`
+3. `git push origin main --follow-tags` → attendre `release.yml`
+4. `gh workflow run crates-publish.yml -f dry_run=false`
+5. Local : `brew unlink packguard && brew upgrade packguard`
+
 ### Critères de sortie v0.6.0
 
 - [ ] Auto-detect project depuis cwd via `.git/` walk-up dans tous les commands
