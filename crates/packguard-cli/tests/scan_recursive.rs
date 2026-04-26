@@ -447,3 +447,48 @@ fn nalo_style_fixture_lists_eight_projects() {
         assert!(stdout.contains(dir), "missing {dir}:\n{stdout}");
     }
 }
+
+#[test]
+fn dry_run_does_not_register_a_project_in_the_registry() {
+    // Defense-in-depth for v0.6.1: `--dry-run` is supposed to be
+    // read-only with respect to the registry. Auto-registering a
+    // project is a state change, so a dry-run must never insert a
+    // row into ~/.packguard/projects.db. We pin this by pointing
+    // `PACKGUARD_HOME` at a fresh tempdir, running
+    // `scan --dry-run` against a path with no `.git/` ancestor
+    // (the orphan / `_default_` fallback path), and asserting the
+    // registry stays empty afterwards. (The schema-empty file may
+    // still be created by `ProjectsRegistry::open`; what matters is
+    // that no project row was inserted.)
+    use rusqlite::Connection;
+
+    let pg_home = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    touch(&work.path().join("package.json"), r#"{"name":"orphan"}"#);
+
+    let output = Command::new(bin())
+        .env("NO_COLOR", "1")
+        .env("PACKGUARD_HOME", pg_home.path())
+        .args(["scan", "--dry-run"])
+        .arg(work.path())
+        .output()
+        .expect("run packguard");
+    assert!(
+        output.status.success(),
+        "dry-run failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let projects_db = pg_home.path().join("projects.db");
+    if !projects_db.exists() {
+        // Even better — the registry was never touched at all.
+        return;
+    }
+    let conn = Connection::open(&projects_db).expect("open projects.db");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))
+        .expect("count projects");
+    assert_eq!(
+        count, 0,
+        "dry-run must not insert a project row into projects.db (found {count})",
+    );
+}

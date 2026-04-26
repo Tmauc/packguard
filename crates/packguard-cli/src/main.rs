@@ -359,6 +359,7 @@ async fn main() -> Result<()> {
                 &mut registry,
                 &packguard_home,
                 &cwd,
+                false,
             )?;
             announce_scope(&scope, "audit");
             let pstore = project_stores.get_or_open(&scope.slug).await?;
@@ -391,6 +392,7 @@ async fn main() -> Result<()> {
                 &mut registry,
                 &packguard_home,
                 &cwd,
+                false,
             )?;
             announce_scope(&scope, "report");
             let pstore = project_stores.get_or_open(&scope.slug).await?;
@@ -427,6 +429,7 @@ async fn main() -> Result<()> {
                 &mut registry,
                 &packguard_home,
                 &cwd,
+                dry_run,
             )?;
             announce_scope(&scope, "scan");
             let pstore = project_stores.get_or_open(&scope.slug).await?;
@@ -459,6 +462,7 @@ async fn main() -> Result<()> {
                 &mut registry,
                 &packguard_home,
                 &cwd,
+                false,
             )?;
             announce_scope(&scope, "ui");
             let pstore = project_stores.get_or_open(&scope.slug).await?;
@@ -495,6 +499,7 @@ async fn main() -> Result<()> {
                 &mut registry,
                 &packguard_home,
                 &cwd,
+                false,
             )?;
             announce_scope(&scope, "graph");
             let pstore = project_stores.get_or_open(&scope.slug).await?;
@@ -540,14 +545,24 @@ async fn main() -> Result<()> {
 /// - Slug-form sources (`--project <slug>`, `PACKGUARD_PROJECT`) →
 ///   no auto-register; a typo there should fail loudly downstream
 ///   when the per-project store is empty.
+///
+/// `read_only` (true on `scan --dry-run`) skips the auto-register
+/// side-effects entirely so a dry-run never mutates `projects.db`.
+/// This is defense-in-depth on top of the singleton fix in
+/// [`ensure_default_registered`]: even if a future regression broke
+/// the singleton semantic, dry-run would stay inert.
 fn resolve_scope_or_default(
     flag: Option<&str>,
     positional: Option<&Path>,
     registry: &mut ProjectsRegistry,
     packguard_home: &Path,
     cwd: &Path,
+    read_only: bool,
 ) -> Result<ResolvedCliScope> {
     let scope = resolve_cli_scope(flag, positional, registry, cwd)?;
+    if read_only {
+        return Ok(scope);
+    }
     if matches!(scope.source, ScopeSource::Default) {
         ensure_default_registered(registry, packguard_home)?;
     } else if let Some(root) = ensure_project_registered(&scope, registry)? {
