@@ -171,6 +171,51 @@ pub fn ensure_default_registered(
     Ok(())
 }
 
+/// Phase 14.5a (Bug B) — idempotently register a project the resolver
+/// derived from a real filesystem path. Returns `Some(canonical_root)`
+/// the first time the slug is inserted (caller prints a banner) and
+/// `None` if the slug was already known (no banner — the dashboard
+/// already lists it).
+///
+/// Slug-form sources (`ExplicitFlagSlug`, `EnvVar`) are intentional
+/// no-ops: the user typed a slug they expect to exist, and silently
+/// auto-creating one would mask typos. Same for `Default` — that path
+/// is owned by [`ensure_default_registered`] which the dispatcher
+/// already calls.
+///
+/// Pre-Bug-B, `packguard scan` from inside an unregistered repo would
+/// open `~/.packguard/projects/<slug>/store.db` (created lazily by the
+/// store cache) and persist data into it — but never insert the
+/// matching `projects.db` row. The dashboard's `/api/projects`
+/// returned `[]` and rendered `EmptyProjectGate` despite the data
+/// being on disk under that slug.
+pub fn ensure_project_registered(
+    scope: &ResolvedCliScope,
+    registry: &mut ProjectsRegistry,
+) -> Result<Option<PathBuf>> {
+    let root = match &scope.source {
+        // The resolver canonicalised the git root already.
+        ScopeSource::Cwd(root) => root.clone(),
+        // Legacy `--project <path>` form — re-walk so the inserted
+        // path matches what the resolver slugified, even if `path`
+        // itself is a workspace subdir.
+        ScopeSource::ExplicitFlagPath(path) => {
+            let Some(root) = packguard_core::find_project_root(path) else {
+                return Ok(None);
+            };
+            root.canonicalize().unwrap_or(root)
+        }
+        ScopeSource::ExplicitFlagSlug | ScopeSource::EnvVar | ScopeSource::Default => {
+            return Ok(None);
+        }
+    };
+    if registry.get_by_slug(&scope.slug)?.is_some() {
+        return Ok(None);
+    }
+    registry.create_project(&root)?;
+    Ok(Some(root))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,5 +374,100 @@ mod tests {
             .expect("row must exist after ensure");
         assert_eq!(row.slug, DEFAULT_SLUG);
         assert_eq!(row.name, DEFAULT_SLUG);
+    }
+
+    // ---- Phase 14.5a (Bug B): ensure_project_registered -------------------
+
+    #[test]
+    fn ensure_project_registered_inserts_on_first_cwd_resolution() {
+        let _g = env_lock();
+        let tmp = tempdir().unwrap();
+        let repo = fixture_repo(tmp.path(), "fresh-repo");
+        let mut registry = ProjectsRegistry::open_in_memory().unwrap();
+        std::env::remove_var("PACKGUARD_PROJECT");
+        let scope = resolve_cli_scope(None, None, &registry, &repo).unwrap();
+        // Pre-condition: registry empty for this slug.
+        assert!(registry.get_by_slug(&scope.slug).unwrap().is_none());
+        let inserted = ensure_project_registered(&scope, &mut registry).unwrap();
+        assert!(
+            inserted.is_some(),
+            "first call must report Some(root) so the caller prints a banner",
+        );
+        // Post-condition: row exists and matches the slug.
+        let row = registry
+            .get_by_slug(&scope.slug)
+            .unwrap()
+            .expect("row must be registered");
+        assert_eq!(row.slug, scope.slug);
+    }
+
+    #[test]
+    fn ensure_project_registered_is_idempotent_on_known_slug() {
+        let _g = env_lock();
+        let tmp = tempdir().unwrap();
+        let repo = fixture_repo(tmp.path(), "known-repo");
+        let mut registry = ProjectsRegistry::open_in_memory().unwrap();
+        std::env::remove_var("PACKGUARD_PROJECT");
+        let scope = resolve_cli_scope(None, None, &registry, &repo).unwrap();
+        ensure_project_registered(&scope, &mut registry).unwrap();
+        // Second call: slug already known → returns None (no banner).
+        let again = ensure_project_registered(&scope, &mut registry).unwrap();
+        assert!(again.is_none(), "second call must be a silent no-op");
+    }
+
+    #[test]
+    fn ensure_project_registered_skips_slug_form_sources() {
+        // Slug-form sources are intentional: the user typed a slug they
+        // expect to exist. Auto-creating one would mask typos. Same for
+        // EnvVar (PACKGUARD_PROJECT). Default is owned by the
+        // ensure_default_registered path, so this helper bails too.
+        let _g = env_lock();
+        let tmp = tempdir().unwrap();
+        let mut registry = ProjectsRegistry::open_in_memory().unwrap();
+
+        // ExplicitFlagSlug
+        let scope_slug = ResolvedCliScope {
+            slug: "user-typed-slug".into(),
+            source: ScopeSource::ExplicitFlagSlug,
+            workspace_path: None,
+        };
+        assert!(ensure_project_registered(&scope_slug, &mut registry)
+            .unwrap()
+            .is_none());
+        assert!(registry.get_by_slug("user-typed-slug").unwrap().is_none());
+
+        // EnvVar
+        let scope_env = ResolvedCliScope {
+            slug: "env-slug".into(),
+            source: ScopeSource::EnvVar,
+            workspace_path: None,
+        };
+        assert!(ensure_project_registered(&scope_env, &mut registry)
+            .unwrap()
+            .is_none());
+        assert!(registry.get_by_slug("env-slug").unwrap().is_none());
+
+        // Default — separately materialized by ensure_default_registered.
+        let scope_default = ResolvedCliScope {
+            slug: DEFAULT_SLUG.into(),
+            source: ScopeSource::Default,
+            workspace_path: None,
+        };
+        assert!(ensure_project_registered(&scope_default, &mut registry)
+            .unwrap()
+            .is_none());
+
+        // Sanity: passing a Cwd-derived scope WOULD have inserted (proves
+        // the helper itself isn't broken).
+        let repo = fixture_repo(tmp.path(), "would-insert");
+        let canonical = repo.canonicalize().unwrap();
+        let scope_cwd = ResolvedCliScope {
+            slug: slugify(&canonical),
+            source: ScopeSource::Cwd(canonical.clone()),
+            workspace_path: None,
+        };
+        assert!(ensure_project_registered(&scope_cwd, &mut registry)
+            .unwrap()
+            .is_some());
     }
 }

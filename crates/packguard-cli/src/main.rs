@@ -22,7 +22,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::cli_scope::{
-    ensure_default_registered, resolve_cli_scope, ResolvedCliScope, ScopeSource,
+    ensure_default_registered, ensure_project_registered, resolve_cli_scope, ResolvedCliScope,
+    ScopeSource,
 };
 
 #[derive(Parser, Debug)]
@@ -528,8 +529,17 @@ async fn main() -> Result<()> {
 }
 
 /// Wrapper around [`resolve_cli_scope`] that also materializes the
-/// `_default_` registry row when the resolver fell through to it. Keeps
-/// every command's dispatch arm one line lighter.
+/// matching registry row. Keeps every command's dispatch arm one line
+/// lighter.
+///
+/// - `_default_` (no `.git/` ancestor) → [`ensure_default_registered`].
+/// - Path-derived sources (cwd walk-up, legacy `--project <path>`) →
+///   [`ensure_project_registered`] (Phase 14.5a / Bug B). When the row
+///   is freshly created, prints a one-line stderr banner so the user
+///   knows their first scan in a new repo just registered the project.
+/// - Slug-form sources (`--project <slug>`, `PACKGUARD_PROJECT`) →
+///   no auto-register; a typo there should fail loudly downstream
+///   when the per-project store is empty.
 fn resolve_scope_or_default(
     flag: Option<&str>,
     positional: Option<&Path>,
@@ -540,6 +550,13 @@ fn resolve_scope_or_default(
     let scope = resolve_cli_scope(flag, positional, registry, cwd)?;
     if matches!(scope.source, ScopeSource::Default) {
         ensure_default_registered(registry, packguard_home)?;
+    } else if let Some(root) = ensure_project_registered(&scope, registry)? {
+        eprintln!(
+            "{} Registered project: {} ({})",
+            "✓".green(),
+            scope.slug.cyan(),
+            root.display(),
+        );
     }
     Ok(scope)
 }
