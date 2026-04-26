@@ -27,6 +27,42 @@ pub use intel_store::IntelStore;
 pub use project_store_cache::ProjectStoreCache;
 pub use projects_registry::ProjectsRegistry;
 
+/// Run a refinery migration, retrying when a parallel process won the
+/// race to apply the same migration. Refinery's check ("which migrations
+/// are applied?") and apply ("run the SQL") are not atomic across
+/// processes — two CLI invocations on a fresh DB can both observe an
+/// empty `refinery_schema_history`, both decide to apply V1, the first
+/// wins the SQLite write lock and commits `CREATE TABLE projects`, the
+/// second wakes from busy_timeout and panics with "table already exists".
+///
+/// On retry the second process re-reads `refinery_schema_history`, sees
+/// V1 already recorded, and the runner is a no-op. `tries` of 50 × 100ms
+/// = 5s easily covers the conversion + insert latency.
+pub(crate) fn run_migrations_idempotent<F, E>(mut run: F) -> Result<()>
+where
+    F: FnMut() -> std::result::Result<refinery::Report, E>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let mut tries = 50;
+    loop {
+        match run() {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                let msg = e.to_string().to_lowercase();
+                let is_concurrent_init = msg.contains("already exists")
+                    || msg.contains("constraint")
+                    || msg.contains("database is locked");
+                if is_concurrent_init && tries > 0 {
+                    tries -= 1;
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+                return Err(anyhow::Error::new(e)).context("running migrations");
+            }
+        }
+    }
+}
+
 /// Idempotently switch a fresh connection to WAL journal mode, tolerating
 /// concurrent openers from parallel processes (CI tests, multiple CLI
 /// invocations sharing PACKGUARD_HOME).
@@ -253,9 +289,7 @@ impl Store {
         crate::enable_wal(&conn)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .context("enabling foreign keys")?;
-        embedded::migrations::runner()
-            .run(&mut conn)
-            .context("running migrations")?;
+        crate::run_migrations_idempotent(|| embedded::migrations::runner().run(&mut conn))?;
         Ok(Self { conn })
     }
 
@@ -281,10 +315,11 @@ impl Store {
         crate::enable_wal(&conn)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .context("enabling foreign keys")?;
-        embedded::migrations::runner()
-            .set_target(Target::Version(7))
-            .run(&mut conn)
-            .context("running migrations up to V7 (legacy test fixture)")?;
+        crate::run_migrations_idempotent(|| {
+            embedded::migrations::runner()
+                .set_target(Target::Version(7))
+                .run(&mut conn)
+        })?;
         Ok(Self { conn })
     }
 

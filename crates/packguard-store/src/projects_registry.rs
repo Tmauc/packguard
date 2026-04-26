@@ -50,8 +50,7 @@ impl ProjectsRegistry {
         crate::enable_wal(&conn).context("enabling WAL on projects registry")?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .context("enabling foreign keys on projects registry")?;
-        registry_embedded::migrations::runner()
-            .run(&mut conn)
+        crate::run_migrations_idempotent(|| registry_embedded::migrations::runner().run(&mut conn))
             .context("running registry migrations")?;
         Ok(Self { conn })
     }

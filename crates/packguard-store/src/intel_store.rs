@@ -43,8 +43,7 @@ impl IntelStore {
         crate::enable_wal(&conn).context("enabling WAL on intel store")?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .context("enabling foreign keys on intel store")?;
-        intel_embedded::migrations::runner()
-            .run(&mut conn)
+        crate::run_migrations_idempotent(|| intel_embedded::migrations::runner().run(&mut conn))
             .context("running intel migrations")?;
         Ok(Self { conn })
     }
