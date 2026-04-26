@@ -159,15 +159,34 @@ fn slug_for_path(p: &Path) -> String {
 /// dashboard's project list surfaces it. The on-disk store at
 /// `<home>/projects/_default_/store.db` is created lazily by
 /// [`packguard_store::ProjectStoreCache::get_or_open`] on first use.
+///
+/// Semantics: `_default_` is a **singleton fallback bucket**, not a
+/// per-path row. The first orphan path (no `.git/` ancestor) to land on
+/// `_default_` wins the row; subsequent calls — including parallel CLI
+/// invocations that share the same `PACKGUARD_HOME` — are silent
+/// no-ops. The pre-check `get_by_slug` handles the common
+/// already-registered case in one round-trip, and the
+/// `try_insert_with_slug` fallback collapses the
+/// check-then-insert race into a single
+/// `INSERT … ON CONFLICT DO NOTHING` so two processes can both win.
+/// This matches the user-mental-model ("everything outside any git
+/// tree shares one default project") and naturally defuses the
+/// parallel-test `UNIQUE(projects.{slug,path})` race that surfaced in
+/// 0.6.0.
 pub fn ensure_default_registered(
     registry: &mut ProjectsRegistry,
     packguard_home: &Path,
 ) -> Result<()> {
     if registry.get_by_slug(DEFAULT_SLUG)?.is_some() {
+        // Singleton already exists — keep its current `path` as-is.
         return Ok(());
     }
     let path = packguard_home.join("projects").join(DEFAULT_SLUG);
-    registry.insert_with_slug(DEFAULT_SLUG, &path, DEFAULT_SLUG)?;
+    // Race-safe insert: between the get_by_slug above and this call,
+    // another process may have inserted the `_default_` row. The store
+    // helper swallows the UNIQUE violation and reports it, so we just
+    // continue.
+    registry.try_insert_with_slug(DEFAULT_SLUG, &path, DEFAULT_SLUG)?;
     Ok(())
 }
 
@@ -374,6 +393,39 @@ mod tests {
             .expect("row must exist after ensure");
         assert_eq!(row.slug, DEFAULT_SLUG);
         assert_eq!(row.name, DEFAULT_SLUG);
+    }
+
+    #[test]
+    fn ensure_default_registered_singleton_when_called_with_different_paths() {
+        // Regression for v0.6.0 → v0.6.1: parallel CLI invocations
+        // sharing the same PACKGUARD_HOME both fall through to the
+        // `_default_` fallback. The first one inserts the singleton
+        // row; the second must silently no-op instead of failing on
+        // `UNIQUE(projects.slug)` / `UNIQUE(projects.path)`. We
+        // simulate the race by calling the helper directly with two
+        // different `packguard_home` values that map to the same
+        // (slug=`_default_`) row but distinct paths.
+        let tmp_a = tempdir().unwrap();
+        let tmp_b = tempdir().unwrap();
+        let mut registry = ProjectsRegistry::open_in_memory().unwrap();
+        ensure_default_registered(&mut registry, tmp_a.path()).unwrap();
+        // Second call, different home → must NOT error and must
+        // leave exactly one `_default_` row in place.
+        ensure_default_registered(&mut registry, tmp_b.path()).unwrap();
+        let rows = registry.list_projects().unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "exactly one row must exist after singleton call: {rows:?}",
+        );
+        let row = &rows[0];
+        assert_eq!(row.slug, DEFAULT_SLUG);
+        // First-write-wins: the row's path matches tmp_a, not tmp_b.
+        assert!(
+            row.path.starts_with(tmp_a.path()),
+            "first write must win; got path={:?}",
+            row.path,
+        );
     }
 
     // ---- Phase 14.5a (Bug B): ensure_project_registered -------------------

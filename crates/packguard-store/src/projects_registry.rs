@@ -143,6 +143,50 @@ impl ProjectsRegistry {
         })
     }
 
+    /// Race-safe variant of [`insert_with_slug`](Self::insert_with_slug):
+    /// `INSERT … ON CONFLICT DO NOTHING`. Returns `Ok(Some(project))`
+    /// when a fresh row was inserted, `Ok(None)` when either the slug
+    /// or the path was already present (typical singleton-fallback
+    /// or parallel-process case).
+    ///
+    /// Used by the CLI's `ensure_default_registered` so two
+    /// `packguard scan` processes sharing the same `PACKGUARD_HOME`
+    /// can both succeed under the singleton `_default_` slug instead
+    /// of one losing the
+    /// `check-then-insert` race against `UNIQUE(slug)` /
+    /// `UNIQUE(path)`.
+    pub fn try_insert_with_slug(
+        &mut self,
+        slug: &str,
+        path: &Path,
+        name: &str,
+    ) -> Result<Option<Project>> {
+        let path_str = path.display().to_string();
+        let now_ts = Utc::now().timestamp();
+        // `RETURNING id` only yields a row on actual insert. If the
+        // ON CONFLICT branch fires, query_row returns
+        // `QueryReturnedNoRows`, which we map to `Ok(None)`.
+        let id: Option<i64> = self
+            .conn
+            .query_row(
+                "INSERT INTO projects (slug, path, name, created_at, last_scan) \
+                 VALUES (?1, ?2, ?3, ?4, NULL) \
+                 ON CONFLICT DO NOTHING RETURNING id",
+                params![slug, path_str, name, now_ts],
+                |row| row.get(0),
+            )
+            .optional()
+            .with_context(|| format!("inserting project {} into registry", slug))?;
+        Ok(id.map(|id| Project {
+            id,
+            slug: slug.into(),
+            path: path.to_path_buf(),
+            name: name.into(),
+            created_at: Utc.timestamp_opt(now_ts, 0).single().unwrap_or_default(),
+            last_scan: None,
+        }))
+    }
+
     /// All registered projects, ordered by most-recently-scanned first.
     /// Projects that have never been scanned (NULL last_scan) sort
     /// after every scanned project; ties break by `created_at DESC`.
@@ -377,6 +421,35 @@ mod tests {
         // Second delete fails — no silent no-op.
         let err = registry.delete_project(&created.slug).unwrap_err();
         assert!(err.to_string().contains("no project registered"));
+    }
+
+    #[test]
+    fn try_insert_with_slug_returns_some_on_first_insert_and_none_on_conflict() {
+        let tmp = tempdir().unwrap();
+        let mut registry = ProjectsRegistry::open_in_memory().unwrap();
+        let path = tmp.path().join("projects").join("_default_");
+        let inserted = registry
+            .try_insert_with_slug("_default_", &path, "_default_")
+            .unwrap()
+            .expect("first insert must report Some");
+        assert_eq!(inserted.slug, "_default_");
+        // Same slug + same path → silent conflict.
+        let dup = registry
+            .try_insert_with_slug("_default_", &path, "_default_")
+            .unwrap();
+        assert!(dup.is_none(), "duplicate slug+path must report None");
+        // Same slug, different path → still a conflict (UNIQUE slug);
+        // proves the singleton-fallback case the CLI relies on.
+        let other_path = tmp.path().join("other").join("_default_");
+        let dup_path = registry
+            .try_insert_with_slug("_default_", &other_path, "_default_")
+            .unwrap();
+        assert!(
+            dup_path.is_none(),
+            "different path with same slug must still no-op",
+        );
+        // Sanity: only one `_default_` row exists.
+        assert_eq!(registry.list_projects().unwrap().len(), 1);
     }
 
     #[test]
