@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { vi } from "vitest";
@@ -41,7 +41,7 @@ function wrap(initialEntries: string[] = ["/"]) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(
+  const utils = render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={initialEntries}>
         <Routes>
@@ -58,6 +58,7 @@ function wrap(initialEntries: string[] = ["/"]) {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...utils, client };
 }
 
 const TWO_PROJECTS: ProjectDto[] = [
@@ -190,5 +191,40 @@ describe("Layout boot flow — project scope auto-select", () => {
     // Layout must render the chrome (loading state), not the gate.
     expect(screen.queryByTestId("empty-project-gate")).not.toBeInTheDocument();
     expect(screen.getByTestId("project-selector")).toBeInTheDocument();
+  });
+
+  it("auto-select does NOT re-fire when the projects list grows mid-session (14.3c ref-guard)", async () => {
+    (api.projects as ReturnType<typeof vi.fn>).mockResolvedValue(TWO_PROJECTS);
+    const { client } = wrap(["/"]);
+    // First-pass auto-select picks the most-recent (monorepo).
+    await waitFor(() =>
+      expect(screen.getByTestId("url").textContent).toContain(
+        "project=Users-mauc-Repo-Nalo-monorepo",
+      ),
+    );
+    // Simulate adding a project: a brand-new entry lands at the top
+    // of the list (most-recent last_scan). Without the ref-guard the
+    // effect would re-fire and yank scope away from the user's
+    // current selection — exactly what we don't want when
+    // AddProjectModal is in flight.
+    const newProject: ProjectDto = {
+      id: 99n,
+      slug: "Users-mauc-Repo-brand-new",
+      path: "/Users/mauc/Repo/brand-new",
+      name: "brand-new",
+      created_at: "2026-04-26T11:00:00.000Z",
+      last_scan: "2026-04-26T12:00:00.000Z",
+    };
+    await act(async () => {
+      client.setQueryData(["projects"], [newProject, ...TWO_PROJECTS]);
+      // Give the effect a tick to consider re-firing — it shouldn't.
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(screen.getByTestId("url").textContent).toContain(
+      "project=Users-mauc-Repo-Nalo-monorepo",
+    );
+    expect(screen.getByTestId("url").textContent).not.toContain(
+      "Users-mauc-Repo-brand-new",
+    );
   });
 });

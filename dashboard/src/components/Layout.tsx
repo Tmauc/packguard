@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -142,7 +142,16 @@ export function Layout() {
     projectsQuery.data ? knownSlugs : undefined,
     projectsQuery.isLoading,
   );
+  // Phase 14.3c — fire the most-recent auto-pick exactly once per
+  // mount. Without this guard, registering a new project (which
+  // becomes most-recent the moment it lands in the projects list)
+  // would trip the effect a second time and yank scope away from
+  // whatever AddProjectModal just set explicitly. The ref persists
+  // across renders but resets on unmount, which is the right
+  // granularity: a fresh tab starts cold.
+  const hasAutoSelected = useRef(false);
   useEffect(() => {
+    if (hasAutoSelected.current) return;
     // Auto-select runs after the restore hook has had a chance to
     // populate the URL. We bail in any state where restore is the
     // right answer (loading, URL already scoped, localStorage match,
@@ -160,6 +169,7 @@ export function Layout() {
       return bTs.localeCompare(aTs);
     });
     setProjectScope(sorted[0].slug);
+    hasAutoSelected.current = true;
   }, [
     projects,
     projectsQuery.isLoading,
