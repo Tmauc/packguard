@@ -1,0 +1,100 @@
+# Per-project store
+
+In v0.5 PackGuard kept everything in a single `~/.packguard/store.db` — every workspace of every repo, every CVE row, every sync timestamp, all in one schema. That worked for one-repo setups and for early adopters with two or three repos. It fell over the moment a user tracked five monorepos: cross-project queries paid the cost of every other project's data, dropping a project meant a manual `DELETE FROM ... WHERE path LIKE ...`, and a misbehaving migration on one repo's ingestion could corrupt the only file every other repo also depended on.
+
+v0.6 splits this into a **two-level scoping model**. The dashboard, CLI, and policy cascade now answer the same question — *"in which project, which workspace?"* — instead of v0.5's *"on which path?"*.
+
+## Project vs workspace
+
+A **project** is a git repository root — a directory with a `.git/` ancestor. PackGuard identifies it by **slug**, derived from its canonical path via [`packguard_core::slugify`](https://github.com/Tmauc/packguard/blob/main/crates/packguard-core/src/project_root.rs):
+
+```text
+/Users/x/Repo/Foo/monorepo  →  Users-x-Repo-Foo-monorepo
+```
+
+A **workspace** is a subdirectory inside that project that owns a manifest + lockfile pair (`package.json` + `package-lock.json`, `pyproject.toml` + `poetry.lock`, etc). One project can hold dozens of workspaces — a Turborepo with `apps/web`, `apps/api`, `packages/ui` is one project with three workspaces.
+
+```text
+Project: Users-x-Repo-Foo-monorepo  (/Users/x/Repo/Foo/monorepo)
+├── Workspace: front/vesta          (npm/pnpm)
+├── Workspace: front/mellona        (npm/pnpm)
+├── Workspace: services/incentive   (Python/poetry)
+└── Workspace: services/accounting  (Python/poetry)
+```
+
+The dashboard URL contract reflects this split:
+
+```text
+?project=<slug>&workspace=<absolute path>
+```
+
+Both segments are optional — omit `project` for the cross-project aggregate (only meaningful for read endpoints that fan out, like `/api/projects` itself), omit `workspace` to scope to "every workspace inside this project". The header surfaces both: a `ProjectSelector` on the left, a `WorkspaceSelector` on the right.
+
+{/* @screenshots/v0.6-header-selectors.png — header showing ProjectSelector / WorkspaceSelector side by side */}
+
+## Store layout on disk
+
+```text
+~/.packguard/
+├── intel/
+│   └── intel.db                     # global vulnerability + malware catalog
+├── projects.db                      # registry: slug ↔ canonical path
+├── projects/
+│   ├── _default_/
+│   │   └── store.db                 # legacy paths outside any git tree
+│   ├── Users-x-Repo-Foo-monorepo/
+│   │   └── store.db
+│   └── Users-x-Repo-bar-cli/
+│       └── store.db
+└── store.db.v0.5-backup             # renamed legacy file (post-migration)
+```
+
+Two stores. Two purposes:
+
+- **`~/.packguard/intel/intel.db`** — global vulnerability + malware catalog. Refreshed by `packguard sync`. Hundreds of MB of OSV / GHSA / OSV-MAL data shared across every project — duplicating it per project would be wasteful and would re-cost the same network traffic on every new registration. The schema denormalises advisory FKs to natural keys (`(ecosystem, package_name, source, advisory_id)`) so per-project stores can join against intel without holding a foreign key into another file.
+- **`~/.packguard/projects/<slug>/store.db`** — per-project scans, policies, action dismissals, dependency edges, compatibility cache. Bounded by the project's own dependency tree. Dropping a project is `rm -rf ~/.packguard/projects/<slug>/`; it touches no other project's data.
+
+`projects.db` is a small registry file — one row per project with `(id, slug, path, name, created_at, last_scan)`. The dashboard's `ProjectSelector` reads it directly via `GET /api/projects`, which is also what populates the AddProjectModal's success notification with the new slug.
+
+## Migration v0.5 → v0.6
+
+The first time you run a v0.6 binary against a v0.5 home, PackGuard does a lossless one-shot migration before any command touches the store:
+
+1. Detects `~/.packguard/store.db` (legacy file).
+2. Walks the legacy `repos` table and partitions every row by its enclosing git root (`find_project_root` walks up looking for `.git/`).
+3. Creates one `projects.db` row per partition + one per-project `store.db` populated with the matching workspace, dependency, edge, and compatibility rows. Vulnerabilities, malware reports, and sync timestamps move from the legacy schema into `intel/intel.db` with FKs denormalised to natural keys.
+4. Drops the intel-wide tables (`vulnerabilities`, `malware_reports`, `sync_log`) from the per-project schema as part of the V8 migration so they only live in one place going forward.
+5. Renames `~/.packguard/store.db` → `~/.packguard/store.db.v0.5-backup` and prints a banner on stderr.
+
+The banner you should see on the first v0.6 run looks roughly like:
+
+```text
+✓ Migrated to per-project layout: 3 projects, 17 workspaces, 1842 CVEs.
+✓ Renamed /Users/x/.packguard/store.db → store.db.v0.5-backup (legacy retired, per-project layer is now the source of truth).
+```
+
+Paths outside any git tree (test scratch dirs, ad-hoc downloads, the throwaway `/tmp/x/` you ran a `packguard scan` against once) are grouped under the `_default_` slug as a fallback project. Their dashboard view still works; they just share one per-project store across all of them.
+
+The migration is idempotent — running a v0.6 binary against an already-migrated home is a no-op (no banner, no work). You can delete `store.db.v0.5-backup` once you're confident in the migration; nothing reads from it in v0.6.
+
+## Backend contract recap
+
+| Endpoint | `?project=…` | Notes |
+|----------|--------------|-------|
+| `GET /api/projects` | n/a | Always lists every project in the registry. |
+| `POST /api/projects` | n/a | Body `{ "path": "<absolute>" }`. Spawns an `add_project` job that registers + recursively scans the new project. |
+| `GET /api/workspaces` | slug (filtered) / omit (aggregate) | Filtered: workspaces of one project. Aggregate: every project's workspaces concatenated. |
+| `GET /api/overview` | slug / path / omit | `slug` (recommended) reads one per-project store. `path` (legacy) walks up to its project, emits `X-PackGuard-Deprecated`. |
+| `GET /api/packages` | slug / path / omit | Same. |
+| `GET /api/graph` | slug / path / omit | Same. |
+| `GET /api/actions` | slug / path / omit | Aggregate fans out across every per-project store; dismissals are written to the originating store. |
+| `POST /api/scan?path=<abs>` | n/a | Path-driven; resolves the matching project via walk-up. The dashboard's Scan button passes `activeProject.path`. |
+| `POST /api/sync` | n/a | Writes to `intel/intel.db`. Watched-package list is the union across every per-project store. |
+
+The legacy form `?project=<absolute path>` (v0.5 bookmarks) is still accepted in v0.6 — the response carries an `X-PackGuard-Deprecated` header and the dashboard silently rewrites the URL to `?project=<slug>&workspace=<path>` with a one-shot Sonner toast on first load. New code should always use the slug form; the path form will be removed in a future major.
+
+## Related
+
+- [Per-project scoping](/concepts/per-project) — UX side: how `ProjectSelector` and `WorkspaceSelector` compose at runtime, plus the CLI mirror.
+- [Offset policy cascade](/concepts/offset-policy#policy-cascade-across-a-monorepo) — how `.packguard.yml` resolves across project + workspace.
+- [Supply-chain intel](/concepts/supply-chain) — what lives in `intel/intel.db` and how `packguard sync` populates it.
