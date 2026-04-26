@@ -380,7 +380,7 @@ function LandingFooter() {
         <div className="flex items-center gap-2.5">
           <BrandMark />
           <span className="text-divider-strong">/</span>
-          <span className="font-editorial">v0.5.0</span>
+          <span className="font-editorial">v0.6.0</span>
         </div>
         <div className="flex items-center gap-5">
           <Link href="/getting-started/install" className="hover:text-slate-ink">
