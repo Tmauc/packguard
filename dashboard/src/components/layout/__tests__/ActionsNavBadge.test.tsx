@@ -27,8 +27,20 @@ vi.mock("@/lib/api", () => ({
     workspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
     // 14.3a: Layout now boots a `["projects"]` query for the legacy
     // redirect — keep the mock surface complete so the query doesn't
-    // log a `No queryFn was passed` warning during the render.
-    projects: vi.fn().mockResolvedValue([]),
+    // log a `No queryFn was passed` warning during the render. 14.3b:
+    // Layout swaps in EmptyProjectGate when this list is empty, so we
+    // seed one project to keep the dashboard chrome (and the badge
+    // under test) mounted.
+    projects: vi.fn().mockResolvedValue([
+      {
+        id: 1n,
+        slug: "_default_",
+        path: "/repo/app",
+        name: "app",
+        created_at: "2026-04-20T10:00:00Z",
+        last_scan: "2026-04-24T10:00:00Z",
+      },
+    ]),
     job: vi.fn().mockResolvedValue({
       id: "x",
       kind: "scan",

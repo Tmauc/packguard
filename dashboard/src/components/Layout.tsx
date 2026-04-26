@@ -1,3 +1,4 @@
+import { useEffect, useMemo } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -13,10 +14,15 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
+import { EmptyProjectGate } from "@/components/layout/EmptyProjectGate";
 import { ProjectSelector } from "@/components/layout/ProjectSelector";
 import { WorkspaceSelector } from "@/components/layout/WorkspaceSelector";
 import {
+  PROJECT_SCOPE_STORAGE_KEY,
   useLegacyProjectRedirect,
+  useProjectScope,
+  useRestoreProjectScopeFromStorage,
+  useSetProjectScope,
   useWorkspaceScope,
 } from "@/components/layout/workspace-scope";
 import { api } from "@/lib/api";
@@ -109,6 +115,52 @@ export function Layout() {
   });
   useLegacyProjectRedirect(projectsQuery.data);
 
+  // Phase 14.3b — boot flow. Three-branch decision tree once the
+  // projects list has resolved:
+  //  (a) URL already carries `?project=<slug>` → noop, the selector
+  //      reflects the URL.
+  //  (b) URL has no slug + localStorage matches a known slug →
+  //      `useRestoreProjectScopeFromStorage` writes the URL.
+  //  (c) URL has no slug + no localStorage match + projects exist →
+  //      auto-select the most-recently-scanned project (last_scan
+  //      DESC, fallback created_at DESC) so the dashboard always
+  //      lands on something concrete instead of an empty selector.
+  //  (d) Projects list is empty → `EmptyProjectGate` replaces the
+  //      whole layout (handled in the JSX below).
+  const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
+  const knownSlugs = useMemo(() => projects.map((p) => p.slug), [projects]);
+  const projectScope = useProjectScope();
+  const setProjectScope = useSetProjectScope();
+  useRestoreProjectScopeFromStorage(
+    projectsQuery.data ? knownSlugs : undefined,
+    projectsQuery.isLoading,
+  );
+  useEffect(() => {
+    // Auto-select runs after the restore hook has had a chance to
+    // populate the URL. We bail in any state where restore is the
+    // right answer (loading, URL already scoped, localStorage match,
+    // or no projects to pick from at all).
+    if (projectsQuery.isLoading || projectScope) return;
+    if (typeof window === "undefined") return;
+    if (projects.length === 0) return;
+    const stored = window.localStorage.getItem(PROJECT_SCOPE_STORAGE_KEY);
+    if (stored && knownSlugs.includes(stored)) return;
+    // last_scan can be null (never scanned) — fall back to created_at
+    // so brand-new registrations still sort deterministically.
+    const sorted = [...projects].sort((a, b) => {
+      const aTs = a.last_scan ?? a.created_at;
+      const bTs = b.last_scan ?? b.created_at;
+      return bTs.localeCompare(aTs);
+    });
+    setProjectScope(sorted[0].slug);
+  }, [
+    projects,
+    projectsQuery.isLoading,
+    projectScope,
+    knownSlugs,
+    setProjectScope,
+  ]);
+
   const scan = useMutation({
     mutationFn: () => api.startScan(),
     onSuccess: ({ id }) => {
@@ -129,6 +181,14 @@ export function Layout() {
   });
 
   const activeJobs = jobs.filter((j) => j.status === "running" || j.status === "pending");
+
+  // Branch (d): no projects registered → swap the whole layout for the
+  // empty-state gate so dashboard pages don't render against a backend
+  // that has nothing to show. Sidebar nav + header stay hidden so the
+  // user sees one obvious next step.
+  if (!projectsQuery.isLoading && projects.length === 0) {
+    return <EmptyProjectGate />;
+  }
 
   return (
     <div className="grid h-full grid-cols-[14rem_1fr]">
