@@ -8,10 +8,10 @@ repository.workspace = true
 description = "PackGuard Page Actions engine: generates prioritized remediation actions from the store + policy + intel, with dismiss/defer persistence."
 
 [dependencies]
-packguard-core = { path = "../packguard-core", version = "0.6.3" }
-packguard-store = { path = "../packguard-store", version = "0.6.3" }
-packguard-policy = { path = "../packguard-policy", version = "0.6.3" }
-packguard-intel = { path = "../packguard-intel", version = "0.6.3" }
+packguard-core = { path = "../packguard-core", version = "0.6.4" }
+packguard-store = { path = "../packguard-store", version = "0.6.4" }
+packguard-policy = { path = "../packguard-policy", version = "0.6.4" }
+packguard-intel = { path = "../packguard-intel", version = "0.6.4" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
