@@ -2350,6 +2350,14 @@ fn fs_env_lock() -> std::sync::MutexGuard<'static, ()> {
 /// Spawn a fresh harness with `$HOME` pointed at a fresh tempdir
 /// pre-seeded with the requested layout. The MutexGuard return value
 /// keeps the env override alive — drop it to release the lock.
+///
+/// Holding a `std::sync::MutexGuard` across the `.await` below would
+/// normally be a clippy `await_holding_lock` lint failure, but here
+/// it is intentional: `$HOME` is process-wide, and the *whole point*
+/// of the lock is to serialize tests that mutate it. The harness's
+/// `axum::serve` runs on a separate task that doesn't reach for this
+/// mutex, so there's no risk of deadlock.
+#[allow(clippy::await_holding_lock)]
 async fn spawn_with_fs_home(
     layout: &[(&str, bool /* is_dir */)],
 ) -> (
@@ -2383,6 +2391,7 @@ async fn get_status(harness: &Harness, path: &str) -> reqwest::StatusCode {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // intentional: serialize $HOME mutation
 async fn fs_roots_returns_home_and_existing_subdirs() {
     let (h, home, _tmp, _guard) = spawn_with_fs_home(&[("Repo", true), ("Documents", true)]).await;
     let body = get_json(&h, "/api/fs/roots").await;
@@ -2399,6 +2408,7 @@ async fn fs_roots_returns_home_and_existing_subdirs() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // intentional: serialize $HOME mutation
 async fn fs_browse_default_returns_home() {
     let (h, home, _tmp, _guard) = spawn_with_fs_home(&[("alpha", true)]).await;
     let body = get_json(&h, "/api/fs/browse").await;
@@ -2414,6 +2424,7 @@ async fn fs_browse_default_returns_home() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // intentional: serialize $HOME mutation
 async fn fs_browse_query_returns_target_subdir() {
     let (h, home, _tmp, _guard) = spawn_with_fs_home(&[("sub/inner", true)]).await;
     let target = home.join("sub");
@@ -2432,6 +2443,7 @@ async fn fs_browse_query_returns_target_subdir() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // intentional: serialize $HOME mutation
 async fn fs_browse_returns_400_on_inexistant_path() {
     let (h, home, _tmp, _guard) = spawn_with_fs_home(&[]).await;
     let bad = home.join("nope-zzz-xyz");
@@ -2440,6 +2452,7 @@ async fn fs_browse_returns_400_on_inexistant_path() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // intentional: serialize $HOME mutation
 async fn fs_browse_returns_403_on_path_outside_home() {
     let (h, _home, _tmp, _guard) = spawn_with_fs_home(&[]).await;
     // /etc exists on every Unix and canonicalises stably; the
