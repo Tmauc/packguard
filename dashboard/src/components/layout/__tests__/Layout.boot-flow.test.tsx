@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { vi } from "vitest";
@@ -191,6 +192,52 @@ describe("Layout boot flow — project scope auto-select", () => {
     // Layout must render the chrome (loading state), not the gate.
     expect(screen.queryByTestId("empty-project-gate")).not.toBeInTheDocument();
     expect(screen.getByTestId("project-selector")).toBeInTheDocument();
+  });
+
+  it("scan button is disabled when no project is active", async () => {
+    // Empty projects → EmptyProjectGate replaces the layout, so the
+    // scan button isn't rendered at all. Use the URL-scoped-but-
+    // unknown branch instead: a slug in the URL that no project in
+    // the list matches → activeProject is undefined → button stays
+    // disabled. This is the "user opens an old bookmark after the
+    // project was removed" branch.
+    (api.projects as ReturnType<typeof vi.fn>).mockResolvedValue(TWO_PROJECTS);
+    wrap(["/?project=removed-project"]);
+    await waitFor(() =>
+      expect(screen.getByTestId("scan-button")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("scan-button")).toBeDisabled();
+  });
+
+  it("scan button calls api.startScan with the active project's path", async () => {
+    (api.projects as ReturnType<typeof vi.fn>).mockResolvedValue(TWO_PROJECTS);
+    (api.startScan as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "scan-job-1",
+    });
+    // The shared useJobStatus tracker polls /api/jobs/:id after
+    // trackJob fires; return a terminal response so the poll loop
+    // exits cleanly instead of leaking undefined into the tracker
+    // state shared with the next test.
+    (api.job as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "scan-job-1",
+      kind: "scan",
+      status: "succeeded",
+      started_at: "2026-04-26T12:00:00Z",
+      finished_at: "2026-04-26T12:00:01Z",
+      result: null,
+      error: null,
+    });
+    wrap(["/?project=Users-mauc-Repo-Nalo-monorepo"]);
+    await waitFor(() =>
+      expect(screen.getByTestId("scan-button")).not.toBeDisabled(),
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId("scan-button"));
+    await waitFor(() =>
+      expect(api.startScan).toHaveBeenCalledWith(
+        "/Users/mauc/Repo/Nalo/monorepo",
+      ),
+    );
   });
 
   it("auto-select does NOT re-fire when the projects list grows mid-session (14.3c ref-guard)", async () => {

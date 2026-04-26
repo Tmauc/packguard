@@ -178,8 +178,24 @@ export function Layout() {
     setProjectScope,
   ]);
 
+  // Phase 14.3c — Scan button always scopes to the active project's
+  // path. The pre-14.2d server fell back to `state.repo_path` when
+  // the request omitted ?path=, but that field is gone post-bascule
+  // and the legacy no-arg path now silently does nothing useful.
+  // We compute `activeProject` via slug-match against the projects
+  // list (already loaded by the boot flow) and disable the button
+  // when there is no active scope to point at.
+  const activeProject = useMemo(
+    () => projects.find((p) => p.slug === projectScope),
+    [projects, projectScope],
+  );
   const scan = useMutation({
-    mutationFn: () => api.startScan(),
+    mutationFn: () => {
+      if (!activeProject) {
+        throw new Error("No active project — pick one before scanning.");
+      }
+      return api.startScan(activeProject.path);
+    },
     onSuccess: ({ id }) => {
       toast.message("Scan started", { description: `Job ${id.slice(0, 8)}…` });
       trackJob(id);
@@ -265,7 +281,13 @@ export function Layout() {
               variant="outline"
               size="sm"
               onClick={() => scan.mutate()}
-              disabled={scan.isPending}
+              disabled={scan.isPending || !activeProject}
+              title={
+                activeProject
+                  ? `Scan ${activeProject.path}`
+                  : "Pick a project before scanning."
+              }
+              data-testid="scan-button"
             >
               <ScanIcon className="h-4 w-4" />
               Scan
