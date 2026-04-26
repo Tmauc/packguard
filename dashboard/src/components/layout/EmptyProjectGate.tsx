@@ -13,7 +13,16 @@ import { Button } from "@/components/ui/button";
  * to fall back to the CLI (`packguard scan <path>`), which we surface
  * as a hint below the button.
  */
-export function EmptyProjectGate() {
+export function EmptyProjectGate({
+  onAddProject,
+}: {
+  /// Phase 14.3c — invoked when the user clicks the
+  /// "+ Add your first project" CTA. The modal lives at the Layout
+  /// root so it can be shared with ProjectSelector. When no handler
+  /// is provided (early Phase 14.3b state, or test renders) the
+  /// button stays disabled.
+  onAddProject?: () => void;
+} = {}) {
   return (
     <div
       data-testid="empty-project-gate"
@@ -34,9 +43,9 @@ export function EmptyProjectGate() {
         </p>
         <Button
           className="mt-6"
-          disabled
+          disabled={!onAddProject}
+          onClick={onAddProject}
           data-testid="empty-project-add-cta"
-          title="Available in v0.6.0 — Phase 14.3c (AddProjectModal)"
         >
           + Add your first project
         </Button>

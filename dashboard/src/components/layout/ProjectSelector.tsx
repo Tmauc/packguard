@@ -38,7 +38,15 @@ import type { ProjectDto } from "@/api/types/ProjectDto";
  *    keeps it; if not, the next workspace fetch + a 404 will surface
  *    the mismatch and the user clears via the WorkspaceSelector.
  */
-export function ProjectSelector() {
+export function ProjectSelector({
+  onAddProject,
+}: {
+  /// Phase 14.3c — invoked when the user clicks the footer
+  /// "+ Add new project" button. The modal lives in Layout (so the
+  /// EmptyProjectGate can share it), so the selector only needs to
+  /// signal the open intent.
+  onAddProject?: () => void;
+} = {}) {
   const projectScope = useProjectScope();
   const setProjectScope = useSetProjectScope();
   const query = useQuery({
@@ -190,8 +198,16 @@ export function ProjectSelector() {
               variant="ghost"
               size="sm"
               data-testid="project-add-cta"
-              disabled
-              title="Available in v0.6.0 — Phase 14.3c (AddProjectModal)"
+              disabled={!onAddProject}
+              onClick={() => {
+                if (!onAddProject) return;
+                // Close popover before opening the modal so the two
+                // overlays don't stack — both eat outside-click events
+                // and the picker would visually leak under the modal
+                // backdrop.
+                setOpen(false);
+                onAddProject();
+              }}
             >
               <FolderPlusIcon className="h-3.5 w-3.5" />
               Add new project

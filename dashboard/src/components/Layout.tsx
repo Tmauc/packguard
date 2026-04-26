@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
+import { AddProjectModal } from "@/components/layout/AddProjectModal";
 import { EmptyProjectGate } from "@/components/layout/EmptyProjectGate";
 import { ProjectSelector } from "@/components/layout/ProjectSelector";
 import { WorkspaceSelector } from "@/components/layout/WorkspaceSelector";
@@ -103,6 +104,12 @@ function ActionsNavBadge() {
 
 export function Layout() {
   const { trackJob, jobs } = useJobStatus();
+  // Phase 14.3c — modal open state lives at Layout level so the same
+  // instance serves both the ProjectSelector footer ("+ Add new
+  // project") and the EmptyProjectGate CTA ("+ Add your first
+  // project"). The two surfaces are mutually exclusive (gate replaces
+  // selector) but they share the same trigger plumbing.
+  const [addProjectOpen, setAddProjectOpen] = useState(false);
 
   // Phase 14.3a — keep v0.5 bookmarks alive: the legacy
   // `?project=<absolute path>` form gets rewritten to
@@ -185,9 +192,18 @@ export function Layout() {
   // Branch (d): no projects registered → swap the whole layout for the
   // empty-state gate so dashboard pages don't render against a backend
   // that has nothing to show. Sidebar nav + header stay hidden so the
-  // user sees one obvious next step.
+  // user sees one obvious next step. The AddProjectModal still renders
+  // alongside the gate so the CTA can open it.
   if (!projectsQuery.isLoading && projects.length === 0) {
-    return <EmptyProjectGate />;
+    return (
+      <>
+        <EmptyProjectGate onAddProject={() => setAddProjectOpen(true)} />
+        <AddProjectModal
+          open={addProjectOpen}
+          onClose={() => setAddProjectOpen(false)}
+        />
+      </>
+    );
   }
 
   return (
@@ -222,7 +238,9 @@ export function Layout() {
       <main className="flex flex-col">
         <header className="flex items-center justify-between gap-4 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-6 py-4">
           <div className="flex items-center gap-4">
-            <ProjectSelector />
+            <ProjectSelector
+              onAddProject={() => setAddProjectOpen(true)}
+            />
             <span className="text-zinc-400 dark:text-zinc-500">/</span>
             <WorkspaceSelector />
             <span className="text-sm text-zinc-400 dark:text-zinc-500">·</span>
@@ -258,6 +276,10 @@ export function Layout() {
           <Outlet />
         </div>
       </main>
+      <AddProjectModal
+        open={addProjectOpen}
+        onClose={() => setAddProjectOpen(false)}
+      />
     </div>
   );
 }
