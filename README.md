@@ -80,6 +80,34 @@ See [CONTEXT.md](./CONTEXT.md) for the full vision, architecture, and roadmap.
   scope on job success. Plus tooltips (`title=` native) on every
   previously-unexplained control, a proper PackGuard SVG favicon,
   and a CodeMirror line-wrap fix on the Policies editor.
+- ✅ **Phase 14 (v0.6.0) — Per-project store**: two-level scoping
+  (project = git repo root identified by slug, workspace = manifest
+  + lockfile path inside a project). The single
+  `~/.packguard/store.db` is split into `~/.packguard/intel/intel.db`
+  (global vulnerability + malware catalog) and one
+  `~/.packguard/projects/<slug>/store.db` per registered project,
+  with a small `~/.packguard/projects.db` registry that maps slugs
+  to canonical paths. **Lossless one-shot migration** from the v0.5
+  layout walks the legacy `repos` table, partitions every row by
+  its enclosing git root, and renames the legacy file to
+  `store.db.v0.5-backup` once the per-project layer is fully
+  populated (idempotent — re-runs are no-ops). Dashboard header
+  gains a `ProjectSelector` (left of the existing
+  `WorkspaceSelector`); URL contract becomes
+  `?project=<slug>&workspace=<absolute path>`. v0.5 path-style
+  bookmarks still work — the response carries an
+  `X-PackGuard-Deprecated` header and the dashboard rewrites the
+  URL with a one-shot toast. **Add a project from the UI** — empty
+  installs render an `EmptyProjectGate`; the
+  `+ Add your first project` CTA opens the same `AddProjectModal`
+  that the `ProjectSelector` footer exposes for subsequent
+  registrations. CLI commands accept `--project <slug>` (legacy
+  `--project <path>` still works with a deprecation warning); a
+  bare invocation auto-detects the project by walking up from
+  `cwd` to a `.git/` ancestor and matching it against the
+  registry. See [Per-project store](https://packguard-docs.vercel.app/concepts/project-store)
+  and [Per-project scoping](https://packguard-docs.vercel.app/concepts/per-project)
+  for the full architecture + UX walkthrough.
 
 ---
 
@@ -103,12 +131,18 @@ is opt-in so debug builds stay fast and don't require pnpm on the PATH.
 
 ### Pages
 
-Every page supports **light / dark / system** modes via the header
-toggle (3-state, persisted to `localStorage`, defaults to
-`prefers-color-scheme`). The **tree-view workspace selector** in
-the header groups workspaces by longest common path prefix with
-in-place fuzzy search and a `+ Scan new path` footer that opens an
-Add-workspace modal — first scan without leaving the dashboard.
+Every page is scoped to the active **project** via the header
+`ProjectSelector` (a flat list of every registered git repo root,
+each identified by slug). Inside a project, the existing
+**tree-view workspace selector** groups workspaces by longest
+common path prefix with in-place fuzzy search; v0.6.0 narrows the
+tree to the active project's workspaces. The `ProjectSelector`
+footer exposes a `+ Add new project` button (and an
+`EmptyProjectGate` welcomes brand-new installs with the same
+modal) — register + scan a new repo without leaving the dashboard.
+Every page also supports **light / dark / system** modes via the
+header toggle (3-state, persisted to `localStorage`, defaults to
+`prefers-color-scheme`).
 
 | Page | URL | Highlights |
 |------|-----|------------|
@@ -119,12 +153,17 @@ Add-workspace modal — first scan without leaving the dashboard.
 | Policies | `/policies` | CodeMirror YAML editor (with line-wrap) per-workspace, dry-run preview vs current policy, atomic save, panels stack below 1200px |
 | Actions | `/actions` | Prioritized next steps grouped by severity (Malware → Info), copy-to-clipboard package-manager-aware fix commands, dismiss / defer / restore persisted in SQLite |
 
-Every list-returning page reads the active workspace from `?project=<path>`
-and threads it into the backend call. The header `Workspace` selector
-writes that param without unmounting the current route — safe to bookmark,
-safe to flip mid-session, safe to open two browser tabs on different
-workspaces side by side. The scope badge top-right of each page tells
-you at a glance whether the numbers are aggregated or scoped.
+Every list-returning page reads the active scope from
+`?project=<slug>&workspace=<absolute path>` (both segments
+independent, both surfaced in the header). The two header
+selectors write those params without unmounting the current route —
+safe to bookmark, safe to flip mid-session, safe to open two
+browser tabs on different (project, workspace) pairs side by side.
+The scope badge top-right of each page tells you at a glance
+whether the numbers are aggregated or scoped. v0.5 path-style
+bookmarks (`?project=<absolute path>`) still work — the dashboard
+walks up to find the matching slug and rewrites the URL with a
+one-shot toast.
 
 ![Overview](docs/screenshots/overview.png)
 ![Packages](docs/screenshots/packages.png)
@@ -259,8 +298,18 @@ packguard report
 packguard ui
 ```
 
-By default the store lives at `~/.packguard/store.db`. Override with the global
+By default the store lives at `~/.packguard/` (per-project layout
+since v0.6.0: `~/.packguard/projects/<slug>/store.db` per registered
+project plus `~/.packguard/intel/intel.db` for the shared
+vulnerability + malware catalog). Override with the global
 `--store <path>` flag.
+
+Every list-returning command accepts `--project <slug>` to scope
+to a single registered project (e.g.
+`packguard report --project Users-x-Repo-Foo-monorepo`). With no
+flag, the CLI walks up from `cwd` looking for a `.git/` ancestor
+and resolves the matching slug automatically; `--project <absolute
+path>` is still accepted as a deprecated alias of the slug form.
 
 ---
 
