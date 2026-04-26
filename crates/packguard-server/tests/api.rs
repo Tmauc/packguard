@@ -2225,3 +2225,145 @@ async fn unknown_slug_returns_404_with_known_slug_list() {
         "expected known slugs in error: {msg}"
     );
 }
+
+// ---- Phase 14.3b: /api/workspaces ?project=<slug> scoping -----------------
+
+/// Build a harness with two git-rooted projects (alpha, beta), each
+/// holding a single workspace in its own per-project store. Returns
+/// the harness plus the registered slugs so tests can target them.
+async fn spawn_two_projects_with_workspaces() -> (Harness, String, String) {
+    let temp = tempfile::tempdir().unwrap();
+    // Two distinct git roots → two distinct slugs in the registry.
+    let alpha_root = fixture_git_repo(temp.path(), "alpha");
+    let beta_root = fixture_git_repo(temp.path(), "beta");
+
+    let (alpha_slug, beta_slug) = {
+        let mut registry = ProjectsRegistry::open(temp.path()).unwrap();
+        let alpha_p = registry.create_project(&alpha_root).unwrap();
+        let beta_p = registry.create_project(&beta_root).unwrap();
+        (alpha_p.slug, beta_p.slug)
+    };
+
+    // Seed one workspace per project, written directly into each
+    // per-project store so `services::workspaces::list` returns it
+    // when fanned-out by the handler.
+    let project_stores = Arc::new(ProjectStoreCache::new(temp.path().to_path_buf()));
+    {
+        let alpha_workspace = Project {
+            ecosystem: "npm",
+            root: alpha_root.clone(),
+            manifest_path: alpha_root.join("package.json"),
+            name: Some("alpha".into()),
+            workspace: None,
+            dependencies: vec![Dependency {
+                name: "lodash".into(),
+                declared_range: "^4".into(),
+                installed: Some("4.17.20".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("package-lock.json".into()),
+            }],
+            edges: Vec::new(),
+            compatibility: Vec::new(),
+        };
+        let pstore = project_stores.get_or_open(&alpha_slug).await.unwrap();
+        let mut pstore = pstore.lock().await;
+        pstore
+            .save_project(&alpha_root, &alpha_workspace, &BTreeMap::new(), "fp-alpha")
+            .unwrap();
+    }
+    {
+        let beta_workspace = Project {
+            ecosystem: "npm",
+            root: beta_root.clone(),
+            manifest_path: beta_root.join("package.json"),
+            name: Some("beta".into()),
+            workspace: None,
+            dependencies: vec![Dependency {
+                name: "express".into(),
+                declared_range: "^4".into(),
+                installed: Some("4.19.2".into()),
+                kind: DepKind::Runtime,
+                source_lockfile: Some("package-lock.json".into()),
+            }],
+            edges: Vec::new(),
+            compatibility: Vec::new(),
+        };
+        let pstore = project_stores.get_or_open(&beta_slug).await.unwrap();
+        let mut pstore = pstore.lock().await;
+        pstore
+            .save_project(&beta_root, &beta_workspace, &BTreeMap::new(), "fp-beta")
+            .unwrap();
+    }
+
+    let intel = IntelStore::open(temp.path()).unwrap();
+    let projects = ProjectsRegistry::open(temp.path()).unwrap();
+    let app = router(ServerConfig {
+        repo_path: alpha_root.clone(),
+        intel,
+        projects,
+        project_stores,
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let harness = Harness {
+        base: format!("http://{addr}"),
+        _temp: temp,
+    };
+    (harness, alpha_slug, beta_slug)
+}
+
+#[tokio::test]
+async fn workspaces_list_scoped_by_slug_returns_only_that_project() {
+    let (h, alpha_slug, beta_slug) = spawn_two_projects_with_workspaces().await;
+
+    let body = get_json(&h, &format!("/api/workspaces?project={alpha_slug}")).await;
+    let rows = body["workspaces"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "alpha-scoped should return 1 row: {body}");
+    let path = rows[0]["path"].as_str().unwrap();
+    assert!(
+        path.contains("alpha") && !path.contains("beta"),
+        "scoped row must come from alpha only: {body}",
+    );
+
+    // Sanity: the other slug returns its own row, also exactly 1.
+    let body = get_json(&h, &format!("/api/workspaces?project={beta_slug}")).await;
+    let rows = body["workspaces"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "beta-scoped should return 1 row: {body}");
+    assert!(rows[0]["path"].as_str().unwrap().contains("beta"));
+}
+
+#[tokio::test]
+async fn workspaces_list_aggregate_when_no_project_param() {
+    let (h, _alpha_slug, _beta_slug) = spawn_two_projects_with_workspaces().await;
+
+    let body = get_json(&h, "/api/workspaces").await;
+    let rows = body["workspaces"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "aggregate should fan out across both projects: {body}");
+    let paths: Vec<&str> = rows
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    assert!(paths.iter().any(|p| p.contains("alpha")));
+    assert!(paths.iter().any(|p| p.contains("beta")));
+}
+
+#[tokio::test]
+async fn workspaces_list_404_on_unknown_slug() {
+    let (h, alpha_slug, beta_slug) = spawn_two_projects_with_workspaces().await;
+
+    let url = format!("{}/api/workspaces?project=ghost-project", h.base);
+    let resp = reqwest::get(&url).await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let msg = body["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("unknown project slug"), "got: {msg}");
+    // Error envelope must list the known slugs so the UI can recover
+    // without a second round-trip to /api/projects.
+    assert!(
+        msg.contains(&alpha_slug) || msg.contains(&beta_slug),
+        "expected known slugs in error: {msg}"
+    );
+}

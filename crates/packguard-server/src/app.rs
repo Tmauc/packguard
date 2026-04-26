@@ -804,16 +804,31 @@ async fn job_get(
         .ok_or_else(|| ApiError::NotFound(format!("job {id} not found")))
 }
 
-/// Phase 7a / 14.2b.2: every scanned workspace across every
-/// per-project store. Aggregated via `slug_paths()` fanout — each
-/// per-project store contributes its `scans_index()` rows; results
-/// are concatenated. Already-sorted-by-last-scan-DESC ordering
-/// holds *within* each store but isn't globally re-sorted: the
-/// dashboard's selector tolerates per-project clusters.
-async fn workspaces_list(State(s): State<AppState>) -> Result<Json<WorkspacesResponse>, ApiError> {
+/// Phase 7a / 14.2b.2 / 14.3b: every scanned workspace, optionally
+/// scoped to a single project via `?project=<slug>`.
+///
+/// - No `?project=` → fan out across every registered project's store
+///   (`slug_paths()` order).
+/// - `?project=<slug>` → resolve via [`resolve_scope`] (404 with the
+///   list of known slugs on a miss) and read only that store. Powers
+///   the 14.3b `<ProjectSelector>` so swapping the active project also
+///   narrows the workspace selector to that project's workspaces.
+/// - `?project=<absolute path>` → still honored for v0.5 bookmarks via
+///   the legacy-path branch in [`resolve_scope`]; the deprecation
+///   header is emitted by `with_deprecation_header`.
+///
+/// Already-sorted-by-last-scan-DESC ordering holds within each store
+/// but isn't globally re-sorted: the dashboard's selector tolerates
+/// per-project clusters.
+async fn workspaces_list(
+    State(s): State<AppState>,
+    Query(q): Query<ProjectQuery>,
+) -> Result<axum::response::Response, ApiError> {
+    let scope = resolve_scope_locked(&s, q.project.as_deref()).await?;
+    let slugs = scope.slugs(&s.project_stores)?;
     let mut accum: Option<WorkspacesResponse> = None;
-    for (slug, _) in s.project_stores.slug_paths()? {
-        let pstore = s.project_stores.get_or_open(&slug).await?;
+    for slug in &slugs {
+        let pstore = s.project_stores.get_or_open(slug).await?;
         let pstore = pstore.lock().await;
         let part = services::workspaces::list(&pstore)?;
         accum = Some(match accum {
@@ -821,9 +836,10 @@ async fn workspaces_list(State(s): State<AppState>) -> Result<Json<WorkspacesRes
             Some(prev) => merge_workspaces(prev, part),
         });
     }
-    Ok(Json(accum.unwrap_or_else(|| WorkspacesResponse {
+    let body = accum.unwrap_or_else(|| WorkspacesResponse {
         workspaces: Vec::new(),
-    })))
+    });
+    Ok(with_deprecation_header(body, scope.is_legacy()))
 }
 
 // ---- Phase 12a: Page Actions ----------------------------------------------
