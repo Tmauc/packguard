@@ -12,6 +12,12 @@ pub enum ApiError {
     NotFound(String),
     #[error("bad request: {0}")]
     BadRequest(String),
+    /// Phase 14.5b — sandbox violation. Used by the `/api/fs/browse`
+    /// endpoint when a request resolves to a path outside the server
+    /// process's `$HOME`. Distinct from BadRequest so the dashboard can
+    /// branch on `code === "forbidden"` and surface a clearer message.
+    #[error("forbidden: {0}")]
+    Forbidden(String),
     #[error("conflict: {0}")]
     Conflict(String),
     #[error(transparent)]
@@ -23,6 +29,7 @@ impl ApiError {
         match self {
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -32,6 +39,7 @@ impl ApiError {
         match self {
             ApiError::NotFound(_) => "not_found",
             ApiError::BadRequest(_) => "bad_request",
+            ApiError::Forbidden(_) => "forbidden",
             ApiError::Conflict(_) => "conflict",
             ApiError::Internal(_) => "internal",
         }

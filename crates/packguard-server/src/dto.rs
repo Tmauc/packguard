@@ -753,3 +753,64 @@ pub struct ActionDeferResponse {
     /// RFC 3339 deadline; the action resurfaces once `now >= deferred_until`.
     pub deferred_until: String,
 }
+
+// ---- Phase 14.5b — filesystem browser DTOs --------------------------------
+
+/// Wire shape for `GET /api/fs/roots`. Returns conventional starting
+/// points for the AddProjectModal directory picker. `entries[0]` is
+/// always `$HOME`; the remainder are conventional repo dirs that exist
+/// on disk (`Repo`, `Projects`, `Code`, `Workspace`, `Documents`, `src`).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "FsRootsResponse.ts")]
+pub struct FsRootsResponse {
+    /// Canonical absolute path of the user's home directory.
+    pub home: String,
+    pub entries: Vec<FsRootEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "FsRootEntry.ts")]
+pub struct FsRootEntry {
+    /// Display label, e.g. `"$HOME"` or `"$HOME/Repo"`.
+    pub label: String,
+    /// Absolute canonical path on disk.
+    pub path: String,
+}
+
+/// Wire shape for `GET /api/fs/browse?path=<absolute>`. Sandboxed to
+/// `$HOME`: requests for paths whose canonical form lies outside `$HOME`
+/// are rejected with HTTP 403. Only directories are listed — file
+/// content is irrelevant for a directory picker.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "FsBrowseResponse.ts")]
+pub struct FsBrowseResponse {
+    /// Canonical absolute path of the directory listed.
+    pub path: String,
+    /// Canonical absolute path of the parent directory. `None` when
+    /// `path == $HOME` so the picker can hide the up-one-level button
+    /// at the sandbox boundary.
+    pub parent: Option<String>,
+    pub entries: Vec<FsEntry>,
+    /// `true` when the response was capped at the per-directory limit
+    /// (default 500). The frontend should surface a "refine your
+    /// search" hint when this is set.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export_to = "FsEntry.ts")]
+pub struct FsEntry {
+    /// Entry name only (no path separators). Hidden entries (leading
+    /// `.`) are filtered out before serialization, except that `.git/`
+    /// surfaces via the parent's `has_git` flag — never as an entry.
+    pub name: String,
+    /// Absolute canonical path of the entry.
+    pub path: String,
+    /// `true` when the entry contains a `.git/` subdirectory directly.
+    pub has_git: bool,
+    /// `true` when the entry contains at least one supported manifest
+    /// directly (`package.json`, `pyproject.toml`, `poetry.lock`,
+    /// `uv.lock`, `pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`,
+    /// or any `requirements*.txt`).
+    pub has_manifest: bool,
+}

@@ -67,6 +67,8 @@ pub fn router(cfg: ServerConfig) -> Router {
         .route("/api/actions/{id}/dismiss", post(actions_dismiss))
         .route("/api/actions/{id}/defer", post(actions_defer))
         .route("/api/actions/{id}", delete(actions_restore))
+        .route("/api/fs/roots", get(fs_roots))
+        .route("/api/fs/browse", get(fs_browse))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -1009,4 +1011,46 @@ async fn projects_create(
     })?;
     let id = jobs::spawn(s, jobs::JobSpec::AddProject(root)).await?;
     Ok((StatusCode::ACCEPTED, Json(JobAccepted { id })))
+}
+
+// ---- Phase 14.5b: /api/fs/{roots,browse} ----------------------------------
+
+#[derive(serde::Deserialize)]
+struct FsBrowseQuery {
+    path: Option<String>,
+}
+
+async fn fs_roots(
+    State(_s): State<AppState>,
+) -> Result<Json<crate::dto::FsRootsResponse>, ApiError> {
+    let home = services::fs_browse::home_dir().map_err(ApiError::Internal)?;
+    let resp = services::fs_browse::list_roots(&home).map_err(ApiError::Internal)?;
+    Ok(Json(resp))
+}
+
+/// Map service-layer errors to HTTP status codes by string-matching on
+/// the stable substrings the service guarantees in its anyhow messages.
+/// Slightly quirky, but keeps the service layer free of axum/HTTP types
+/// and matches the pattern other handlers use for `resolve_scope`.
+async fn fs_browse(
+    State(_s): State<AppState>,
+    Query(q): Query<FsBrowseQuery>,
+) -> Result<Json<crate::dto::FsBrowseResponse>, ApiError> {
+    let home = services::fs_browse::home_dir().map_err(ApiError::Internal)?;
+    let target = match q.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(p) => PathBuf::from(p),
+        None => home.clone(),
+    };
+    services::fs_browse::browse(&home, &target)
+        .map(Json)
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("outside $HOME") {
+                ApiError::Forbidden(msg)
+            } else if msg.contains("does not exist") || msg.contains("is not a directory") {
+                ApiError::BadRequest(msg)
+            } else {
+                ApiError::Internal(e)
+            }
+        })
 }
