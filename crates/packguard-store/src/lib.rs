@@ -210,6 +210,11 @@ impl Store {
         }
         let mut conn =
             Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+        // Tolerate concurrent opens (parallel tests, multiple CLI invocations
+        // sharing PACKGUARD_HOME). Without this, the WAL pragma below races
+        // against another process and fails with SQLITE_BUSY.
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .context("setting busy_timeout")?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("enabling WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")

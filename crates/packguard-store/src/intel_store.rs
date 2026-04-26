@@ -38,6 +38,11 @@ impl IntelStore {
         let db_path = intel_dir.join("intel.db");
         let mut conn =
             Connection::open(&db_path).with_context(|| format!("opening {}", db_path.display()))?;
+        // Tolerate concurrent opens (parallel tests, multiple CLI invocations
+        // sharing PACKGUARD_HOME). Without this, the WAL pragma below races
+        // against another process and fails with SQLITE_BUSY.
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .context("setting busy_timeout on intel store")?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("enabling WAL on intel store")?;
         conn.pragma_update(None, "foreign_keys", "ON")
