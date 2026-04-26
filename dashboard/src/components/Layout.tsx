@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
+import { ProjectSelector } from "@/components/layout/ProjectSelector";
 import { WorkspaceSelector } from "@/components/layout/WorkspaceSelector";
 import {
   useLegacyProjectRedirect,
@@ -161,6 +162,8 @@ export function Layout() {
       <main className="flex flex-col">
         <header className="flex items-center justify-between gap-4 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-6 py-4">
           <div className="flex items-center gap-4">
+            <ProjectSelector />
+            <span className="text-zinc-400 dark:text-zinc-500">/</span>
             <WorkspaceSelector />
             <span className="text-sm text-zinc-400 dark:text-zinc-500">·</span>
             <div className="text-sm text-zinc-500 dark:text-zinc-400">

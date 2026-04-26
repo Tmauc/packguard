@@ -111,7 +111,7 @@ describe("useLegacyProjectRedirect", () => {
         wrapper: wrapper(
           "/?project=/Users/x/Repo/Nalo/monorepo/front/vesta",
         ),
-        initialProps: { projects: undefined },
+        initialProps: { projects: undefined as ProjectDto[] | undefined },
       },
     );
     // Before the projects list lands the URL is untouched.
@@ -145,7 +145,7 @@ describe("useLegacyProjectRedirect", () => {
         useProbe(projects),
       {
         wrapper: wrapper("/?project=/some/unknown/path"),
-        initialProps: { projects: undefined },
+        initialProps: { projects: undefined as ProjectDto[] | undefined },
       },
     );
     rerender({ projects: PROJECTS });
@@ -162,7 +162,7 @@ describe("useLegacyProjectRedirect", () => {
         useProbe(projects),
       {
         wrapper: wrapper("/?project=Users-x-Repo-Nalo-monorepo"),
-        initialProps: { projects: undefined },
+        initialProps: { projects: undefined as ProjectDto[] | undefined },
       },
     );
     rerender({ projects: PROJECTS });
