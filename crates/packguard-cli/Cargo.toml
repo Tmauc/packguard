@@ -26,12 +26,12 @@ default = []
 ui-embed = ["packguard-server/ui-embed"]
 
 [dependencies]
-packguard-core = { path = "../packguard-core", version = "0.6.1" }
-packguard-store = { path = "../packguard-store", version = "0.6.1" }
-packguard-policy = { path = "../packguard-policy", version = "0.6.1" }
-packguard-intel = { path = "../packguard-intel", version = "0.6.1" }
-packguard-actions = { path = "../packguard-actions", version = "0.6.1" }
-packguard-server = { path = "../packguard-server", version = "0.6.1" }
+packguard-core = { path = "../packguard-core", version = "0.6.2" }
+packguard-store = { path = "../packguard-store", version = "0.6.2" }
+packguard-policy = { path = "../packguard-policy", version = "0.6.2" }
+packguard-intel = { path = "../packguard-intel", version = "0.6.2" }
+packguard-actions = { path = "../packguard-actions", version = "0.6.2" }
+packguard-server = { path = "../packguard-server", version = "0.6.2" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }

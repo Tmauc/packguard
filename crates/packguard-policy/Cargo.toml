@@ -8,8 +8,8 @@ repository.workspace = true
 description = "PackGuard policy engine: offset rules, pins, recommended-version computation."
 
 [dependencies]
-packguard-core = { path = "../packguard-core", version = "0.6.1" }
-packguard-intel = { path = "../packguard-intel", version = "0.6.1" }
+packguard-core = { path = "../packguard-core", version = "0.6.2" }
+packguard-intel = { path = "../packguard-intel", version = "0.6.2" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
