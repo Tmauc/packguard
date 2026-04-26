@@ -126,12 +126,56 @@ async fn run_scan_job(state: &AppState, repo: PathBuf) -> Result<serde_json::Val
 /// post-bascule), then bump `last_scan`. The per-project store is
 /// created on first `get_or_open` inside `run_scan_job` since the
 /// registry insert already commits the slug.
+///
+/// Phase 14.5a (Bug C) — atomic-on-failure semantics. The legacy
+/// flow committed the registry insert before the post-register scan
+/// ran, and a scan failure (e.g. submitting a Rust-only repo with no
+/// JS/Python manifests at any depth) left a "ghost" project entry
+/// in `projects.db` with `last_scan = NULL` despite the modal showing
+/// an error. We now wrap the scan in an explicit rollback: on
+/// failure, the registry row is deleted, the per-project store
+/// handle is evicted from the cache, and `<home>/projects/<slug>/`
+/// is removed from disk so a retry against a fixed path doesn't
+/// trip a UNIQUE-violation under the same slug.
 async fn run_add_project_job(state: &AppState, path: PathBuf) -> Result<serde_json::Value> {
     let project_dto: crate::dto::ProjectDto = {
         let mut registry = state.projects.lock().await;
         registry.create_project(&path)?.into()
     };
-    let scan_payload = run_scan_job(state, path).await?;
+    let scan_payload = match run_scan_job(state, path).await {
+        Ok(payload) => payload,
+        Err(scan_err) => {
+            // Best-effort rollback. We never let a rollback failure
+            // mask the real scan error — log them and surface the
+            // original instead.
+            {
+                let mut registry = state.projects.lock().await;
+                if let Err(e) = registry.delete_project(&project_dto.slug) {
+                    tracing::warn!(
+                        slug = %project_dto.slug,
+                        err = %e,
+                        "rollback: failed to delete registry row after scan failure",
+                    );
+                }
+            }
+            state.project_stores.evict(&project_dto.slug).await;
+            let store_dir = state
+                .project_stores
+                .home()
+                .join("projects")
+                .join(&project_dto.slug);
+            if let Err(e) = std::fs::remove_dir_all(&store_dir) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        dir = %store_dir.display(),
+                        err = %e,
+                        "rollback: failed to remove per-project store dir after scan failure",
+                    );
+                }
+            }
+            return Err(scan_err);
+        }
+    };
     {
         let mut registry = state.projects.lock().await;
         registry.touch_last_scan(&project_dto.slug)?;

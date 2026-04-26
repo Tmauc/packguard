@@ -2368,3 +2368,114 @@ async fn workspaces_list_404_on_unknown_slug() {
         "expected known slugs in error: {msg}"
     );
 }
+
+// ---- Phase 14.5a (Bug C): rollback on add_project scan failure -----------
+
+#[tokio::test]
+async fn add_project_rolls_back_registry_on_scan_failure() {
+    // Fixture: a git repo with no manifests anywhere (post-Bug-A
+    // discovery walks 4 levels and still finds nothing). The scan
+    // step inside run_add_project_job will bail; the registry insert
+    // that already committed must be rolled back so the user doesn't
+    // see a "ghost" project in /api/projects after the modal closes
+    // with an error.
+    let tmp_for_repo = tempfile::tempdir().unwrap();
+    let repo = fixture_git_repo(tmp_for_repo.path(), "rust-only");
+    let h = spawn(|_, _, _| {}).await;
+    // Sanity: registry starts empty.
+    let body = get_json(&h, "/api/projects").await;
+    assert!(body.as_array().unwrap().is_empty());
+
+    let url = format!("{}/api/projects", h.base);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({ "path": repo.display().to_string() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+    let job_id = resp.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let final_state = poll_job(&h, &job_id).await;
+    assert_eq!(
+        final_state["status"], "failed",
+        "scan must fail (no manifests anywhere): {final_state}",
+    );
+    assert!(
+        final_state["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("no supported manifest"),
+        "expected manifest-not-found error, got: {final_state}",
+    );
+
+    // Bug C contract: registry rolled back.
+    let after = get_json(&h, "/api/projects").await;
+    assert!(
+        after.as_array().unwrap().is_empty(),
+        "expected rollback to clear the registry, got: {after}",
+    );
+
+    // Bug C contract: per-project store dir on disk also removed
+    // (so a retry against a different path that resolves to the
+    // same slug — though unusual — doesn't trip stale state). We
+    // probe via the test's PACKGUARD_HOME tempdir.
+    let projects_dir = h._temp.path().join("projects");
+    let leftover_count = std::fs::read_dir(&projects_dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .filter(|e| e.file_name() != "_default_")
+                .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(
+        leftover_count,
+        0,
+        "expected zero non-_default_ slug dirs after rollback, found {leftover_count} in {}",
+        projects_dir.display(),
+    );
+}
+
+#[tokio::test]
+async fn add_project_succeeds_when_subdir_holds_manifest() {
+    // Bug A + Bug C together: pointing at a git repo that has a
+    // package.json in a subdir (not at root) must succeed end-to-end
+    // — discovery finds the manifest, scan persists, registry
+    // commits, no rollback. Asserts the "happy path" is preserved
+    // by the rollback wrapper.
+    let tmp_for_repo = tempfile::tempdir().unwrap();
+    let repo = fixture_git_repo(tmp_for_repo.path(), "monorepo");
+    std::fs::create_dir_all(repo.join("web")).unwrap();
+    std::fs::write(
+        repo.join("web/package.json"),
+        r#"{ "name": "fixture-web", "version": "1.0.0" }"#,
+    )
+    .unwrap();
+
+    let h = spawn(|_, _, _| {}).await;
+    let url = format!("{}/api/projects", h.base);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({ "path": repo.display().to_string() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+    let job_id = resp.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let final_state = poll_job(&h, &job_id).await;
+    assert_eq!(
+        final_state["status"], "succeeded",
+        "monorepo with /web/package.json must succeed: {final_state}",
+    );
+    let after = get_json(&h, "/api/projects").await;
+    let arr = after.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "expected 1 project committed: {after}");
+    assert!(arr[0]["last_scan"].is_string(), "last_scan must be set");
+}

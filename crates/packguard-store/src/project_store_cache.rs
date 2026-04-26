@@ -23,7 +23,7 @@
 //!   beyond a few hundred microseconds of wasted I/O.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -105,6 +105,15 @@ impl ProjectStoreCache {
     /// connection open after the on-disk store has been removed.
     pub async fn evict(&self, slug: &str) {
         self.handles.lock().await.remove(slug);
+    }
+
+    /// Phase 14.5a (Bug C) — expose the `~/.packguard/` root the cache
+    /// was rooted at. The `add_project` rollback path needs to wipe
+    /// `<home>/projects/<slug>/` from disk after a scan failure, so
+    /// it asks the cache for the home rather than threading another
+    /// PathBuf through `AppState`.
+    pub fn home(&self) -> &Path {
+        &self.packguard_home
     }
 
     /// Enumerate `<home>/projects/<slug>/store.db` files currently on
