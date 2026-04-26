@@ -2335,6 +2335,119 @@ async fn workspaces_list_scoped_by_slug_returns_only_that_project() {
     assert!(rows[0]["path"].as_str().unwrap().contains("beta"));
 }
 
+// ---- Phase 14.5b: /api/fs/{roots,browse} integration --------------------
+
+/// Serialize tests that mutate `$HOME`. The fs_browse handlers read
+/// `std::env::var_os("HOME")` at request time, so two tests racing
+/// on the env var would see each other's tempdirs and fail spuriously.
+fn fs_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
+/// Spawn a fresh harness with `$HOME` pointed at a fresh tempdir
+/// pre-seeded with the requested layout. The MutexGuard return value
+/// keeps the env override alive — drop it to release the lock.
+async fn spawn_with_fs_home(
+    layout: &[(&str, bool /* is_dir */)],
+) -> (
+    Harness,
+    std::path::PathBuf,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
+    let guard = fs_env_lock();
+    let home_tmp = tempfile::tempdir().unwrap();
+    let home = home_tmp.path().canonicalize().unwrap();
+    for (rel, is_dir) in layout {
+        let p = home.join(rel);
+        if *is_dir {
+            std::fs::create_dir_all(&p).unwrap();
+        } else {
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&p, b"").unwrap();
+        }
+    }
+    std::env::set_var("HOME", &home);
+    let h = spawn(|_, _, _| {}).await;
+    (h, home, home_tmp, guard)
+}
+
+async fn get_status(harness: &Harness, path: &str) -> reqwest::StatusCode {
+    let url = format!("{}{}", harness.base, path);
+    reqwest::get(&url).await.unwrap().status()
+}
+
+#[tokio::test]
+async fn fs_roots_returns_home_and_existing_subdirs() {
+    let (h, home, _tmp, _guard) = spawn_with_fs_home(&[("Repo", true), ("Documents", true)]).await;
+    let body = get_json(&h, "/api/fs/roots").await;
+    assert_eq!(body["home"].as_str().unwrap(), home.display().to_string());
+    let labels: Vec<&str> = body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["label"].as_str().unwrap())
+        .collect();
+    assert_eq!(labels[0], "$HOME");
+    assert!(labels.contains(&"$HOME/Repo"), "labels={labels:?}");
+    assert!(labels.contains(&"$HOME/Documents"), "labels={labels:?}");
+}
+
+#[tokio::test]
+async fn fs_browse_default_returns_home() {
+    let (h, home, _tmp, _guard) = spawn_with_fs_home(&[("alpha", true)]).await;
+    let body = get_json(&h, "/api/fs/browse").await;
+    assert_eq!(body["path"].as_str().unwrap(), home.display().to_string());
+    assert!(body["parent"].is_null(), "parent at home root must be null");
+    let names: Vec<&str> = body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["alpha"]);
+}
+
+#[tokio::test]
+async fn fs_browse_query_returns_target_subdir() {
+    let (h, home, _tmp, _guard) = spawn_with_fs_home(&[("sub/inner", true)]).await;
+    let target = home.join("sub");
+    // Tempfile paths are alphanumeric + `/` only — safe to embed in
+    // a URL query param without explicit URL-encoding.
+    let body = get_json(&h, &format!("/api/fs/browse?path={}", target.display())).await;
+    assert_eq!(body["path"].as_str().unwrap(), target.display().to_string());
+    assert_eq!(body["parent"].as_str().unwrap(), home.display().to_string(),);
+    let names: Vec<&str> = body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["inner"]);
+}
+
+#[tokio::test]
+async fn fs_browse_returns_400_on_inexistant_path() {
+    let (h, home, _tmp, _guard) = spawn_with_fs_home(&[]).await;
+    let bad = home.join("nope-zzz-xyz");
+    let status = get_status(&h, &format!("/api/fs/browse?path={}", bad.display())).await;
+    assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn fs_browse_returns_403_on_path_outside_home() {
+    let (h, _home, _tmp, _guard) = spawn_with_fs_home(&[]).await;
+    // /etc exists on every Unix and canonicalises stably; the
+    // canonical form will not start with $HOME → sandbox rejects 403.
+    let status = get_status(&h, "/api/fs/browse?path=/etc").await;
+    assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
+}
+
 #[tokio::test]
 async fn workspaces_list_aggregate_when_no_project_param() {
     let (h, _alpha_slug, _beta_slug) = spawn_two_projects_with_workspaces().await;
