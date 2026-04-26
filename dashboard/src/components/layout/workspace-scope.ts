@@ -141,6 +141,18 @@ export function useSetProjectScope() {
  * Restore the last project the user picked when the URL arrives
  * without a `?project=<slug>` param and the value is still in the set
  * of known project slugs. Mirrors the workspace version's contract.
+ *
+ * Phase 14.5c (Bug D) — also clears a stale `?project=<slug>` from
+ * the URL when the projects list has loaded and the slug isn't in
+ * it. Without this guard, a user who bookmarked a URL pointing at a
+ * project that has since been removed (or whose slug was deleted by
+ * a 14.5a Bug-C rollback) ends up stuck on `useProjectScope() ===
+ * "<dead-slug>"` forever — the auto-select effect in Layout bails
+ * because `projectScope` is set, the restore branch below bails
+ * because `current` is set, and the ProjectSelector renders an
+ * empty trigger because no project matches the slug. Clearing the
+ * URL frees the auto-select effect to pick the most-recent
+ * registered project on the next tick.
  */
 export function useRestoreProjectScopeFromStorage(
   known: string[] | undefined,
@@ -157,8 +169,25 @@ export function useRestoreProjectScopeFromStorage(
       : null;
   const knownSet = useMemo(() => new Set(known ?? []), [known]);
   useEffect(() => {
-    if (skipRestore || !known || current) return;
+    if (skipRestore || !known) return;
     if (typeof window === "undefined") return;
+
+    // Bug D: stale URL slug → drop it. Only fires once `known` has
+    // loaded (so we never clear a valid slug just because the
+    // projects fetch hasn't landed yet) and only when the slug is
+    // genuinely unknown. The next render will see `current === null`
+    // and either restore from localStorage (below) or fall through
+    // to Layout's most-recent auto-select.
+    if (current && !knownSet.has(current)) {
+      const next = new URLSearchParams(params);
+      next.delete("project");
+      setParams(next, { replace: true });
+      return;
+    }
+
+    // Don't try to restore if the URL already carries a (valid) slug.
+    if (current) return;
+
     const stored = window.localStorage.getItem(PROJECT_SCOPE_STORAGE_KEY);
     if (!stored) return;
     if (knownSet.has(stored)) {

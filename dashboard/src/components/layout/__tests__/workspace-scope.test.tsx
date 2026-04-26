@@ -5,7 +5,9 @@ import type { ProjectDto } from "@/api/types/ProjectDto";
 import {
   useLegacyProjectRedirect,
   useProjectScope,
+  useRestoreProjectScopeFromStorage,
   useWorkspaceScope,
+  PROJECT_SCOPE_STORAGE_KEY,
 } from "@/components/layout/workspace-scope";
 
 vi.mock("sonner", () => ({
@@ -173,5 +175,76 @@ describe("useLegacyProjectRedirect", () => {
     );
     expect(result.current.params.get("workspace")).toBeNull();
     expect(toast.message).not.toHaveBeenCalled();
+  });
+});
+
+describe("useRestoreProjectScopeFromStorage — Bug D (stale URL slug)", () => {
+  function useScopeProbe(known: string[] | undefined, skipRestore: boolean) {
+    useRestoreProjectScopeFromStorage(known, skipRestore);
+    const [params] = useSearchParams();
+    return { project: params.get("project") };
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("clears ?project=<slug> from the URL when projects loaded and slug is unknown", () => {
+    const { result, rerender } = renderHook(
+      ({ known }: { known: string[] | undefined }) =>
+        useScopeProbe(known, false),
+      {
+        wrapper: wrapper("/?project=ghost-slug"),
+        initialProps: { known: undefined as string[] | undefined },
+      },
+    );
+    // Pre-load: known === undefined → no-op, slug stays.
+    expect(result.current.project).toBe("ghost-slug");
+    rerender({ known: ["alpha", "beta"] });
+    // Post-load: ghost-slug not in known set → URL slug dropped.
+    expect(result.current.project).toBeNull();
+  });
+
+  it("keeps ?project=<slug> when the slug IS in the known set", () => {
+    const { result, rerender } = renderHook(
+      ({ known }: { known: string[] | undefined }) =>
+        useScopeProbe(known, false),
+      {
+        wrapper: wrapper("/?project=alpha"),
+        initialProps: { known: undefined as string[] | undefined },
+      },
+    );
+    rerender({ known: ["alpha", "beta"] });
+    // alpha is known → URL untouched.
+    expect(result.current.project).toBe("alpha");
+  });
+
+  it("does not clear the URL while the projects list is still loading", () => {
+    const { result } = renderHook(
+      () => useScopeProbe(undefined, false),
+      {
+        wrapper: wrapper("/?project=anything"),
+      },
+    );
+    // known === undefined → guard short-circuits, URL preserved.
+    expect(result.current.project).toBe("anything");
+  });
+
+  it("after clearing a stale URL slug, restores from localStorage when valid", () => {
+    window.localStorage.setItem(PROJECT_SCOPE_STORAGE_KEY, "alpha");
+    const { result, rerender } = renderHook(
+      ({ known }: { known: string[] | undefined }) =>
+        useScopeProbe(known, false),
+      {
+        wrapper: wrapper("/?project=ghost-slug"),
+        initialProps: { known: undefined as string[] | undefined },
+      },
+    );
+    rerender({ known: ["alpha", "beta"] });
+    // Two-pass settle: first pass clears the bad slug, the next render
+    // (driven by the URL change) re-fires the effect and the
+    // localStorage-restore branch puts "alpha" in.
+    rerender({ known: ["alpha", "beta"] });
+    expect(result.current.project).toBe("alpha");
   });
 });
