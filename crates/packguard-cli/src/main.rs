@@ -441,7 +441,15 @@ async fn main() -> Result<()> {
                 dry_run,
             )?;
             announce_scope(&scope, "scan");
-            let pstore = project_stores.get_or_open(&scope.slug).await?;
+            // Dry-run is read-only: don't open the per-project store at
+            // all. The WAL pragma + migration dance on a fresh DB races
+            // when several processes share PACKGUARD_HOME (parallel tests,
+            // CI matrix), and dry-run has no business persisting anything.
+            let pstore = if dry_run {
+                None
+            } else {
+                Some(project_stores.get_or_open(&scope.slug).await?)
+            };
             scan(
                 path,
                 ScanOptions {
@@ -454,7 +462,7 @@ async fn main() -> Result<()> {
                     dry_run,
                     yes,
                 },
-                &pstore,
+                pstore.as_ref(),
             )
             .await
         }
@@ -1800,7 +1808,7 @@ struct ScanProjectSummary {
     skipped_unchanged: bool,
 }
 
-async fn scan(path: PathBuf, opts: ScanOptions, pstore: &Arc<Mutex<Store>>) -> Result<()> {
+async fn scan(path: PathBuf, opts: ScanOptions, pstore: Option<&Arc<Mutex<Store>>>) -> Result<()> {
     use packguard_core::DiscoveryOptions;
 
     let discovery_opts = DiscoveryOptions {
@@ -1859,6 +1867,7 @@ async fn scan(path: PathBuf, opts: ScanOptions, pstore: &Arc<Mutex<Store>>) -> R
     }
 
     let ecosystems = default_ecosystems()?;
+    let pstore = pstore.expect("non-dry-run scan must receive a project store");
     let mut store = pstore.lock().await;
 
     let multi = outcome.projects.len() > 1;
