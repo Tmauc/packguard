@@ -328,6 +328,19 @@ async fn main() -> Result<()> {
         }
     }
 
+    // `init` writes a `.packguard.yml` next to the user's manifest. It
+    // never reads or writes ~/.packguard/, so opening the projects
+    // registry would be wasted work — and worse, it creates a WAL
+    // contention point for parallel CI runs that share $HOME.
+    if let Cmd::Init {
+        path,
+        force,
+        with_ci,
+    } = cli.command
+    {
+        return init(path, force, with_ci);
+    }
+
     let mut registry = ProjectsRegistry::open(&packguard_home).with_context(|| {
         format!(
             "opening projects registry under {}",
@@ -338,11 +351,7 @@ async fn main() -> Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
     match cli.command {
-        Cmd::Init {
-            path,
-            force,
-            with_ci,
-        } => init(path, force, with_ci),
+        Cmd::Init { .. } => unreachable!("Init handled above"),
         Cmd::Audit {
             path,
             project,

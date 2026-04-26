@@ -317,8 +317,11 @@ fn collect_all_leaves_recommended_version_none_for_workspace_actions() {
     let mut intel = IntelStore::open_in_memory().unwrap();
     seed_nalo_like(&mut store, &mut intel, &repo);
 
-    // Advance past the rescan threshold so RescanStale fires.
-    let later = now_anchor() + Duration::days(5);
+    // Advance past the rescan threshold so RescanStale fires. Anchored on
+    // Utc::now() (matching seed_nalo_like's save_project clock) instead of
+    // now_anchor() so the elapsed gap is constant regardless of how far
+    // the real clock has drifted from the fixed test anchor.
+    let later = Utc::now() + Duration::days(5);
     let actions = collect_all(&store, &intel, Some(&repo), later, false, false).unwrap();
 
     for a in &actions {
@@ -442,7 +445,9 @@ fn collect_all_emits_rescan_stale_when_last_scan_beyond_3_days() {
     seed_nalo_like(&mut store, &mut intel, &repo);
     // Time-travel 5 days forward: the scan saved by `seed_nalo_like` is
     // now 5d old; `collect_all` should emit a RescanStale action.
-    let later = now_anchor() + Duration::days(5);
+    // Anchored on Utc::now() (same clock save_project used) so the elapsed
+    // gap stays exactly 5d regardless of real-clock drift from now_anchor().
+    let later = Utc::now() + Duration::days(5);
     let actions = collect_all(&store, &intel, Some(&repo), later, false, false).unwrap();
     let rescan = actions
         .iter()

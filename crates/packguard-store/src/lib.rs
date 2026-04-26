@@ -27,6 +27,44 @@ pub use intel_store::IntelStore;
 pub use project_store_cache::ProjectStoreCache;
 pub use projects_registry::ProjectsRegistry;
 
+/// Idempotently switch a fresh connection to WAL journal mode, tolerating
+/// concurrent openers from parallel processes (CI tests, multiple CLI
+/// invocations sharing PACKGUARD_HOME).
+///
+/// SQLite's `journal_mode = WAL` pragma needs a brief exclusive lock on
+/// the database header to convert. Despite `busy_timeout`, the lock
+/// acquisition can race when several processes hit a fresh DB
+/// simultaneously — busy_timeout doesn't always suffice for the
+/// journal_mode pragma specifically. We work around that by:
+///   1. Querying the current journal mode first; if it's already WAL
+///      (i.e. a prior opener already converted), the pragma is a no-op.
+///   2. If we do need to convert, retrying on SQLITE_BUSY with a short
+///      sleep so a second-comer simply waits out the first-comer's
+///      conversion instead of failing the whole open.
+pub(crate) fn enable_wal(conn: &Connection) -> Result<()> {
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .context("reading current journal_mode")?;
+    if mode.eq_ignore_ascii_case("wal") {
+        return Ok(());
+    }
+    let mut tries = 100;
+    loop {
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Ok(_) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy && tries > 0 =>
+            {
+                tries -= 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                return Err(anyhow::Error::from(e)).context("enabling WAL");
+            }
+        }
+    }
+}
+
 /// Normalize a repo path for the `repos.path` column + every lookup that
 /// joins through it. Without this, a scan run from `/path/to/repo` and a
 /// `packguard ui` launched from a different CWD would persist two
@@ -210,13 +248,9 @@ impl Store {
         }
         let mut conn =
             Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
-        // Tolerate concurrent opens (parallel tests, multiple CLI invocations
-        // sharing PACKGUARD_HOME). Without this, the WAL pragma below races
-        // against another process and fails with SQLITE_BUSY.
         conn.busy_timeout(std::time::Duration::from_secs(5))
             .context("setting busy_timeout")?;
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .context("enabling WAL")?;
+        crate::enable_wal(&conn)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .context("enabling foreign keys")?;
         embedded::migrations::runner()
@@ -242,8 +276,9 @@ impl Store {
         }
         let mut conn =
             Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .context("enabling WAL")?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .context("setting busy_timeout")?;
+        crate::enable_wal(&conn)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .context("enabling foreign keys")?;
         embedded::migrations::runner()
