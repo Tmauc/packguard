@@ -19,6 +19,8 @@ import type { ActionDismissResponse } from "@/api/types/ActionDismissResponse";
 import type { ActionDeferResponse } from "@/api/types/ActionDeferResponse";
 import type { ProjectDto } from "@/api/types/ProjectDto";
 import type { AddProjectRequest } from "@/api/types/AddProjectRequest";
+import type { FsRootsResponse } from "@/api/types/FsRootsResponse";
+import type { FsBrowseResponse } from "@/api/types/FsBrowseResponse";
 
 /**
  * Phase 7b scope hint. `undefined` (or empty) = aggregate view across
@@ -191,6 +193,27 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     }).then(handle<JobAccepted>);
+  },
+
+  /// Phase 14.5b/c: filesystem browser endpoints powering the
+  /// AddProjectModal directory picker. Both are sandboxed server-side
+  /// to the server process's `$HOME` — a request for a path outside
+  /// it returns HTTP 403 (mapped to ApiError.code === "forbidden").
+  ///
+  /// `fsRoots` returns conventional starting points: `$HOME` plus any
+  /// of {Repo, Repos, Projects, Workspace, Code, src, Documents} that
+  /// exists on disk.
+  fsRoots: () => fetch("/api/fs/roots").then(handle<FsRootsResponse>),
+
+  /// `fsBrowse` lists the subdirectories of `path` (only directories,
+  /// no files — the picker is a folder picker). Each entry carries
+  /// `has_git` and `has_manifest` flags so the UI can hint at scannable
+  /// candidates. Omitting `path` defaults to `$HOME` server-side.
+  fsBrowse: (path?: string) => {
+    const qs = path
+      ? `?${new URLSearchParams({ path }).toString()}`
+      : "";
+    return fetch(`/api/fs/browse${qs}`).then(handle<FsBrowseResponse>);
   },
 
   actions: (
